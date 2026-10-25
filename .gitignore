@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.bak
+*.candidate
+*.tmp.*
+*.exe
+*.asar
+staged_dist_js/
+snapshots/
+backups/
+preferences.v3.json
+last_install_receipt.json
