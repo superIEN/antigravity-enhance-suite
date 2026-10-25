@@ -382,6 +382,9 @@
     'Canceled deletion of': '已取消删除',
     'Searching': '正在检索',
     'Searched': '已检索',
+    'Exploring': '思考中…',
+    'Exploring...': '思考中…',
+    'Listed 1 task': '已核查后台任务',
     'Semantic searching': '正在语义检索',
     'Semantic searched': '已语义检索',
     'Working': '正在执行',
@@ -1211,33 +1214,38 @@
       zh: (_, t) => `您已达到本周额度上限（当前不适用 5 小时窗口额度），本周额度将在 ${t.replace(/days?/i, '天').replace(/hours?/i, '小时').replace(/minutes?/i, '分钟')} 后完全重置。`
     },
     {
+      re: /^(?:Reading|Viewing|Searching|Listing|Grep|Exploring)\s+.+$/i,
+      zh: () => '思考中…'
+    },
+    {
+      re: /^(?:Editing|Writing|Creating|Running|Deleting)\s+.+$/i,
+      zh: () => '正在执行…'
+    },
+    {
+      re: /^Listed\s+\d+\s+tasks?$/i,
+      zh: () => '已核查后台任务'
+    },
+    {
       re: /^(?:Explored|Ran|Edited)(?:[\s\S]*)$/i,
       zh: (full) => {
         if (!/^(Explored|Ran\b|Edited\b)/i.test(full)) return null;
+        const hasEdit = /\bedited\b/i.test(full);
+        const hasRan = /\bran\b/i.test(full);
+        if (!hasEdit && !hasRan) {
+          return '已思考并查阅上下文';
+        }
         const parts = [];
         const mExp = full.match(/Explored(?:\s+([^,]+))?/i);
         if (mExp) {
-          const arg = (mExp[1] || '').trim();
-          const numMatch = arg.match(/^(\d+)\s+files?$/i);
-          if (numMatch) {
-            parts.push(`查阅了 ${numMatch[1]} 个文件`);
-          } else {
-            parts.push('查阅了文件');
-          }
+          parts.push('查阅了文件');
         }
         const mRan = full.match(/\bran(?:\s+(\d+))?\s+commands?\b/i);
         if (mRan) {
-          parts.push(mRan[1] ? `运行了 ${mRan[1]} 条命令` : '运行了命令');
+          parts.push('运行了命令');
         }
         const mEd = full.match(/\bedited(?:\s+([^,]+))?/i);
         if (mEd) {
-          const arg = (mEd[1] || '').trim();
-          const numMatch = arg.match(/^(\d+)\s+files?$/i);
-          if (numMatch) {
-            parts.push(`修改了 ${numMatch[1]} 个文件`);
-          } else {
-            parts.push('修改了文件');
-          }
+          parts.push('修改了文件');
         }
         return parts.length ? parts.join(' · ') : null;
       }
@@ -1682,11 +1690,20 @@
         margin-right: 6px;
         opacity: 0.65;
       }
-      html[data-agy-hud-pad="expanded"] [data-testid="autoscroll-viewport"] {
-        padding-bottom: 148px !important;
+      /* Keep the single-line breathing "思考中…" indicator, but hide its expandable raw thinking body & chevron */
+      button[data-testid="thinking-collapsible-trigger"] {
+        pointer-events: none !important;
+        cursor: default !important;
       }
-      html[data-agy-hud-pad="collapsed"] [data-testid="autoscroll-viewport"] {
-        padding-bottom: 42px !important;
+      button[data-testid="thinking-collapsible-trigger"] svg,
+      button[data-testid="thinking-collapsible-trigger"] + div {
+        display: none !important;
+      }
+      button[data-testid="tool-group-collapsible"]:not([data-agy-user-expanded="1"]) + div {
+        display: none !important;
+      }
+      button[data-testid="tool-group-collapsible"]:not([data-agy-user-expanded="1"]) svg:last-child {
+        transform: rotate(-90deg) !important;
       }
       [data-testid="project-selector-new-workspace"],
       [role="option"]:has(span[title*="\\AppData\\Local\\Temp\\agy_"]),
@@ -2458,7 +2475,7 @@
   let missionHudHost = null;
   let missionHudShadow = null;
   let missionHudRefs = {};
-  let missionHudCollapsed = false;
+  let missionHudCollapsed = true;
   let inlineSeqCounter = 0;
   const domElementUidMap = new WeakMap();
 
@@ -2827,21 +2844,105 @@
       el.remove();
     }
 
-    // Re-translate any already-tracked text nodes that had old "研读了 files" or "本阶段执行耗时"
+    // Sanitize any leaked <subagent_message> raw dumps and their trailing raw JSON debug blocks in conversation prose
+    const proseContainers = document.querySelectorAll('[data-testid="planner-response-text"], [data-testid="conversation-view"] .prose');
+    for (const pc of proseContainers) {
+      const txt = pc.textContent || '';
+      if (txt.includes('has finished running and returned the following message') || txt.includes('subagent_message>')) {
+        const pTags = pc.querySelectorAll('p, pre, code');
+        for (const child of pTags) {
+          const cTxt = child.textContent || '';
+          if (cTxt.includes('has finished running and returned the following message') || cTxt.includes('subagent_message>')) {
+            const cleaned = cTxt.replace(/\s*(?:Ahmad\s*)?Subagent\s+[0-9a-f-]{36}\s+has finished running[\s\S]*$/i, '').trim();
+            if (cleaned && cleaned.length >= 4) {
+              child.textContent = cleaned;
+            } else {
+              child.style.setProperty('display', 'none', 'important');
+            }
+          } else if (
+            cTxt.includes('"composerChain"') ||
+            cTxt.includes('"local_tx_id"') ||
+            cTxt.includes('"tx_summary"') ||
+            cTxt.includes('Sender: 21eddb10-')
+          ) {
+            child.style.setProperty('display', 'none', 'important');
+          }
+        }
+        const remTxt = (pc.innerText || '').trim();
+        if (!remTxt || /^(?:Ahmad\s*)?Subagent\s+[0-9a-f-]{36}/i.test(remTxt)) {
+          pc.style.setProperty('display', 'none', 'important');
+        }
+      }
+    }
+
+    // Keep the breathing single-line thinking indicator visible, but hide its expanded raw thinking body
+    const thinkBtns = document.querySelectorAll('button[data-testid="thinking-collapsible-trigger"]');
+    for (const tb of thinkBtns) {
+      tb.style.removeProperty('display');
+      if (tb.parentElement) {
+        tb.parentElement.style.removeProperty('display');
+      }
+      if (tb.nextElementSibling) {
+        tb.nextElementSibling.style.setProperty('display', 'none', 'important');
+      }
+      const w = document.createTreeWalker(tb, NodeFilter.SHOW_TEXT, null);
+      while (w.nextNode()) {
+        processTextNode(w.currentNode);
+      }
+    }
+
+    // Re-translate any already-tracked text nodes & lock ONLY inner tool-group-collapsible containers (never worked-for-collapsible!)
     const summaryBtns = document.querySelectorAll(
       'button[data-testid="tool-group-collapsible"], button[data-testid="worked-for-collapsible"]'
     );
     for (const gbtn of summaryBtns) {
+      const isToolGroup = gbtn.getAttribute('data-testid') === 'tool-group-collapsible';
+      if (isToolGroup) {
+        if (!gbtn.hasAttribute('data-agy-click-bound')) {
+          gbtn.setAttribute('data-agy-click-bound', '1');
+          gbtn.addEventListener(
+            'click',
+            (e) => {
+              if (!e.isTrusted) return;
+              const cur = gbtn.getAttribute('data-agy-user-expanded') === '1';
+              if (cur) {
+                gbtn.removeAttribute('data-agy-user-expanded');
+                if (gbtn.nextElementSibling) {
+                  gbtn.nextElementSibling.style.setProperty('display', 'none', 'important');
+                }
+              } else {
+                gbtn.setAttribute('data-agy-user-expanded', '1');
+                if (gbtn.nextElementSibling) {
+                  gbtn.nextElementSibling.style.removeProperty('display');
+                }
+              }
+            },
+            true
+          );
+        }
+        if (gbtn.getAttribute('data-agy-user-expanded') !== '1' && gbtn.nextElementSibling) {
+          gbtn.nextElementSibling.style.setProperty('display', 'none', 'important');
+        }
+      } else {
+        // For worked-for-collapsible, ALWAYS ensure its nextElementSibling is NOT hidden by inline display:none!
+        if (gbtn.nextElementSibling) {
+          gbtn.nextElementSibling.style.removeProperty('display');
+        }
+      }
       const w = document.createTreeWalker(gbtn, NodeFilter.SHOW_TEXT, null);
       while (w.nextNode()) {
         const tn = w.currentNode;
         if (trackedTextNodes.has(tn)) {
-          const origEn = trackedTextNodes.get(tn);
-          const nextZh = targetStringForEn(origEn);
-          const { leading, trailing } = splitWhitespace(tn.nodeValue || '');
-          const desired = leading + nextZh + trailing;
-          if (tn.nodeValue !== desired) {
-            tn.nodeValue = desired;
+          const rec = trackedTextNodes.get(tn);
+          const origEn = rec && typeof rec.origEn === 'string' ? rec.origEn : '';
+          if (origEn) {
+            const nextZh = targetStringForEn(origEn);
+            const { leading, trailing } = splitWhitespace(tn.nodeValue || '');
+            const desired = leading + nextZh + trailing;
+            rec.lastWritten = desired;
+            if (tn.nodeValue !== desired) {
+              tn.nodeValue = desired;
+            }
           }
         } else {
           processTextNode(tn);
@@ -3342,24 +3443,25 @@
   }
 
   function ensureMissionHudMounted() {
-    if (missionHudHost && missionHudHost.parentElement === document.body && missionHudShadow) {
-      return;
-    }
+    if (missionHudHost && missionHudShadow) return;
     const existing = document.getElementById('agy-mission-hud-host');
     if (existing) existing.remove();
 
     missionHudHost = document.createElement('div');
     missionHudHost.id = 'agy-mission-hud-host';
-    missionHudHost.style.position = 'fixed';
-    missionHudHost.style.zIndex = '38';
+    missionHudHost.style.position = 'relative';
+    missionHudHost.style.width = '100%';
+    missionHudHost.style.margin = '0 0 6px 0';
+    missionHudHost.style.zIndex = '10';
     missionHudHost.style.display = 'none';
-    document.body.appendChild(missionHudHost);
 
     missionHudShadow = missionHudHost.attachShadow({ mode: 'open' });
-    missionHudShadow.innerHTML = `
+      missionHudShadow.innerHTML = `
       <style>
         :host {
           all: initial;
+          display: block;
+          width: 100%;
           font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
           user-select: none;
         }
@@ -3407,8 +3509,13 @@
           background: #10b981;
           flex-shrink: 0;
         }
+        @keyframes agy-breathe {
+          0%, 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.45); }
+          50% { opacity: 0.55; transform: scale(0.92); box-shadow: 0 0 0 4px rgba(37, 99, 235, 0); }
+        }
         .status-dot.running {
           background: #2563eb;
+          animation: agy-breathe 1.8s ease-in-out infinite;
         }
         .goal-text {
           font-size: 12px;
@@ -3598,15 +3705,17 @@
       return;
     }
 
-    const footer = turboBtn.closest('[class*="@container/input-footer"]') || turboBtn.parentElement?.parentElement;
-    const composerBox = footer?.parentElement || footer;
-    if (!composerBox || !composerBox.getBoundingClientRect) {
+    const agentInputBox =
+      turboBtn.closest('[data-testid="agent-input-box"]') ||
+      document.getElementById('antigravity.agentSidePanelInputBox')?.parentElement ||
+      turboBtn.closest('[class*="@container/input-footer"]')?.parentElement?.parentElement;
+    if (!agentInputBox || !agentInputBox.getBoundingClientRect) {
       hideMissionHud();
       return;
     }
 
-    const cRect = composerBox.getBoundingClientRect();
-    if (cRect.width < 260 || cRect.top < 80 || hasVisibleOverlappingPopup(cRect)) {
+    const cRect = agentInputBox.getBoundingClientRect();
+    if (cRect.width < 220) {
       hideMissionHud();
       return;
     }
@@ -3669,14 +3778,17 @@
       }
     }
 
-    missionHudHost.style.display = 'block';
-    missionHudHost.style.left = `${Math.round(cRect.left)}px`;
-    missionHudHost.style.width = `${Math.round(cRect.width)}px`;
-    const hudHeight = missionHudHost.getBoundingClientRect().height || (missionHudCollapsed ? 30 : 118);
-    missionHudHost.style.top = `${Math.max(42, Math.round(cRect.top - hudHeight - 6))}px`;
-    if (document.documentElement) {
-      document.documentElement.setAttribute('data-agy-hud-pad', missionHudCollapsed ? 'collapsed' : 'expanded');
+    if (agentInputBox && missionHudHost.parentElement !== agentInputBox) {
+      agentInputBox.insertBefore(missionHudHost, agentInputBox.firstElementChild);
+    } else if (agentInputBox && agentInputBox.firstElementChild !== missionHudHost) {
+      agentInputBox.insertBefore(missionHudHost, agentInputBox.firstElementChild);
     }
+    missionHudHost.style.position = 'relative';
+    missionHudHost.style.left = '';
+    missionHudHost.style.top = '';
+    missionHudHost.style.width = '100%';
+    missionHudHost.style.margin = '0 0 8px 0';
+    missionHudHost.style.display = 'block';
   }
 
   // ---------------------------------------------------------------------------
