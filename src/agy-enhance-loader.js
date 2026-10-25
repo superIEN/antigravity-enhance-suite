@@ -1105,7 +1105,7 @@
     },
     {
       re: /^Worked for (.+)$/i,
-      zh: (_, dur) => `本阶段执行耗时 ${dur}`
+      zh: (_, dur) => `用时 ${dur}`
     },
     {
       re: /^Waiting for command completion \(up to (\d+) seconds\)$/i,
@@ -1213,22 +1213,33 @@
     {
       re: /^(?:Explored|Ran|Edited)(?:[\s\S]*)$/i,
       zh: (full) => {
-        if (!/^(Explored|Ran command|Ran \d+ command|Edited )/i.test(full)) return null;
+        if (!/^(Explored|Ran\b|Edited\b)/i.test(full)) return null;
         const parts = [];
         const mExp = full.match(/Explored(?:\s+([^,]+))?/i);
         if (mExp) {
-          parts.push(mExp[1] ? `研读了 ${mExp[1].trim().replace(/(\d+)\s+files?/i, '$1 个文件')}` : '已完成代码与现场勘探');
+          const arg = (mExp[1] || '').trim();
+          const numMatch = arg.match(/^(\d+)\s+files?$/i);
+          if (numMatch) {
+            parts.push(`查阅了 ${numMatch[1]} 个文件`);
+          } else {
+            parts.push('查阅了文件');
+          }
         }
-        const mRan = full.match(/\bran\s+(\d+\s+)?commands?/i);
+        const mRan = full.match(/\bran(?:\s+(\d+))?\s+commands?\b/i);
         if (mRan) {
-          const cnt = mRan[1] ? mRan[1].trim() : '1';
-          parts.push(`执行了 ${cnt} 项命令核验`);
+          parts.push(mRan[1] ? `运行了 ${mRan[1]} 条命令` : '运行了命令');
         }
-        const mEd = full.match(/\bedited\s+(.+)$/i);
+        const mEd = full.match(/\bedited(?:\s+([^,]+))?/i);
         if (mEd) {
-          parts.push(`修改了 ${mEd[1].trim().replace(/(\d+)\s+files?/i, '$1 个文件')}`);
+          const arg = (mEd[1] || '').trim();
+          const numMatch = arg.match(/^(\d+)\s+files?$/i);
+          if (numMatch) {
+            parts.push(`修改了 ${numMatch[1]} 个文件`);
+          } else {
+            parts.push('修改了文件');
+          }
         }
-        return parts.length ? parts.join('，') : null;
+        return parts.length ? parts.join(' · ') : null;
       }
     }
   ];
@@ -2808,140 +2819,33 @@
   function enhanceConversationStreamDOM() {
     if (!document.querySelectorAll) return;
 
-    // Build a lookup from thinking text -> next tool step qualitative description across all tool groups
-    const nextToolDescByThinking = new Map();
-    const groupButtons = document.querySelectorAll('button[data-testid="tool-group-collapsible"]');
-    for (const gbtn of groupButtons) {
-      const ibProps = findAncestorFiberProps(gbtn, (p) => Array.isArray(p.steps));
-      const steps = ibProps?.steps || [];
-      for (let i = 0; i < steps.length; i++) {
-        const st = steps[i];
-        if (st.step?.case === 'plannerResponse') {
-          const th = st.step.value?.rawThinking || st.step.value?.thinking || '';
-          if (th) {
-            for (let j = i + 1; j < Math.min(steps.length, i + 4); j++) {
-              const nxt = steps[j];
-              if (nxt.step?.case !== 'plannerResponse') {
-                const d = describeStepQualitatively(nxt);
-                if (d) {
-                  nextToolDescByThinking.set(th, d);
-                  break;
-                }
-              }
-            }
-          }
-        }
-      }
+    // Remove any noisy inline filename/tool tails on collapsed headers
+    const noisyInlineEls = document.querySelectorAll(
+      '.agy-stage-qualitative-sub, .agy-think-inline-summary, [id^="agy-stream-stage-sub-"], [id^="agy-stream-think-inline-"]'
+    );
+    for (const el of noisyInlineEls) {
+      el.remove();
     }
 
-    // 1. Enhance Thinking Collapsible Triggers & Expanded Bodies
-    const thinkButtons = document.querySelectorAll('button[data-testid="thinking-collapsible-trigger"]');
-    for (const btn of thinkButtons) {
-      const uid = getStableDomUid(btn);
-      const inlineId = `agy-stream-think-inline-${uid}`;
-      const digestId = `agy-stream-think-digest-${uid}`;
-
-      const vebProps = findAncestorFiberProps(btn, (p) => typeof p.thinking === 'string');
-      let rawThinking = vebProps?.thinking || '';
-      const expanded = btn.getAttribute('aria-expanded') === 'true';
-      const wrapper = btn.parentElement;
-
-      if (!rawThinking && expanded && wrapper) {
-        rawThinking = wrapper.textContent || '';
-      }
-
-      const nextToolDesc = nextToolDescByThinking.get(rawThinking) || '';
-      const digest = parseThinkingQualitativeDigest(rawThinking, nextToolDesc);
-      let inlineEl = document.getElementById(inlineId);
-      if (digest.headline) {
-        if (!inlineEl) {
-          inlineEl = document.createElement('span');
-          inlineEl.id = inlineId;
-          inlineEl.className = 'agy-think-inline-summary';
-          btn.appendChild(inlineEl);
-        }
-        if (inlineEl.textContent !== digest.headline) {
-          inlineEl.textContent = digest.headline;
-        }
-      } else if (inlineEl) {
-        inlineEl.remove();
-      }
-
-      if (expanded && wrapper && (digest.intent || digest.judgment)) {
-        const contentPane = btn.nextElementSibling;
-        if (contentPane) {
-          let cardEl = document.getElementById(digestId);
-          if (!cardEl) {
-            cardEl = document.createElement('div');
-            cardEl.id = digestId;
-            cardEl.className = 'agy-think-digest-card';
-            contentPane.prepend(cardEl);
-          }
-          const rowsHtml = [];
-          if (digest.intent) {
-            rowsHtml.push(
-              `<div class="agy-think-digest-row"><span class="agy-think-digest-label">本步意图：</span><span class="agy-think-digest-val">${escapeHtml(digest.intent)}</span></div>`
-            );
-          }
-          if (digest.judgment && digest.judgment !== digest.intent) {
-            rowsHtml.push(
-              `<div class="agy-think-digest-row"><span class="agy-think-digest-label">核心判断：</span><span class="agy-think-digest-val">${escapeHtml(digest.judgment)}</span></div>`
-            );
-          }
-          if (digest.nextStep && digest.nextStep !== digest.judgment && digest.nextStep !== digest.intent) {
-            rowsHtml.push(
-              `<div class="agy-think-digest-row"><span class="agy-think-digest-label">下一步：</span><span class="agy-think-digest-val">${escapeHtml(digest.nextStep)}</span></div>`
-            );
-          }
-          const nextHtml = rowsHtml.join('');
-          if (cardEl.getAttribute('data-sig') !== nextHtml) {
-            cardEl.setAttribute('data-sig', nextHtml);
-            cardEl.innerHTML = nextHtml;
-          }
-        }
-      }
-    }
-
-    // 2. Enhance Tool Group & Worked-For Collapsible Headers with Qualitative Purpose
-    const summaryGroupBtns = document.querySelectorAll(
+    // Re-translate any already-tracked text nodes that had old "研读了 files" or "本阶段执行耗时"
+    const summaryBtns = document.querySelectorAll(
       'button[data-testid="tool-group-collapsible"], button[data-testid="worked-for-collapsible"]'
     );
-    for (const gbtn of summaryGroupBtns) {
-      const uid = getStableDomUid(gbtn);
-      const subId = `agy-stream-stage-sub-${uid}`;
-      const fiberProps = findAncestorFiberProps(
-        gbtn,
-        (p) => Array.isArray(p.steps) || Array.isArray(p.segment?.steps)
-      );
-      const steps = fiberProps?.steps || fiberProps?.segment?.steps || [];
-
-      const descs = [];
-      for (let i = steps.length - 1; i >= 0; i--) {
-        const d = describeStepQualitatively(steps[i]);
-        if (d && !descs.includes(d)) {
-          descs.unshift(d);
-          if (descs.length >= 2) break;
+    for (const gbtn of summaryBtns) {
+      const w = document.createTreeWalker(gbtn, NodeFilter.SHOW_TEXT, null);
+      while (w.nextNode()) {
+        const tn = w.currentNode;
+        if (trackedTextNodes.has(tn)) {
+          const origEn = trackedTextNodes.get(tn);
+          const nextZh = targetStringForEn(origEn);
+          const { leading, trailing } = splitWhitespace(tn.nodeValue || '');
+          const desired = leading + nextZh + trailing;
+          if (tn.nodeValue !== desired) {
+            tn.nodeValue = desired;
+          }
+        } else {
+          processTextNode(tn);
         }
-      }
-
-      let qualitativeText = '';
-      if (descs.length > 0) {
-        qualitativeText = descs.join(' · ');
-      }
-
-      let subEl = document.getElementById(subId);
-      if (qualitativeText) {
-        if (!subEl) {
-          subEl = document.createElement('span');
-          subEl.id = subId;
-          subEl.className = 'agy-stage-qualitative-sub';
-          gbtn.appendChild(subEl);
-        }
-        if (subEl.textContent !== qualitativeText) {
-          subEl.textContent = qualitativeText;
-        }
-      } else if (subEl) {
-        subEl.remove();
       }
     }
   }
