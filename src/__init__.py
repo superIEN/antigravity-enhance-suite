@@ -1,1 +1,3 @@
 """Antigravity Enhance Suite core modules."""
+
+__version__ = "3.2.0"
