@@ -1,4 +1,4 @@
-"""Portable Language Server Binary Patcher & Verifier for Antigravity (v2.24.0 / v2.25.0 / v2.26.0+)."""
+"""Portable Language Server Binary Patcher & Verifier for Antigravity (v2.24.0 / v2.25.0 / v2.26.0 / v2.27.0 / v2.28.0+)."""
 import hashlib
 import struct
 from pathlib import Path
@@ -29,7 +29,7 @@ def build_and_verify_ls(orig_ls_path: Path, candidate_ls_path: Path) -> dict:
         + p.locate_utf8_and_uri_sites(raw, funcs)
         + [s for s in p.locate_stream_retry_sites(raw, funcs) if "unexpected EOF" in s[0]]
     )
-    assert len(base_sites) == 14, f"Expected 14 base sites (Sites 1..13), got {len(base_sites)}"
+    assert len(base_sites) in (13, 14), f"Expected 13 or 14 base sites (Sites 1..13), got {len(base_sites)}"
     for name, off, before, after in base_sites:
         cur = bytes(raw[off : off + len(before)])
         assert cur in (before, after), f"Unexpected bytes at {name}"
@@ -47,7 +47,7 @@ def build_and_verify_ls(orig_ls_path: Path, candidate_ls_path: Path) -> dict:
     hdr_raw = p.rva_to_raw(sections, hdr_rva)
     arr_va, arr_len, _ = struct.unpack_from("<QQQ", raw, hdr_raw)
     arr_raw = p.rva_to_raw(sections, arr_va - image_base)
-    assert arr_len in (6, 15), f"Unexpected retryableSubstrings length: {arr_len}"
+    assert arr_len in (6, 7, 15), f"Unexpected retryableSubstrings length: {arr_len}"
 
     entries = [list(struct.unpack_from("<QQ", raw, arr_raw + i * 16)) for i in range(arr_len)]
     pos_sre = raw.find(b"stream reading error: %w")
@@ -81,35 +81,31 @@ def build_and_verify_ls(orig_ls_path: Path, candidate_ls_path: Path) -> dict:
     raw[arr_raw : arr_raw + len(s14_patch)] = s14_patch
     patched_sites.append({"name": f"Site 14 retryableSubstrings ({arr_len} slots)", "offset": f"0x{arr_raw:x}"})
 
+    # Sites 15, 16, 19, 20, 21: 60s non-daemon background task timeout notification & AgentExecutor wakeup FSM fixes
     bg_sites = p.locate_bg_task_timeout_sites(raw, funcs)
-    assert len(bg_sites) == 2, f"Expected 2 bg task timeout sites, found {len(bg_sites)}"
+    assert len(bg_sites) in (2, 5), f"Expected 2 or 5 bg task timeout & wakeup FSM sites (Sites 15, 16, 19, 20, 21), found {len(bg_sites)}"
     for name, off, before, after in bg_sites:
         cur = bytes(raw[off : off + len(before)])
         assert cur in (before, after), f"Unexpected bytes at {name}"
         raw[off : off + len(after)] = after
         patched_sites.append({"name": name, "offset": f"0x{off:x}"})
 
-    ca_fn = "google3/third_party/jetski/codeassistclient/codeassistclient.RefreshingTokenSource"
-    assert ca_fn in funcs, f"{ca_fn} not found"
-    ca_off, ca_sz = funcs[ca_fn]
-    ca_bytes = raw[ca_off : ca_off + ca_sz]
-    idx_ca = ca_bytes.find(b"\x48\xb8" + NS_5_MIN)
-    if idx_ca == -1:
-        idx_ca = ca_bytes.find(b"\x48\xb8" + NS_20_MIN)
-    assert idx_ca != -1, "Site 17 mov rax, imm64 not found"
-    site17_off = ca_off + idx_ca + 2
-    raw[site17_off : site17_off + 8] = NS_20_MIN
-    patched_sites.append({"name": "Site 17 codeassistclient.RefreshingTokenSource 5m->20m", "offset": f"0x{site17_off:x}"})
+    rts_fn = next((k for k in funcs if k.endswith("/codeassistclient.RefreshingTokenSource")), None)
+    assert rts_fn is not None, "codeassistclient.RefreshingTokenSource not found"
+    rts_off, rts_sz = funcs[rts_fn]
+    rts_chunk = bytes(raw[rts_off : rts_off + rts_sz])
+    if rts_chunk.count(NS_5_MIN) > 0:
+        rts_patched = rts_chunk.replace(NS_5_MIN, NS_20_MIN)
+        assert len(rts_patched) == rts_sz
+        raw[rts_off : rts_off + rts_sz] = rts_patched
+    assert raw[rts_off : rts_off + rts_sz].count(NS_20_MIN) >= 1, "Site 17 20m refresh constant not verified"
+    patched_sites.append({"name": "Site 17 codeassistclient.RefreshingTokenSource 5m->20m", "offset": f"0x{rts_off:x}"})
 
-    oa_fn = "golang.org/x/oauth2.(*Token).expired"
-    if oa_fn in funcs:
-        oa_off, oa_sz = funcs[oa_fn]
-        oa_bytes = raw[oa_off : oa_off + oa_sz]
-        idx_oa = oa_bytes.find(b"\x48\xb8" + NS_10_SEC)
-        if idx_oa != -1:
-            site18_off = oa_off + idx_oa + 2
-            raw[site18_off : site18_off + 8] = NS_10_SEC
-            patched_sites.append({"name": "Site 18 oauth2.(*Token).expired 10s default verified", "offset": f"0x{site18_off:x}"})
+    exp_fn = next((k for k in funcs if k.endswith("/oauth2.(*Token).expired")), None)
+    if exp_fn:
+        exp_off, exp_sz = funcs[exp_fn]
+        assert raw[exp_off : exp_off + exp_sz].count(NS_10_SEC) == 1, "oauth2.(*Token).expired 10s default must remain untouched"
+        patched_sites.append({"name": "Site 18 oauth2.(*Token).expired 10s default verified", "offset": f"0x{exp_off:x}"})
 
     candidate_ls_path.parent.mkdir(parents=True, exist_ok=True)
     candidate_ls_path.write_bytes(raw)

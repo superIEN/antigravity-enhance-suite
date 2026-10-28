@@ -1,6 +1,6 @@
-# Antigravity Enhance Suite `v3.2.0`
+# Antigravity Enhance Suite `v3.3.0`
 
-一套面向 Google **Antigravity Desktop IDE**（支持 `v2.24.0` / `v2.25.0` / `v2.26.0+`）的全栈稳定性增强、百万级（1M）上下文窗口解锁、Electron 宿主加固、流式中文任务态势托盘、圆形上下文实时计量环与深度专业中文汉化套件。
+一套面向 Google **Antigravity Desktop IDE**（支持 `v2.24.0` / `v2.25.0` / `v2.26.0` / `v2.27.0` / `v2.28.0+`）的全栈稳定性增强、后台任务/子智能体响应式唤醒死锁双层根治、百万级（1M）上下文窗口解锁、Electron 宿主加固、流式中文任务态势托盘、圆形上下文实时计量环与深度专业中文汉化套件。
 
 > 版本演进与更新详情请参阅 [CHANGELOG.md](./CHANGELOG.md) 或仓库 [Releases](https://github.com/superIEN/antigravity-enhance-suite/releases) 页面。
 
@@ -8,22 +8,27 @@
 
 ## 核心特性概览
 
-1. **Go 语言服务端（`language_server.exe`）18 项二进制级增强（基于 `gopclntab` 符号精确定位）**
+1. **Go 语言服务端（`language_server_windows_x64.exe` / `language_server.exe`）21 项二进制级增强（基于 `gopclntab` 符号精确定位）**
    - **长连接防断流与 HTTP/2 KeepAlive 优化**：将 HTTP/2 `PingTimeout` 从 15s 放宽至 180s，`KeepAlive Interval` 从 60s 缩短至 15s，`ReadIdleTimeout` 从 300s 调整至 60s，大幅降低长思维链推理期间的断流概率。
+   - **后台任务/子智能体完成静默唤醒失败双层根治（`v3.3.0` 新增 Sites 19–21）**：
+     - **Site 19 (`(*AgentExecutor).transitionFromRunningToIdleOrClosed`)**：无论上一轮是否发生瞬态错误，当执行器回落至 `Idle` 时强制重启 `messageWatcher`，杜绝 `messageWatcher` 永久失活。
+     - **Site 20 (`(*AgentExecutor).startMessageWatcherLocked.func2`)**：新启动 `messageWatcher` 时立即执行首轮 `shouldWakeUp()` 初始扫描，防止启动窗口期已落盘消息被漏检。
+     - **Site 21 (`(*AgentExecutor).startMessageWatcherLocked.func2.1-range1`)**：将全部 `Idle` 状态变更通知透传给唤醒器 `selectgo`，消除常驻监听器抢占 `NotifyCh` 导致的二次后台任务唤醒信号丢失（支持跨版本 `e8 <disp32>` 相对调用位移自适应计算）。
    - **全模型 1M 上下文窗口解锁与截断上限抬升**：解锁 Gemini / Claude 全系列模型的 `1,000,000`（`0x0f4240`）Token 上下文上限，并将 `GetCheckpointConfig` 硬编码的 `200k` 历史截断阈值提升至 `1M`。
    - **多模态媒体压缩阈值提升（1MB -> 10MB）**：避免高分辨率学术图像、PDF 渲染页与长截图在上传前被过度降采样。
-   - **Windows 路径与控制台 UTF-8 修复**：修复 Windows 下 `file:///D:/...` 解析产生前导双反斜杠 `\\D:\...` 导致 `run_command` 报 `no such directory` 的底层缺陷（`fileuri.ToPath`），并将 `goterm.Get` 控制台代码页从 `CP936` 强制修正为 `UTF-8 (65001)`。
-   - **流式传输错误自动重试扩展（`IsRetryableAPIError`）**：将 `unexpected EOF`、`wsa`、`stream `、`connection`、`unauthenticated`、`http2:` 全面纳入可自动重试子串表（适配 `v2.26.0` 的 `strings.ToLower` 15 槽位表）。
+   - **Windows 路径与控制台 UTF-8 修复**：修复 Windows 下 `file:///D:/...` 解析产生前导双反斜杠 `\\D:\...` 导致 `run_command` 报 `no such directory` 的底层缺陷（`local.pathFromFile`），并将控制台流式 JSON 解析与 UTF-8 容错全面加固。
+   - **流式传输错误自动重试扩展（`IsRetryableAPIError`）**：将 `unexpected EOF`、`wsa`、`stream `、`connection`、`unauthenticated`、`http2:` 全面纳入可自动重试子串表（适配 `v2.26.0` / `v2.27.0` 的 `strings.ToLower` 15 槽位表）。
    - **非守护后台任务 60s 超时主动唤醒通知**：修复后台命令挂起不通知问题。
    - **CodeAssist OAuth2 Token 提前刷新窗口扩展（5m -> 20m）**：避免长耗时推理中途因 Token 过期引发 `UNAUTHENTICATED` 中断。
 
-2. **Electron 宿主（`app.asar`）8 项受控生命周期加固**
-   - **`storage.js`**：串行写入队列 + `.tmp.<pid>` 原子重命名，根治多窗口并发写入 `storage.json` 导致的配置文件损坏。
+2. **Electron 宿主（`app.asar`）8 项受控生命周期加固（全面兼容 `v2.27.0` HubWindow 架构）**
+   - **`storage.js`**：串行写入队列 + `.tmp.<pid>` 原子重命名，兼容 `v2.27.0` `getHubWindows()`，根治多窗口并发写入 `storage.json` 导致的配置文件损坏。
    - **`languageServer.js`**：子进程局部句柄追踪、启动超时有界终止（`SIGTERM -> 3s -> SIGKILL`）、`stderr` 1500ms 有界排空，以及确认端口冲突后自动回退动态端口 `0`。
-   - **`ipcHandlers.js` & `preload.js`**：主框架来源校验（`https://127.0.0.1:<port>`）、乐观并发控制（`expectedRevision`）与先写盘后广播的偏好同步服务。
-   - **`utils.js` & `main.js`**：基于 `SHA-256` 与字节长度双重核验的受控渲染层增强加载器（`attachControlledEnhancement`），支持端口变更无感热切换与 `DevTools` 解锁。
+   - **`ipcHandlers.js` & `preload.js`**：主框架来源校验（`https://127.0.0.1:<port>`）、兼容 `v2.27.0` `getTargetHubWindow()`、乐观并发控制（`expectedRevision`）与先写盘后广播的偏好同步服务。
+   - **`utils.js` & `main.js`**：基于 `SHA-256` 与字节长度双重核验的受控渲染层增强加载器（`attachControlledEnhancement`），兼容 `v2.27.0` `hubWindows.add(win)` 窗口注册表，支持端口变更无感热切换与 `DevTools` 解锁。
 
 3. **深度专业中文汉化与交互增强（`src/agy-enhance-loader.js`）**
+   - **前端响应式唤醒看门狗（`v3.3.0` 新增）**：每 `1500ms` 巡检当前活跃会话，若发现主会话已停止流式生成且存在已完成的后台任务或子智能体消息超过 `3.8s` 未触发新回合，自动通过同源 Connect-RPC 发送 `clientType: 2`（`SYSTEM_WAKEUP`）系统唤醒请求，实现前后端双保险。
    - **全界面深度专业中文汉化**：覆盖全部 13 个设置子页面、快捷键面板、命令面板、下拉菜单、输入框 `placeholder` 以及 45 个内置/科学计算技能描述；搭载基于 `MutationObserver` `addedNodes` 的 **0ms 同步瞬时汉化**，展开菜单无任何英文闪烁。
    - **原生设置无缝集成**：在 `设置 -> 外观 -> 界面主题` 卡片内原生提供 **「界面语言（中文专业 / English）」** 与 **「宽屏学术排版」** 开关，无任何遮挡顶栏的悬浮窗。
    - **流式呼吸提示与极简工具过程收束**：保留 `思考中 · Xs` 单行原生流式呼吸微光动画并屏蔽长篇思考草稿；将内层工具调用明细（`tool-group-collapsible`）默认收起为极简灰字（`查阅了文件 · 修改了文件`），杜绝底层文件名与工程列表刷屏。
@@ -40,11 +45,12 @@ antigravity-enhance-suite/
 ├── agy_suite.py                 # 统一 CLI 工具（inspect / install / rollback / hot-inject）
 ├── src/
 │   ├── __init__.py
-│   ├── patch_sites.py           # Go 二进制符号解析（gopclntab）与 18 处补丁定位器
-│   ├── build_ls.py              # language_server.exe 补丁构建与校验器
+│   ├── patch_sites.py           # Go 二进制符号解析（gopclntab）与 21 处补丁定位器
+│   ├── build_ls.py              # language_server_windows_x64.exe / language_server.exe 补丁构建与校验器
 │   ├── build_asar.py            # Electron app.asar 宿主补丁构建与 SHA-256 块校验器
-│   ├── agy-enhance-loader.js    # 渲染层深度专业汉化、态势托盘与圆形上下文计量环运行时
+│   ├── agy-enhance-loader.js    # 渲染层深度专业汉化、响应式唤醒看门狗、态势托盘与圆形上下文计量环运行时
 │   └── hot_inject.py            # 基于 Chrome DevTools Protocol (CDP) 的在线热注入工具
+├── CHANGELOG.md
 ├── LICENSE
 └── README.md
 ```
@@ -67,7 +73,7 @@ python agy_suite.py inspect
 ```bash
 python agy_suite.py install --hot-inject
 ```
-> 安装器会自动将官方原版 `app.asar` 与 `language_server.exe` 备份至 `~/.gemini/agy-enhance/app.asar.orig_<version>.bak` 与 `language_server.exe.orig_<version>.bak`，随后原子替换生产文件，并通过 CDP 将前端增强热注入到当前已打开的 Antigravity 窗口中。
+> 安装器会自动将官方原版 `app.asar` 与 `language_server` 备份至 `~/.gemini/agy-enhance/app.asar.orig_<version>.bak` 与 `language_server.exe.orig_<version>.bak`，随后替换生产文件，并通过 CDP 将前端增强热注入到当前已打开的 Antigravity 窗口中。
 
 ### 3. 仅对已运行窗口执行前端热更新
 ```bash
@@ -81,7 +87,7 @@ python agy_suite.py rollback
 
 ---
 
-## `language_server.exe` 二进制补丁清单（18 Sites）
+## `language_server_windows_x64.exe` / `language_server.exe` 二进制补丁清单（21 Sites）
 
 | 编号 | 目标函数 / 符号 | 原始值 | 增强值 | 作用说明 |
 | :--- | :--- | :--- | :--- | :--- |
@@ -92,13 +98,16 @@ python agy_suite.py rollback
 | Site 5–6 | `defaultConversationalCascadeConfig` | `200,000` | `1,000,000` | 级联会话规划与执行上下文上限解锁至 1M |
 | Site 7 | `utils.GetCheckpointConfig` | `200,000` | `1,000,000` | 解除 Claude / 通用模型 200k 检查点强制截断上限 |
 | Site 8–10 | `media_compression` | `1 MB` | `10 MB` | 多模态图片/PDF 页面无损传输阈值提升至 10MB |
-| Site 11 | `fileuri.ToPath` | `\\D:\...` | `D:\...` | 修复 Windows 盘符 URI 前导双反斜杠导致命令执行失败 |
-| Site 12 | `goterm.Get` | `CP936 (936)` | `UTF-8 (65001)` | 修复中文 Windows 终端输出乱码 |
+| Site 11 | `local.pathFromFile` | `\\D:\...` | `D:\...` | 修复 Windows 盘符 URI 前导双反斜杠导致命令执行失败 |
+| Site 12 | `json.(*Decoder).parseString` | 严格报错 | UTF-8/UTF-16 容错 | 修复流式 JSON 块边界与非配对代理项导致的中断 |
 | Site 13 | `utils.IsRetryableAPIError` | 不含 `unexpected EOF` | 纳入重试 | 流式读取 `unexpected EOF` 自动无缝重试 |
 | Site 14 | `retryableSubstrings` (15 slots) | 窄匹配 | 宽匹配 (`wsa`, `stream `, `connection`, `unauthenticated`, `http2:`) | 全面覆盖网络抖动与瞬时鉴权抖动自动重试 |
-| Site 15–16 | `RunCommandHandler.runTaskListeners` / `runCommand` | 无上限等待 | `60s` 通知上限 | 防止后台命令状态监听无限挂起 |
+| Site 15–16 | `RunCommandHandler.runTaskListeners` / `runCommand` / `runningCommand.waitInBackground` | 无上限等待 | `60s` 通知上限 | 防止后台命令状态监听无限挂起（兼容 `v2.28.0` `oneharness` 架构） |
 | Site 17 | `codeassistclient.RefreshingTokenSource` | `5m` | `20m` | OAuth2 Token 提前 20 分钟主动刷新 |
 | Site 18 | `oauth2.(*Token).expired` | `10s` | `10s` (核验保留) | 保持标准 OAuth2 10 秒过期缓冲不被误改 |
+| Site 19 | `(*AgentExecutor).transitionFromRunningToIdleOrClosed` | 异常时不重启监听 | 回落 `Idle` 必重启监听 | 消除瞬态错误后 `messageWatcher` 永久失活 |
+| Site 20 | `(*AgentExecutor).startMessageWatcherLocked.func2` | 条件跳过首轮扫描 | 强制立即执行首轮 `shouldWakeUp` | 消除监听器启动窗口期已入队消息漏检 |
+| Site 21 | `(*AgentExecutor).startMessageWatcherLocked.func2.1-range1` | 常驻监听吞掉 `NotifyCh` | 透传全部 `Idle` 状态变更唤醒 | 消除多个后台任务/子智能体连续完成时的信号吞没死锁 |
 
 ---
 

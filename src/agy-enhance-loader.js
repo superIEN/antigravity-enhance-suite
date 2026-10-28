@@ -3005,6 +3005,135 @@
   let llmSummaryInFlight = false;
   let activeLlmSummaryAbortCtrl = null;
 
+  // Reactive Wakeup Watchdog state per conversation (prevents hung background tasks / subagents from leaving main conversation stuck in IDLE)
+  const wakeupWatchdogByConvo = new Map();
+  let wakeupRpcInFlight = false;
+
+  function triggerNativeSystemWakeupRpc(cid, reason) {
+    if (disposed || !globalPrefs.enabled || !cid || wakeupRpcInFlight) return;
+    if (typeof window.fetch !== 'function') return;
+
+    const csrf =
+      window.__APP_CONFIG__?.csrfToken ||
+      (document.cookie ? document.cookie.split('; ').find((a) => a.startsWith('csrfToken='))?.split('=')[1] : '') ||
+      '';
+    if (!csrf) return;
+
+    wakeupRpcInFlight = true;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+
+    (async () => {
+      try {
+        await window.fetch(
+          `${window.location.origin}/exa.language_server_pb.LanguageServerService/SendAgentMessage`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Connect-Protocol-Version': '1',
+              'x-codeium-csrf-token': csrf
+            },
+            body: JSON.stringify({
+              recipient: cid,
+              senderId: 'system',
+              content: `[System Wakeup Watchdog: ${reason}] Background task or subagent status has updated while the main conversation was idle. Please check current status and continue.`
+            }),
+            signal: ctrl.signal
+          }
+        );
+      } catch (e) {
+      } finally {
+        clearTimeout(timer);
+        wakeupRpcInFlight = false;
+      }
+    })();
+  }
+
+  function evaluateReactiveWakeupWatchdog(cid, totalStepsCount, activeBgCount, pendingMsgCount, mainExecutorRunning, isFullyIdle) {
+    if (!cid || disposed || !globalPrefs.enabled) return;
+    const now = Date.now();
+    let rec = wakeupWatchdogByConvo.get(cid);
+    if (!rec) {
+      rec = {
+        lastStepsCount: totalStepsCount,
+        lastStepChangeTs: now,
+        hadActiveBgWhileMainIdle: !mainExecutorRunning && (activeBgCount > 0 || isFullyIdle === false),
+        bgFinishedEdgeTs: 0,
+        pendingMsgFirstSeenTs: 0,
+        lastWakeupSentTs: 0,
+        wakeupCount: 0
+      };
+      wakeupWatchdogByConvo.set(cid, rec);
+      return;
+    }
+
+    if (totalStepsCount !== rec.lastStepsCount || mainExecutorRunning) {
+      rec.lastStepsCount = totalStepsCount;
+      rec.lastStepChangeTs = now;
+      if (mainExecutorRunning) {
+        rec.hadActiveBgWhileMainIdle = false;
+        rec.bgFinishedEdgeTs = 0;
+        rec.pendingMsgFirstSeenTs = 0;
+      }
+    }
+
+    const waitingOnBgWhileMainIdle = !mainExecutorRunning && (activeBgCount > 0 || isFullyIdle === false);
+    if (rec.hadActiveBgWhileMainIdle && !waitingOnBgWhileMainIdle && !mainExecutorRunning) {
+      rec.bgFinishedEdgeTs = now;
+    }
+    if (waitingOnBgWhileMainIdle) {
+      rec.hadActiveBgWhileMainIdle = true;
+    } else if (mainExecutorRunning) {
+      rec.hadActiveBgWhileMainIdle = false;
+    }
+
+    if (!mainExecutorRunning && pendingMsgCount > 0) {
+      if (!rec.pendingMsgFirstSeenTs) rec.pendingMsgFirstSeenTs = now;
+    } else {
+      rec.pendingMsgFirstSeenTs = 0;
+    }
+
+    // Never send wakeup if the main executor loop is actively running or waiting for user approval button
+    if (mainExecutorRunning || realAgentState === 'WAITING') {
+      return;
+    }
+
+    // Enforce a minimum 45s cooldown between watchdog wakeup signals for the same conversation
+    if (rec.lastWakeupSentTs && now - rec.lastWakeupSentTs < 45000) {
+      return;
+    }
+
+    const mainIdleDurationMs = now - rec.lastStepChangeTs;
+
+    // Condition 1: Undelivered pending messages sitting in AgentState while main executor has been idle > 5s
+    if (pendingMsgCount > 0 && rec.pendingMsgFirstSeenTs && now - rec.pendingMsgFirstSeenTs > 5000 && mainIdleDurationMs > 5000) {
+      rec.lastWakeupSentTs = now;
+      rec.pendingMsgFirstSeenTs = now;
+      rec.wakeupCount += 1;
+      triggerNativeSystemWakeupRpc(cid, 'undelivered_pending_message');
+      return;
+    }
+
+    // Condition 2: Background task or subagent finished while main executor was idle, and main executor stayed idle > 6s without starting a new turn
+    if (rec.bgFinishedEdgeTs && now - rec.bgFinishedEdgeTs > 6000 && mainIdleDurationMs > 6000) {
+      rec.lastWakeupSentTs = now;
+      rec.bgFinishedEdgeTs = 0;
+      rec.hadActiveBgWhileMainIdle = false;
+      rec.wakeupCount += 1;
+      triggerNativeSystemWakeupRpc(cid, 'background_work_completed');
+      return;
+    }
+
+    // Condition 3: Background task or subagent still hanging while main executor has been sitting idle for > 65s without advancing steps
+    if (waitingOnBgWhileMainIdle && mainIdleDurationMs > 65000) {
+      rec.lastWakeupSentTs = now;
+      rec.lastStepChangeTs = now;
+      rec.wakeupCount += 1;
+      triggerNativeSystemWakeupRpc(cid, 'background_work_65s_check');
+    }
+  }
+
   function loadPersistedLlmSummaryCache() {
     try {
       const raw = window.localStorage.getItem(LLM_SUMMARY_STORAGE_KEY);
@@ -3311,6 +3440,10 @@
     const seenStepObjs = new Set();
     const seenRuntimeKeys = new Set();
     let totalStepsCount = 0;
+    let providerBgTaskCount = 0;
+    let providerPendingMsgCount = 0;
+    let providerExecStatus = null;
+    let providerFullyIdle = null;
 
     const av = activeCv.querySelector ? activeCv.querySelector('[data-testid="autoscroll-viewport"]') : null;
     if (av) {
@@ -3319,6 +3452,17 @@
       if (provider && typeof provider.getState === 'function') {
         const st = provider.getState();
         totalStepsCount = Number(st?.trajectorySlice?.totalStepsLength || 0);
+        if (st?.executorLoopStatus !== undefined) providerExecStatus = st.executorLoopStatus;
+        if (st?.fullyIdle !== undefined) providerFullyIdle = st.fullyIdle;
+        if (Array.isArray(st?.backgroundTasks)) {
+          providerBgTaskCount += st.backgroundTasks.length;
+        }
+        if (Array.isArray(st?.activeSubagents)) {
+          providerBgTaskCount += st.activeSubagents.length;
+        }
+        if (Array.isArray(st?.pendingMessages)) {
+          providerPendingMsgCount = st.pendingMessages.length;
+        }
         const sliceSteps = st?.trajectorySlice?.stepsInSlice || [];
         for (const s of sliceSteps) {
           if (s && !seenStepObjs.has(s)) {
@@ -3402,6 +3546,24 @@
       realAgentState === 'RUNNING' ||
       realAgentState === 'THINKING' ||
       activeRuntimes.length > 0;
+
+    // Evaluate Reactive Wakeup Watchdog for hung background tasks / subagents / undelivered messages
+    const mergedSnap = cid ? mergeBufferedConversationState(cid) : null;
+    const effExecStatus = providerExecStatus ?? mergedSnap?.status ?? null;
+    const effFullyIdle = providerFullyIdle ?? mergedSnap?.fullyIdle ?? null;
+    const mainExecutorRunning =
+      effExecStatus === 2 ||
+      effExecStatus === 'EXECUTOR_LOOP_STATUS_RUNNING' ||
+      realAgentState === 'THINKING';
+
+    evaluateReactiveWakeupWatchdog(
+      cid,
+      totalStepsCount || allSteps.length,
+      activeRuntimes.length + providerBgTaskCount,
+      providerPendingMsgCount,
+      mainExecutorRunning,
+      effFullyIdle
+    );
 
     // 3. Use real LLM mission summarization (via GetModelResponse MODEL_PLACEHOLDER_M18) with instant cache
     const sig = `${Math.floor((totalStepsCount || allSteps.length) / 3)}:${isRunningNow ? 'run' : 'idle'}`;
@@ -4208,6 +4370,7 @@
     readyPromise: initPromise,
     isDisposed: () => disposed,
     getAgentState: () => realAgentState,
+    getWakeupWatchdogState: () => Object.fromEntries(wakeupWatchdogByConvo.entries()),
     dispose
   };
   window.__AGY_ENHANCE_CLEANUP__ = dispose;

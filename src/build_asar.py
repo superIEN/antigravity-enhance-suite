@@ -41,7 +41,7 @@ def patch_storage_js(code: str) -> str:
     assert old_ctor in code, "storage.js constructor anchor not found"
     code = code.replace(old_ctor, new_ctor, 1)
 
-    old_update = """    async updateItems(changes) {
+    old_update_v226 = """    async updateItems(changes) {
         try {
             const currentItems = await this.getRawItems();
             for (const [key, value] of Object.entries(changes)) {
@@ -69,6 +69,11 @@ def patch_storage_js(code: str) -> str:
             throw e;
         }
     }"""
+
+    old_update_v227 = old_update_v226.replace(
+        "const windows = electron_1.BrowserWindow.getAllWindows();",
+        "const windows = (0, utils_1.getHubWindows)();",
+    )
 
     new_update = """    async updateItems(changes) {
         const op = this._writeQueue.then(() => this._doUpdateItems(changes));
@@ -99,7 +104,7 @@ def patch_storage_js(code: str) -> str:
             const tmpPath = this.storagePath + '.tmp.' + process.pid;
             await fs.writeFile(tmpPath, JSON.stringify(currentItems, null, 2), 'utf-8');
             await fs.rename(tmpPath, this.storagePath);
-            const windows = electron_1.BrowserWindow.getAllWindows();
+            const windows = typeof utils_1 !== 'undefined' && typeof utils_1.getHubWindows === 'function' ? (0, utils_1.getHubWindows)() : electron_1.BrowserWindow.getAllWindows();
             for (const win of windows) {
                 if (!win.isDestroyed()) {
                     win.webContents.send('storage:changed', changes);
@@ -112,13 +117,26 @@ def patch_storage_js(code: str) -> str:
             throw e;
         }
     }"""
-    assert old_update in code, "storage.js updateItems anchor not found"
-    return code.replace(old_update, new_update, 1)
+    if old_update_v227 in code:
+        return code.replace(old_update_v227, new_update, 1)
+    assert old_update_v226 in code, "storage.js updateItems anchor not found"
+    return code.replace(old_update_v226, new_update, 1)
 
 
 def patch_ipc_handlers_js(code: str) -> str:
-    old_overlay = """    electron_1.ipcMain.handle('window:set-title-bar-overlay', async (_event, options) => {
+    old_overlay_v226 = """    electron_1.ipcMain.handle('window:set-title-bar-overlay', async (_event, options) => {
         const win = electron_1.BrowserWindow.getFocusedWindow() || electron_1.BrowserWindow.getAllWindows()[0];
+        if (win && process.platform === 'win32') {
+            win.setTitleBarOverlay({
+                color: options.color,
+                symbolColor: options.symbolColor,
+                height: 30,
+            });
+        }
+    });"""
+
+    old_overlay_v227 = """    electron_1.ipcMain.handle('window:set-title-bar-overlay', async (_event, options) => {
+        const win = getTargetHubWindow();
         if (win && process.platform === 'win32') {
             win.setTitleBarOverlay({
                 color: options.color,
@@ -325,8 +343,10 @@ def patch_ipc_handlers_js(code: str) -> str:
         }
     });"""
 
-    assert old_overlay in code, "ipcHandlers.js window:set-title-bar-overlay anchor not found"
-    return code.replace(old_overlay, new_overlay, 1)
+    if old_overlay_v227 in code:
+        return code.replace(old_overlay_v227, new_overlay, 1)
+    assert old_overlay_v226 in code, "ipcHandlers.js window:set-title-bar-overlay anchor not found"
+    return code.replace(old_overlay_v226, new_overlay, 1)
 
 
 def patch_preload_js(code: str) -> str:
@@ -443,8 +463,8 @@ function createWindow(url, storageManager) {{
     assert old_create in code, "utils.js createWindow anchor not found"
     code = code.replace(old_create, new_create, 1)
 
-    old_load = "    void win.loadURL(url);\n    return win;"
-    new_load = "    attachControlledEnhancement(win);\n    void win.loadURL(url);\n    return win;"
+    old_load = "    void win.loadURL(url);"
+    new_load = "    attachControlledEnhancement(win);\n    void win.loadURL(url);"
     assert old_load in code, "utils.js win.loadURL anchor not found"
     return code.replace(old_load, new_load, 1)
 
@@ -797,7 +817,7 @@ function terminateChildBounded(child, graceMs = 3000) {
 
 def patch_main_js(code: str) -> str:
     """Fix Round 4 Section III.8: Only reload windows matching WINDOW_ORIGIN; skip non-LS windows."""
-    old_port_cb = """            onPortChanged: (newPort) => {
+    old_port_cb_v226 = """            onPortChanged: (newPort) => {
                 const newUrl = `${constants_1.WINDOW_ORIGIN}:${newPort}/`;
                 console.log(`[Auto-Restart] Port changed! Reloading all windows with URL: ${newUrl}`);
                 // Apply cert trust
@@ -810,11 +830,17 @@ def patch_main_js(code: str) -> str:
                 }
             },"""
 
+    old_port_cb_v227 = old_port_cb_v226.replace(
+        "const windows = electron_1.BrowserWindow.getAllWindows();",
+        "const windows = (0, utils_1.getHubWindows)();",
+    )
+
     new_port_cb = """            onPortChanged: (newPort) => {
                 (0, languageServer_1.setupLocalCertTrust)();
                 const lsGen = global.__agyLsGeneration || 1;
                 if (!HEADLESS) {
-                    for (const w of electron_1.BrowserWindow.getAllWindows()) {
+                    const allWins = typeof utils_1 !== 'undefined' && typeof utils_1.getHubWindows === 'function' ? (0, utils_1.getHubWindows)() : electron_1.BrowserWindow.getAllWindows();
+                    for (const w of allWins) {
                         if (!w.isDestroyed()) {
                             w.webContents.send('agy:preferences-changed', { lsGeneration: lsGen });
                         }
@@ -827,7 +853,7 @@ def patch_main_js(code: str) -> str:
                 global.__agyLastPort = newPort;
                 console.log(`[Auto-Restart] Port changed to ${newPort}! Updating registered AGY windows...`);
                 if (!HEADLESS) {
-                    const windows = electron_1.BrowserWindow.getAllWindows();
+                    const windows = typeof utils_1 !== 'undefined' && typeof utils_1.getHubWindows === 'function' ? (0, utils_1.getHubWindows)() : electron_1.BrowserWindow.getAllWindows();
                     for (const win of windows) {
                         if (win.isDestroyed()) continue;
                         try {
@@ -847,8 +873,10 @@ def patch_main_js(code: str) -> str:
                 }
             },"""
 
-    assert old_port_cb in code, "main.js onPortChanged anchor not found"
-    return code.replace(old_port_cb, new_port_cb, 1)
+    if old_port_cb_v227 in code:
+        return code.replace(old_port_cb_v227, new_port_cb, 1)
+    assert old_port_cb_v226 in code, "main.js onPortChanged anchor not found"
+    return code.replace(old_port_cb_v226, new_port_cb, 1)
 
 
 def build_candidate_asar(orig_asar_path: Path, loader_path: Path, candidate_asar_path: Path, staging_js_dir: Path) -> dict:

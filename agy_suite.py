@@ -44,12 +44,23 @@ def read_asar_version(asar_path: Path) -> str:
     return pkg.get("version", "unknown")
 
 
+def resolve_ls_binaries(agy_dir: Path) -> list[Path]:
+    bin_dir = agy_dir / "resources" / "bin"
+    bins = []
+    for name in ("language_server_windows_x64.exe", "language_server.exe"):
+        p = bin_dir / name
+        if p.exists():
+            bins.append(p)
+    return bins
+
+
 def cmd_inspect(args):
     agy_dir = Path(args.agy_dir)
     asar_path = agy_dir / "resources" / "app.asar"
-    ls_path = agy_dir / "resources" / "bin" / "language_server.exe"
-    if not asar_path.exists() or not ls_path.exists():
+    ls_bins = resolve_ls_binaries(agy_dir)
+    if not asar_path.exists() or not ls_bins:
         raise FileNotFoundError(f"Antigravity binaries not found under {agy_dir}")
+    ls_path = ls_bins[0]
 
     ver = read_asar_version(asar_path)
     raw_ls = ls_path.read_bytes()
@@ -78,9 +89,10 @@ def cmd_install(args):
     runtime_dir.mkdir(parents=True, exist_ok=True)
 
     prod_asar = agy_dir / "resources" / "app.asar"
-    prod_ls = agy_dir / "resources" / "bin" / "language_server.exe"
-    if not prod_asar.exists() or not prod_ls.exists():
+    ls_bins = resolve_ls_binaries(agy_dir)
+    if not prod_asar.exists() or not ls_bins:
         raise FileNotFoundError(f"Antigravity installation not found at {agy_dir}")
+    prod_ls = ls_bins[0]
 
     ver = read_asar_version(prod_asar)
     orig_asar_bak = runtime_dir / f"app.asar.orig_{ver}.bak"
@@ -102,32 +114,64 @@ def cmd_install(args):
     ls_receipt = build_ls.build_and_verify_ls(orig_ls_bak, cand_ls)
     asar_receipt = build_asar.build_candidate_asar(orig_asar_bak, target_loader, cand_asar, staging_js)
 
+    asar_deployed_live = False
+    asar_warning = None
     tmp_prod_asar = prod_asar.parent / f"app.asar.tmp.{os.getpid()}"
     shutil.copy2(cand_asar, tmp_prod_asar)
-    os.replace(tmp_prod_asar, prod_asar)
+    try:
+        os.replace(tmp_prod_asar, prod_asar)
+        asar_deployed_live = True
+    except PermissionError:
+        old_asar = prod_asar.parent / f"app.asar.old.{os.getpid()}"
+        try:
+            if old_asar.exists():
+                old_asar.unlink()
+            os.rename(prod_asar, old_asar)
+            os.replace(tmp_prod_asar, prod_asar)
+            asar_deployed_live = True
+        except PermissionError as exc:
+            if old_asar.exists() and not prod_asar.exists():
+                try:
+                    os.rename(old_asar, prod_asar)
+                except OSError:
+                    pass
+            if tmp_prod_asar.exists():
+                tmp_prod_asar.unlink()
+            asar_warning = (
+                f"app.asar is locked by a running Antigravity process ({exc}); "
+                f"verified candidate staged at {cand_asar}. Close Antigravity and re-run install, "
+                f"or pass --hot-inject for immediate live UI injection."
+            )
+            print(f"[WARN] {asar_warning}", file=sys.stderr)
+            if getattr(args, "strict_asar", False):
+                raise RuntimeError(asar_warning) from exc
 
     ls_deployed_live = False
-    tmp_prod_ls = prod_ls.parent / f"language_server.exe.tmp.{os.getpid()}"
-    shutil.copy2(cand_ls, tmp_prod_ls)
-    try:
-        os.replace(tmp_prod_ls, prod_ls)
-        ls_deployed_live = True
-    except PermissionError:
-        old_ls = prod_ls.parent / f"language_server.exe.old.{os.getpid()}"
-        if old_ls.exists():
-            old_ls.unlink()
-        os.rename(prod_ls, old_ls)
-        os.replace(tmp_prod_ls, prod_ls)
-        ls_deployed_live = True
+    for target_ls in ls_bins:
+        tmp_prod_ls = target_ls.parent / f"{target_ls.name}.tmp.{os.getpid()}"
+        shutil.copy2(cand_ls, tmp_prod_ls)
+        try:
+            os.replace(tmp_prod_ls, target_ls)
+            ls_deployed_live = True
+        except PermissionError:
+            old_ls = target_ls.parent / f"{target_ls.name}.old.{os.getpid()}"
+            if old_ls.exists():
+                old_ls.unlink()
+            os.rename(target_ls, old_ls)
+            os.replace(tmp_prod_ls, target_ls)
+            ls_deployed_live = True
 
     tx_receipt = {
         "timestamp": datetime.datetime.now().isoformat(),
         "version": ver,
         "runtime_dir": str(runtime_dir),
+        "asar_deployed_live": asar_deployed_live,
         "ls_deployed_live": ls_deployed_live,
         "ls_receipt": ls_receipt,
         "asar_receipt": asar_receipt,
     }
+    if asar_warning:
+        tx_receipt["asar_warning"] = asar_warning
     if args.hot_inject:
         tx_receipt["hot_inject"] = hot_inject.hot_inject_running_windows(target_loader)
 
@@ -141,7 +185,10 @@ def cmd_rollback(args):
     agy_dir = Path(args.agy_dir)
     runtime_dir = Path(args.runtime_dir)
     prod_asar = agy_dir / "resources" / "app.asar"
-    prod_ls = agy_dir / "resources" / "bin" / "language_server.exe"
+    ls_bins = resolve_ls_binaries(agy_dir)
+    if not ls_bins:
+        raise FileNotFoundError(f"Language server binaries not found under {agy_dir}")
+    prod_ls = ls_bins[0]
     ver = read_asar_version(prod_asar)
 
     orig_asar_bak = runtime_dir / f"app.asar.orig_{ver}.bak"
@@ -150,12 +197,13 @@ def cmd_rollback(args):
         raise FileNotFoundError(f"Baseline backups for v{ver} not found in {runtime_dir}")
 
     shutil.copy2(orig_asar_bak, prod_asar)
-    try:
-        shutil.copy2(orig_ls_bak, prod_ls)
-    except PermissionError:
-        old_ls = prod_ls.parent / f"language_server.exe.old.{os.getpid()}"
-        os.rename(prod_ls, old_ls)
-        shutil.copy2(orig_ls_bak, prod_ls)
+    for target_ls in ls_bins:
+        try:
+            shutil.copy2(orig_ls_bak, target_ls)
+        except PermissionError:
+            old_ls = target_ls.parent / f"{target_ls.name}.old.{os.getpid()}"
+            os.rename(target_ls, old_ls)
+            shutil.copy2(orig_ls_bak, target_ls)
 
     print(json.dumps({
         "status": "rolled_back",
@@ -185,6 +233,7 @@ def main():
     p_inst.add_argument("--agy-dir", default=str(default_agy_dir()))
     p_inst.add_argument("--runtime-dir", default=str(default_runtime_dir()))
     p_inst.add_argument("--hot-inject", action="store_true", help="Also hot-inject into running AGY windows via CDP")
+    p_inst.add_argument("--strict-asar", action="store_true", help="Abort immediately if app.asar is locked by a running process")
 
     p_rb = sub.add_parser("rollback", help="Restore clean official baseline backups")
     p_rb.add_argument("--agy-dir", default=str(default_agy_dir()))
