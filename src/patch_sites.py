@@ -436,4 +436,94 @@ def locate_bg_task_timeout_sites(data: bytes, funcs: dict):
                 ))
                 break
 
+    # Site 16 (v2.28.0+): (*runningCommand).waitInBackground non-daemon 60s default NotificationTimeoutSeconds wakeup
+    wib_key = next((k for k in funcs if k.endswith("/tools.(*runningCommand).waitInBackground")), None)
+    if wib_key:
+        wib_off, wib_sz = funcs[wib_key]
+        wib_bytes = data[wib_off : wib_off + wib_sz]
+        wib_orig = bytes.fromhex(
+            "488b8c2420020000488b59088403488b31807e2800740c31d2bb01000000e98d000000"
+            "488b164885d2747e488b92980000004885d27472803a007464488b53384869d200ca9a3b"
+            "4885d27f0931d2bb01000000eb5b4889d0"
+        )
+        wib_patch = bytes.fromhex(
+            "488b8c2420020000488b5908807b30000f8593000000488b53384885d27f09ba3c000000"
+            "488953384869c200ca9a3beb27" + ("90" * 39)
+        )
+        pos_wib = wib_bytes.find(wib_orig)
+        if pos_wib == -1:
+            pos_wib = wib_bytes.find(wib_patch)
+        if pos_wib != -1:
+            sites.append((
+                "runningCommand.waitInBackground (v2.28.0 non-daemon 60s default timeout wakeup)",
+                wib_off + pos_wib,
+                wib_orig,
+                wib_patch,
+            ))
+
+    # Site 19: (*AgentExecutor).transitionFromRunningToIdleOrClosed (always restart message watcher on Idle even after transient turn error)
+    tr_key = next((k for k in funcs if k.endswith("/agentexecutor.(*AgentExecutor).transitionFromRunningToIdleOrClosed")), None)
+    if tr_key:
+        tr_off, tr_sz = funcs[tr_key]
+        tr_bytes = data[tr_off : tr_off + tr_sz]
+        tr_orig = bytes.fromhex("440fb68424c90000004584c00f84cc000000")
+        tr_patch = bytes.fromhex("440fb68424c90000004584c0e9cd00000090")
+        pos_tr = tr_bytes.find(tr_orig)
+        if pos_tr == -1:
+            pos_tr = tr_bytes.find(tr_patch)
+        if pos_tr != -1:
+            sites.append((
+                "AgentExecutor.transitionFromRunningToIdleOrClosed (always restart message watcher on Idle)",
+                tr_off + pos_tr,
+                tr_orig,
+                tr_patch,
+            ))
+
+    # Site 20: (*AgentExecutor).startMessageWatcherLocked.func2 (always run initial shouldWakeUp check immediately)
+    mw2_key = next((k for k in funcs if k.endswith("/agentexecutor.(*AgentExecutor).startMessageWatcherLocked.func2")), None)
+    if mw2_key:
+        mw2_off, mw2_sz = funcs[mw2_key]
+        mw2_bytes = data[mw2_off : mw2_off + mw2_sz]
+        mw2_orig = bytes.fromhex("0fb64c243384c97441488b8424a8000000")
+        mw2_patch = bytes.fromhex("0fb64c243384c99090488b8424a8000000")
+        pos_mw2 = mw2_bytes.find(mw2_orig)
+        if pos_mw2 == -1:
+            pos_mw2 = mw2_bytes.find(mw2_patch)
+        if pos_mw2 != -1:
+            sites.append((
+                "AgentExecutor.startMessageWatcherLocked.func2 (force immediate shouldWakeUp check)",
+                mw2_off + pos_mw2,
+                mw2_orig,
+                mw2_patch,
+            ))
+
+    # Site 21: (*AgentExecutor).startMessageWatcherLocked.func2.1-range1 (forward all Idle AgentState updates to wake selectgo when permanent watcher consumes NotifyCh)
+    mwr_key = next((k for k in funcs if k.endswith("/agentexecutor.(*AgentExecutor).startMessageWatcherLocked.func2.1-range1")), None)
+    if mwr_key:
+        mwr_off, mwr_sz = funcs[mwr_key]
+        mwr_bytes = data[mwr_off : mwr_off + mwr_sz]
+        mwr_tail_orig = bytes.fromhex("488b4c2438803900752184c0741d")
+        mwr_patch = bytes.fromhex("b001909090488b4c2438803900909084c0741d")
+        pos_tail = mwr_bytes.find(mwr_tail_orig)
+        if pos_tail >= 5 and mwr_bytes[pos_tail - 5] == 0xE8:
+            pos_mwr = pos_tail - 5
+            mwr_orig = bytes(mwr_bytes[pos_mwr : pos_mwr + len(mwr_patch)])
+        else:
+            pos_mwr = mwr_bytes.find(mwr_patch)
+            is_run_key = next((k for k in funcs if k.endswith(".(*AgentState).IsRunning")), None)
+            if is_run_key and pos_mwr != -1:
+                disp32 = funcs[is_run_key][0] - (mwr_off + pos_mwr + 5)
+                call_orig = b"\xe8" + struct.pack("<i", disp32)
+            else:
+                # Version-guarded fallback for v2.28.0 x64 layout if symbol is stripped
+                call_orig = bytes.fromhex("e8a7bb70ff")
+            mwr_orig = call_orig + mwr_tail_orig
+        if pos_mwr != -1:
+            sites.append((
+                "AgentExecutor.startMessageWatcherLocked.func2.1-range1 (eliminate NotifyCh steal drop on Idle state updates)",
+                mwr_off + pos_mwr,
+                mwr_orig,
+                mwr_patch,
+            ))
+
     return sites

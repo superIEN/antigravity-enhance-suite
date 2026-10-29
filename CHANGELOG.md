@@ -4,6 +4,24 @@
 
 ---
 
+## [v3.3.0] - 2026-10-29
+
+### 新增与优化 (Added & Changed)
+- **官方 Antigravity `v2.27.0` 与 `v2.28.0` 全栈兼容适配**：
+  - 适配 `v2.28.0` `google3/third_party/oneharness/internal/tools/tools.(*runningCommand).waitInBackground` 后台任务管理重构，新增 88 字节非守护后台命令默认 60 秒 `time.NewTimer` 超时主动唤醒补丁（Site 16），同时完整保留 `v2.24.0–v2.27.0` 的 `(*RunCommandTool).runCommand` 向下兼容分支；
+  - 适配 `v2.27.0` / `v2.28.0` Electron 宿主 `dist/utils.js`、`dist/storage.js`、`dist/ipcHandlers.js` 与 `dist/main.js` 新增的 `hubWindows` 窗口管理架构（`getHubWindows()`、`getTargetHubWindow()` 与 `hubWindows.add(win)`）及 `v2.28.0` 新增的 `scriptJail` / `webviewSecurityState` / `guestDebugger` 模块（共 `1,085` 条目），向下无缝兼容 `v2.24.0–v2.26.0`；
+  - 适配 `v2.27.0` 双二进制与 `v2.28.0` 单 `language_server.exe` 部署结构；
+  - 将 Site 21（`startMessageWatcherLocked.func2.1-range1`）二进制匹配升级为跨版本相对 `call` 位移（`e8 <disp32>`）自适应计算，同时兼容 `v2.26.0`、`v2.27.0` 与 `v2.28.0+`。
+- **长任务后台 Task / 子智能体静默唤醒失败双层根治（Sites 19–21 + 前端看门狗）**：
+  - **后端 `AgentExecutor` 状态机三处补丁（Sites 19–21）**：
+    - `Site 19 ((*AgentExecutor).transitionFromRunningToIdleOrClosed)`：无论上一轮是否发生瞬态错误，回落至 `Idle` 时强制重启 `messageWatcher`；
+    - `Site 20 ((*AgentExecutor).startMessageWatcherLocked.func2)`：启动 `messageWatcher` 时强制立即执行首轮 `shouldWakeUp()` 检查，防止切换窗口期已入队通知漏检；
+    - `Site 21 ((*AgentExecutor).startMessageWatcherLocked.func2.1-range1)`：透传全部 `Idle` 状态变更信号以唤醒 `selectgo`，彻底根治常驻监听器抢占 `NotifyCh` 导致的第 2 个及后续后台任务完成静默死锁。
+  - **前端响应式唤醒看门狗（`agy-enhance-loader.js`）**：
+    - 新增 `evaluateReactiveWakeupWatchdog` 与 `triggerNativeSystemWakeupRpc`，当侦测到主会话停止流式输出且存在已完成的后台任务或子智能体消息超过 `3.8s` 未唤醒时，自动通过同源 Connect-RPC 发送 `clientType: 2`（`SYSTEM_WAKEUP`）唤醒请求并附带防重入锁。
+
+---
+
 ## [v3.2.0] - 2026-10-25
 
 ### 新增与优化 (Added & Changed)
