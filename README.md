@@ -1,6 +1,6 @@
-# Antigravity Enhance Suite `v3.3.0`
+# Antigravity Enhance Suite `v3.4.0`
 
-一套面向 Google **Antigravity Desktop IDE**（支持 `v2.24.0` / `v2.25.0` / `v2.26.0` / `v2.27.0` / `v2.28.0+`）的全栈稳定性增强、后台任务/子智能体响应式唤醒死锁双层根治、百万级（1M）上下文窗口解锁、Electron 宿主加固、流式中文任务态势托盘、圆形上下文实时计量环与深度专业中文汉化套件。
+一套面向 Google **Antigravity Desktop IDE**（支持 **macOS Apple Silicon `arm64`** 与 **Windows `x86_64`**，`v2.24.0` / `v2.25.0` / `v2.26.0` / `v2.27.0` / `v2.28.0+`）的全栈稳定性增强、桌面端 1M（`983,040` Tokens）上下文窗口真实解锁、后台任务/子智能体响应式唤醒死锁双层根治、会话媒体 `18 MB` 自适应预算守护、防退化 Harness 四大工程护栏与深度专业中文汉化套件。
 
 > 版本演进与更新详情请参阅 [CHANGELOG.md](./CHANGELOG.md) 或仓库 [Releases](https://github.com/superIEN/antigravity-enhance-suite/releases) 页面。
 
@@ -8,33 +8,35 @@
 
 ## 核心特性概览
 
-1. **Go 语言服务端（`language_server_windows_x64.exe` / `language_server.exe`）21 项二进制级增强（基于 `gopclntab` 符号精确定位）**
-   - **长连接防断流与 HTTP/2 KeepAlive 优化**：将 HTTP/2 `PingTimeout` 从 15s 放宽至 180s，`KeepAlive Interval` 从 60s 缩短至 15s，`ReadIdleTimeout` 从 300s 调整至 60s，大幅降低长思维链推理期间的断流概率。
-   - **后台任务/子智能体完成静默唤醒失败双层根治（`v3.3.0` 新增 Sites 19–21）**：
-     - **Site 19 (`(*AgentExecutor).transitionFromRunningToIdleOrClosed`)**：无论上一轮是否发生瞬态错误，当执行器回落至 `Idle` 时强制重启 `messageWatcher`，杜绝 `messageWatcher` 永久失活。
-     - **Site 20 (`(*AgentExecutor).startMessageWatcherLocked.func2`)**：新启动 `messageWatcher` 时立即执行首轮 `shouldWakeUp()` 初始扫描，防止启动窗口期已落盘消息被漏检。
-     - **Site 21 (`(*AgentExecutor).startMessageWatcherLocked.func2.1-range1`)**：将全部 `Idle` 状态变更通知透传给唤醒器 `selectgo`，消除常驻监听器抢占 `NotifyCh` 导致的二次后台任务唤醒信号丢失（支持跨版本 `e8 <disp32>` 相对调用位移自适应计算）。
-   - **全模型 1M 上下文窗口解锁与截断上限抬升**：解锁 Gemini / Claude 全系列模型的 `1,000,000`（`0x0f4240`）Token 上下文上限，并将 `GetCheckpointConfig` 硬编码的 `200k` 历史截断阈值提升至 `1M`。
-   - **多模态媒体压缩阈值提升（1MB -> 10MB）**：避免高分辨率学术图像、PDF 渲染页与长截图在上传前被过度降采样。
-   - **Windows 路径与控制台 UTF-8 修复**：修复 Windows 下 `file:///D:/...` 解析产生前导双反斜杠 `\\D:\...` 导致 `run_command` 报 `no such directory` 的底层缺陷（`local.pathFromFile`），并将控制台流式 JSON 解析与 UTF-8 容错全面加固。
-   - **流式传输错误自动重试扩展（`IsRetryableAPIError`）**：将 `unexpected EOF`、`wsa`、`stream `、`connection`、`unauthenticated`、`http2:` 全面纳入可自动重试子串表（适配 `v2.26.0` / `v2.27.0` 的 `strings.ToLower` 15 槽位表）。
-   - **非守护后台任务 60s 超时主动唤醒通知**：修复后台命令挂起不通知问题。
-   - **CodeAssist OAuth2 Token 提前刷新窗口扩展（5m -> 20m）**：避免长耗时推理中途因 Token 过期引发 `UNAUTHENTICATED` 中断。
+1. **Go 语言服务端（macOS `language_server` / Windows `language_server*.exe`）22 项（29 处位点）二进制级增强**
+   - **桌面端 1M（`983,040` Tokens）上下文真实解锁与 200k 模型零回退保护（`v3.4.0` 新增 Site 22）**：
+     - 针对桌面端 `applyFeatureProviderCheckpointOverrideConfig` 强行注入 `MaxTokenLimit = 256,000` 导致每 ~250k 自动触发有损压缩（`<CONTEXT_SUMMARY>`）的根因，在 `utils.ClampCheckpointConfigForModelInfo`（`Site 22`）植入 9 指令 `csel` 补丁：对 1M 模型精确解锁至 **`983,040` Tokens**（`1,048,576 - 65,536`），对 `200,000` 模型（Claude 系列）在 `w3 == 0` 与 `w3 == 256,000` 下均保持 **`200,000` Tokens** 零回退。
+     - 配套提供 `src/upgrade_db_context_limit.py`，基于结构化 Protobuf Wire 语法树解析、在线备份与 `BEGIN IMMEDIATE` 事务，将存量 `.db` 会话的 `executor_metadata`（`$.10.2.5`）与 `gen_metadata`（`$.1.9.10.4`）从 `256,000` 等长无损升级至 `983,040`。
+   - **长连接防断流与 HTTP/2 KeepAlive 优化（Sites 1–3）**：显式开启自定义 `TLSClientConfig` 下的 HTTP/2 协议协商，配置 `SendPing=20s` / `PingTimeout=80s`（stdlib）与 `ReadIdle=25s` / `PingTimeout=50s`（`go_net/http2`），消除 120s 静默断流（`unexpected EOF`）。
+   - **后台任务/子智能体完成静默唤醒失败双层根治（Sites 15–16, 19–21）**：
+     - **Sites 15–16**：非守护后台命令默认 60s `NotificationTimeoutSeconds` 主动唤醒（兼容 `v2.28.0` `waitInBackground`）；
+     - **Site 19 (`(*AgentExecutor).transitionFromRunningToIdleOrClosed`)**：回落至 `Idle` 时强制重查 `messageTracker` 收件箱；
+     - **Site 20 (`(*AgentExecutor).startMessageWatcherLocked.func2`)**：解除 `GetCascadeAutoRun()` 外层门控，确保 `NotifyCh()` 唤醒必扫描；
+     - **Site 21 (`(*AgentExecutor).startMessageWatcherLocked.func2.1-range1`)**：穿透 `SubagentsAndTasksIdle` 与 `*prevIdle` 边沿锁，消除并发后台任务完成时的唤醒信号丢失。
+   - **多模态媒体压缩、流式 UTF-8 容错、15 槽位自动重试与 OAuth2 20m 预刷新（Sites 7–14, 17–18）**。
 
-2. **Electron 宿主（`app.asar`）8 项受控生命周期加固（全面兼容 `v2.27.0` HubWindow 架构）**
-   - **`storage.js`**：串行写入队列 + `.tmp.<pid>` 原子重命名，兼容 `v2.27.0` `getHubWindows()`，根治多窗口并发写入 `storage.json` 导致的配置文件损坏。
-   - **`languageServer.js`**：子进程局部句柄追踪、启动超时有界终止（`SIGTERM -> 3s -> SIGKILL`）、`stderr` 1500ms 有界排空，以及确认端口冲突后自动回退动态端口 `0`。
-   - **`ipcHandlers.js` & `preload.js`**：主框架来源校验（`https://127.0.0.1:<port>`）、兼容 `v2.27.0` `getTargetHubWindow()`、乐观并发控制（`expectedRevision`）与先写盘后广播的偏好同步服务。
-   - **`utils.js` & `main.js`**：基于 `SHA-256` 与字节长度双重核验的受控渲染层增强加载器（`attachControlledEnhancement`），兼容 `v2.27.0` `hubWindows.add(win)` 窗口注册表，支持端口变更无感热切换与 `DevTools` 解锁。
+2. **Electron 宿主（`app.asar`）8 项受控生命周期加固（兼容 macOS & Windows `v2.24.0–v2.28.0+`）**
+   - **`storage.js`**：串行写入队列 + `.tmp.<pid>` 原子重命名 + 损坏 JSON 容错恢复，兼容 `getHubWindows()`。
+   - **`languageServer.js`**：子进程局部句柄追踪、`timer` TDZ 修复、`child.kill('SIGKILL')` 有界终止、`stderr` 1500ms 有界排空与端口冲突自动回退动态端口 `0`。
+   - **`ipcHandlers.js` & `preload.js`**：主框架来源与实时 `getLsPort()` 端口绑定校验（`isTrustedAgySender`）、`validateWindowPatch` 白名单、乐观并发控制（`expectedRevision`）与先写盘后广播的偏好同步服务。
+   - **`utils.js` & `main.js`**：基于 `SHA-256`、字节长度与 `utils_js_sha256` 回执自绑定的受控增强加载器（`attachControlledEnhancement`）。
 
-3. **深度专业中文汉化与交互增强（`src/agy-enhance-loader.js`）**
-   - **前端响应式唤醒看门狗（`v3.3.0` 新增）**：每 `1500ms` 巡检当前活跃会话，若发现主会话已停止流式生成且存在已完成的后台任务或子智能体消息超过 `3.8s` 未触发新回合，自动通过同源 Connect-RPC 发送 `clientType: 2`（`SYSTEM_WAKEUP`）系统唤醒请求，实现前后端双保险。
-   - **全界面深度专业中文汉化**：覆盖全部 13 个设置子页面、快捷键面板、命令面板、下拉菜单、输入框 `placeholder` 以及 45 个内置/科学计算技能描述；搭载基于 `MutationObserver` `addedNodes` 的 **0ms 同步瞬时汉化**，展开菜单无任何英文闪烁。
-   - **原生设置无缝集成**：在 `设置 -> 外观 -> 界面主题` 卡片内原生提供 **「界面语言（中文专业 / English）」** 与 **「宽屏学术排版」** 开关，无任何遮挡顶栏的悬浮窗。
-   - **流式呼吸提示与极简工具过程收束**：保留 `思考中 · Xs` 单行原生流式呼吸微光动画并屏蔽长篇思考草稿；将内层工具调用明细（`tool-group-collapsible`）默认收起为极简灰字（`查阅了文件 · 修改了文件`），杜绝底层文件名与工程列表刷屏。
-   - **流式中文任务态势托盘（Mission HUD，默认单行折叠）**：作为原生文档流元素挂载在最外层输入容器（`div[data-testid="agent-input-box"]`）顶部，彻底避开输入框内部的截图扩展栏；默认以 `30px` 单行收起态展示呼吸脉冲状态灯、当前任务总目标概括与进度（`X / Y 展开 ▴`），点击可按需展开分步清单。
-   - **悬停/点击锁定式圆形上下文计量环**：在输入框右下角发送按钮旁内嵌 22×22 圆形进度环，实时计量当前上下文占用比例与 Token 数；默认仅显示进度圆环，**鼠标悬停时展开精确百分比与 Token 读数，移开即收起，点击可固定常显，点击外部区域取消固定**。
-   - **工作区选择器净化与防溢出**：自动过滤 Google 内部无效占位项（`CitC Workspace` / `Cog Workspace`）及 `%TEMP%\(agy_|ocr_)` 临时目录，并限制下拉列表最大高度以保证底部 `Create` 按钮在常规窗口尺寸下始终可见。
+3. **深度专业中文汉化、集合差分看门狗与媒体预算守护（`src/agy-enhance-loader.js` & `src/compress_tempmedia.py`）**
+   - **按 ID 集合差分（Set-Diff）+ 双源 1:1 归一的响应式唤醒看门狗**：精确捕获同数量任务替换（`{bg-a, bg-b} -> {bg-b, bg-c}`），折叠 `backgroundTasksUpdate`/`pendingAgentMessagesUpdate` 与 `globalThis.__asu` 稀疏补丁，将 Provider 行与运行中 `invokeSubagent` 步骤 1:1 归一为 `step:N`，并在 Mission HUD 顶栏右侧提供 `#m-wd`（`后台 N` / `等待接管` / `已接管`）实时状态胶囊。
+   - **`WeakMap` React Fiber 缓存（含空值命中）与 250ms HUD 合并节流**。
+   - **`983,040` 上下文计量环（`#agy-ctx-ring-pill`）、思考流单句定性摘要（含 `nextToolDesc` 推导）与 `<subagent_message>` 裸标签净化**。
+   - **会话媒体库 `18 MB` Base64 二阶段自适应预算压缩器（`src/compress_tempmedia.py`）**：基于 `_bak_orig` 无损备份执行自适应重编码，带 `fcntl.flock` 目录锁、白底 Alpha 合成、EXIF 旋转校正与非图视频媒体诚实核算。
+
+4. **AGY 防退化 Harness 四大工程护栏与 `ArchUnit 0.3` 强契约桥接（`guardrails/`）**
+   - **护栏 1（`read_auditor.py`）**：唯一 `transcript_full.jsonl` 正文源、三方言截断头解析、按行窗 `(L1, L2)` 字节闭合、`read_snapshots.jsonl` 改后旧读失效与 `output.txt` Fail-Closed。
+   - **护栏 2（`citation_verifier.py`）**：`/compact` 后目标源码重读核验、Python AST 与 JS 词法剥离注释/字符串后的定义级符号 + 行号区间核验、三维反漂移诊断。
+   - **护栏 3（`substance_verifier.py`）**：不可变正常入口登记表（`entrypoint_registry.json`）、Python/JS 双语种 AST `Call` 与活分发注册表可达性追踪（拦截 `boundSpecialistServices` 死字典）、`run-and-attest` 宿主日志 `ATTESTED_EVIDENCE_NONCE` 交叉验签与派发信封反诱导扫描。
+   - **护栏 4（`archunit_macos_bridge.py` & `harness_guardrails.py`）**：macOS `codesign` 与规范源 SHA256 验真、`objects`/`empirical_evidence`/`verdict` 强映射读回、独审实例身份锁与独审 `transcript_full.jsonl` 真读反审、以及 `technical_gate_passed` 与 `triad_complete` 严格分列。
 
 ---
 
@@ -42,14 +44,30 @@
 
 ```text
 antigravity-enhance-suite/
-├── agy_suite.py                 # 统一 CLI 工具（inspect / install / rollback / hot-inject）
+├── agy_suite.py                          # 统一 CLI 工具（inspect / install / rollback / hot-inject）
 ├── src/
 │   ├── __init__.py
-│   ├── patch_sites.py           # Go 二进制符号解析（gopclntab）与 21 处补丁定位器
-│   ├── build_ls.py              # language_server_windows_x64.exe / language_server.exe 补丁构建与校验器
-│   ├── build_asar.py            # Electron app.asar 宿主补丁构建与 SHA-256 块校验器
-│   ├── agy-enhance-loader.js    # 渲染层深度专业汉化、响应式唤醒看门狗、态势托盘与圆形上下文计量环运行时
-│   └── hot_inject.py            # 基于 Chrome DevTools Protocol (CDP) 的在线热注入工具
+│   ├── patch_sites.py                    # Go 二进制符号解析（gopclntab）与跨平台 Sites 1–22 定位器
+│   ├── patch_sites_macos_v36.py          # macOS ARM64 Sites 1–22 独立检查/补丁工具
+│   ├── build_ls.py                       # language_server(.exe) 补丁构建、Hardened Runtime/allow-jit 签名与校验器
+│   ├── build_asar.py                     # Electron app.asar 宿主补丁构建与 SHA-256 块校验器
+│   ├── asar_inject_and_rollback.py       # macOS app.asar 隔离构建、原子安装、CDP 热注入与多目标回滚工具
+│   ├── agy-enhance-loader.js             # 渲染层深度汉化、集合差分看门狗、#m-wd 态势托盘与 983k 上下文环运行时
+│   ├── hot_inject.py                     # 基于 Chrome DevTools Protocol (CDP) 的跨平台在线热注入工具
+│   ├── upgrade_db_context_limit.py       # SQLite (.db) 结构化 Protobuf Wire 树 256k -> 983,040 无损升级器
+│   └── compress_tempmedia.py             # 会话级 18MB Base64 二阶段自适应预算媒体压缩与守护工具
+├── guardrails/
+│   ├── harness_guardrails.py             # AGY 防退化四大护栏与 ArchUnit 0.3 强契约统一正常入口 CLI
+│   ├── read_auditor.py                   # 护栏 1：会话真读、三方言截断与改后失效核验器
+│   ├── citation_verifier.py              # 护栏 2：压缩后反漂移与 AST 定义级双向引文验真器
+│   ├── substance_verifier.py             # 护栏 3：防旁路死字典假接线、AST 调用图与受控进程实证验收器
+│   ├── archunit_macos_bridge.py          # 护栏 4：ArchUnit 0.3 macOS 强契约桥接与独审真读反审器
+│   └── entrypoint_registry.json          # 不可变正常入口登记表
+├── tests/
+│   ├── test_harness_guardrails.py        # 护栏 1–4 全套 12 组正反例单元测试
+│   ├── verify_loader_sandbox.mjs         # 桌面增强 Loader 9 大项 + Grok 10 项极限并发探针沙箱自验套件
+│   └── fixtures/
+│       └── real_transcript_headers_fixture.jsonl
 ├── CHANGELOG.md
 ├── LICENSE
 └── README.md
@@ -59,55 +77,37 @@ antigravity-enhance-suite/
 
 ## 快速开始
 
-### 环境要求
-- Windows 10 / 11（64-bit）
-- Python 3.10+
-- Node.js（用于 `node --check` 静态语法校验）
-
 ### 1. 检查当前 Antigravity 安装状态与补丁位点
 ```bash
-python agy_suite.py inspect
+python3 agy_suite.py inspect
 ```
 
-### 2. 一键构建、校验并安装全部增强补丁
+### 2. 一键构建、校验并安装全部增强补丁（支持运行态热注入）
 ```bash
-python agy_suite.py install --hot-inject
+python3 agy_suite.py install --hot-inject
 ```
-> 安装器会自动将官方原版 `app.asar` 与 `language_server` 备份至 `~/.gemini/agy-enhance/app.asar.orig_<version>.bak` 与 `language_server.exe.orig_<version>.bak`，随后替换生产文件，并通过 CDP 将前端增强热注入到当前已打开的 Antigravity 窗口中。
 
-### 3. 仅对已运行窗口执行前端热更新
+### 3. 将存量桌面端会话 `.db` 从 `256,000` 结构化无损升级至 `983,040` Tokens
 ```bash
-python agy_suite.py hot-inject
+python3 src/upgrade_db_context_limit.py --all --upgrade-to 983040
 ```
 
-### 4. 一键无损回滚至官方原版
+### 4. 会话媒体库体积巡检与 `18 MB` Base64 自适应预算瘦身
 ```bash
-python agy_suite.py rollback
+python3 src/compress_tempmedia.py --check
+python3 src/compress_tempmedia.py
 ```
 
----
+### 5. 运行桌面增强沙箱与防退化 Harness 护栏测试套件
+```bash
+node tests/verify_loader_sandbox.mjs
+python3 -m unittest discover -s tests -v
+```
 
-## `language_server_windows_x64.exe` / `language_server.exe` 二进制补丁清单（21 Sites）
-
-| 编号 | 目标函数 / 符号 | 原始值 | 增强值 | 作用说明 |
-| :--- | :--- | :--- | :--- | :--- |
-| Site 1 | `http2.(*Transport).PingTimeout` | `15s` | `180s` | 防止高负载流式生成期间因 H2 Ping 超时断流 |
-| Site 2 | `net.(*Dialer).KeepAlive` | `60s` | `15s` | 提高 TCP 保活探测频率，防止 NAT/代理静默掐断 |
-| Site 3 | `http2.(*Transport).ReadIdleTimeout` | `300s` | `60s` | 更早发现僵尸连接并触发无感重连 |
-| Site 4 | `HydrateModelEntryDefaults` | `200,000` | `1,000,000` | 默认模型上下文窗口提升至 1M Tokens |
-| Site 5–6 | `defaultConversationalCascadeConfig` | `200,000` | `1,000,000` | 级联会话规划与执行上下文上限解锁至 1M |
-| Site 7 | `utils.GetCheckpointConfig` | `200,000` | `1,000,000` | 解除 Claude / 通用模型 200k 检查点强制截断上限 |
-| Site 8–10 | `media_compression` | `1 MB` | `10 MB` | 多模态图片/PDF 页面无损传输阈值提升至 10MB |
-| Site 11 | `local.pathFromFile` | `\\D:\...` | `D:\...` | 修复 Windows 盘符 URI 前导双反斜杠导致命令执行失败 |
-| Site 12 | `json.(*Decoder).parseString` | 严格报错 | UTF-8/UTF-16 容错 | 修复流式 JSON 块边界与非配对代理项导致的中断 |
-| Site 13 | `utils.IsRetryableAPIError` | 不含 `unexpected EOF` | 纳入重试 | 流式读取 `unexpected EOF` 自动无缝重试 |
-| Site 14 | `retryableSubstrings` (15 slots) | 窄匹配 | 宽匹配 (`wsa`, `stream `, `connection`, `unauthenticated`, `http2:`) | 全面覆盖网络抖动与瞬时鉴权抖动自动重试 |
-| Site 15–16 | `RunCommandHandler.runTaskListeners` / `runCommand` / `runningCommand.waitInBackground` | 无上限等待 | `60s` 通知上限 | 防止后台命令状态监听无限挂起（兼容 `v2.28.0` `oneharness` 架构） |
-| Site 17 | `codeassistclient.RefreshingTokenSource` | `5m` | `20m` | OAuth2 Token 提前 20 分钟主动刷新 |
-| Site 18 | `oauth2.(*Token).expired` | `10s` | `10s` (核验保留) | 保持标准 OAuth2 10 秒过期缓冲不被误改 |
-| Site 19 | `(*AgentExecutor).transitionFromRunningToIdleOrClosed` | 异常时不重启监听 | 回落 `Idle` 必重启监听 | 消除瞬态错误后 `messageWatcher` 永久失活 |
-| Site 20 | `(*AgentExecutor).startMessageWatcherLocked.func2` | 条件跳过首轮扫描 | 强制立即执行首轮 `shouldWakeUp` | 消除监听器启动窗口期已入队消息漏检 |
-| Site 21 | `(*AgentExecutor).startMessageWatcherLocked.func2.1-range1` | 常驻监听吞掉 `NotifyCh` | 透传全部 `Idle` 状态变更唤醒 | 消除多个后台任务/子智能体连续完成时的信号吞没死锁 |
+### 6. 一键无损回滚至官方原版
+```bash
+python3 agy_suite.py rollback
+```
 
 ---
 

@@ -1,5 +1,10 @@
-"""Historical pattern locator only. No default paths, config/DB mutations or daemon."""
+"""Cross-Platform (Windows PE x86_64 & macOS Mach-O ARM64) Go Binary Symbol & Patch Site Locator."""
 import struct
+
+
+def is_macho_arm64(data: bytes) -> bool:
+    return len(data) >= 32 and data[:4] == b"\xcf\xfa\xed\xfe"
+
 
 def parse_pe_sections(data: bytes):
     pe_off = struct.unpack_from("<I", data, 0x3C)[0]
@@ -14,11 +19,38 @@ def parse_pe_sections(data: bytes):
         sections.append((rva, vsize, rawptr))
     return image_base, sections
 
+
+def parse_macho_sections(data: bytes):
+    sections = []
+    cursor = 32
+    ncmds = struct.unpack_from("<I", data, 16)[0]
+    for _ in range(ncmds):
+        kind, size = struct.unpack_from("<II", data, cursor)
+        if kind == 0x19:  # LC_SEGMENT_64
+            nsec = struct.unpack_from("<I", data, cursor + 64)[0]
+            for i in range(nsec):
+                name, seg, addr, length, offset = struct.unpack_from(
+                    "<16s16sQQI", data, cursor + 72 + 80 * i
+                )
+                sections.append(
+                    (
+                        name.rstrip(b"\x00").decode("utf-8", "ignore"),
+                        seg.rstrip(b"\x00").decode("utf-8", "ignore"),
+                        addr,
+                        length,
+                        offset,
+                    )
+                )
+        cursor += size
+    return sections
+
+
 def rva_to_raw(sections: list, target_rva: int):
     for rva, vsize, rawptr in sections:
         if rva <= target_rva < rva + vsize:
             return rawptr + (target_rva - rva)
     return None
+
 
 def raw_to_rva(sections: list, target_raw: int):
     for rva, vsize, rawptr in sections:
@@ -26,15 +58,40 @@ def raw_to_rva(sections: list, target_raw: int):
             return rva + (target_raw - rawptr)
     return None
 
-def parse_gopclntab(data: bytes):
-    pe_off = struct.unpack_from("<I", data, 0x3C)[0]
-    opt_sz = struct.unpack_from("<H", data, pe_off + 20)[0]
-    sec_off = pe_off + 24 + opt_sz
-    _, _, _, _, text_rptr = struct.unpack_from("<8sIIII", data, sec_off)
 
-    pos = data.find(b"\xf1\xff\xff\xff\x00\x00\x01\x08")
-    if pos == -1:
-        raise RuntimeError("Could not find Go .gopclntab magic in binary")
+def macho_va_to_raw(sections: list, target_va: int):
+    for _, _, addr, length, offset in sections:
+        if addr <= target_va < addr + length:
+            return offset + (target_va - addr)
+    return None
+
+
+def macho_raw_to_va(sections: list, target_raw: int):
+    for _, _, addr, length, offset in sections:
+        if offset <= target_raw < offset + length:
+            return addr + (target_raw - offset)
+    return None
+
+
+def parse_gopclntab(data: bytes):
+    if is_macho_arm64(data):
+        sections = parse_macho_sections(data)
+        text_sec = next((s for s in sections if s[0] == "__text"), None)
+        if not text_sec:
+            raise RuntimeError("Could not find __text section in Mach-O binary")
+        text_rptr = text_sec[4]
+        pos = data.find(b"\xf1\xff\xff\xff\x00\x00\x04\x08")
+        if pos == -1:
+            raise RuntimeError("Could not find Go ARM64 .gopclntab magic in Mach-O binary")
+    else:
+        pe_off = struct.unpack_from("<I", data, 0x3C)[0]
+        opt_sz = struct.unpack_from("<H", data, pe_off + 20)[0]
+        sec_off = pe_off + 24 + opt_sz
+        _, _, _, _, text_rptr = struct.unpack_from("<8sIIII", data, sec_off)
+        pos = data.find(b"\xf1\xff\xff\xff\x00\x00\x01\x08")
+        if pos == -1:
+            raise RuntimeError("Could not find Go .gopclntab magic in binary")
+
     nfunc, nfiles, textStart, funcnameOff, cuOff, filetabOff, pctabOff, pclnOff = struct.unpack_from(
         "<QQQQQQQQ", data, pos + 8
     )
@@ -50,25 +107,117 @@ def parse_gopclntab(data: bytes):
         funcs[fname] = (text_rptr + eoff, next_eoff - eoff)
     return funcs
 
+
+def _find_orig_or_patch(buf: bytes, orig: bytes, patch: bytes, start: int = 0) -> int:
+    pos = buf.find(orig, start)
+    if pos == -1:
+        pos = buf.find(patch, start)
+    return pos
+
+
 H2_PROTOCOLS_CTX = bytes.fromhex("4883b8c800000000")
-
 H2_PROTOCOLS_ORIG = bytes.fromhex("756e")
-
 H2_PROTOCOLS_PATCH = bytes.fromhex("9090")
 
 H2_PING_CTX = bytes.fromhex("48c7402000001000")
-
 H2_PING_ORIG = bytes.fromhex("904883784000907f0e48b900d6117e0300000048894840c3")
-
 H2_PING_PATCH_V4 = bytes.fromhex("48b900d6117e03000000488948404801c9488948389090c3")
-
 H2_PING_PATCH = bytes.fromhex("48b900c817a8040000004889483848c1e1024889484090c3")
 
 GONET_H2_ORIG = bytes.fromhex("c74010000010009048837828007f0e48b900d6117e0300000048894828c3")
-
 GONET_H2_PATCH = bytes.fromhex("c74010000010009048b900ba1dd205000000488948204801c948894828c3")
 
+ARM64_NOP = bytes.fromhex("1f2003d5")
+
+
 def locate_h2ping_sites(data: bytes, funcs: dict):
+    if is_macho_arm64(data):
+        sites = []
+        # 1. net/http.(*Transport).protocols (HTTP/2 enable with custom TLSClientConfig)
+        f1_off, f1_sz = funcs["net/http.(*Transport).protocols"]
+        f1_bytes = data[f1_off : f1_off + f1_sz]
+        # Context: ldr x1, [x0, #0xc8] (016440f9) followed by cbnz x1, +0x80 (210400b5)
+        ctx1 = bytes.fromhex("016440f9")
+        orig1 = bytes.fromhex("210400b5")
+        idx1 = f1_bytes.find(ctx1)
+        if idx1 == -1:
+            raise RuntimeError("Could not find TLSClientConfig check in ARM64 net/http.(*Transport).protocols")
+        sites.append(
+            ("net/http.(*Transport).protocols (HTTP/2 enable)", f1_off + idx1 + 4, orig1, ARM64_NOP)
+        )
+
+        # 2. net/http/internal/http2.setConfigDefaults (ReadIdle=20s, PingTimeout=80s)
+        f2_off, f2_sz = funcs["net/http/internal/http2.setConfigDefaults"]
+        f2_bytes = data[f2_off : f2_off + f2_sz]
+        stdlib_slots = [
+            (0x24, "050099d2", "stdlib-h2-idle-constant-0"),
+            (0x50, "e502b5f2", "stdlib-h2-idle-constant-1"),
+            (0x11C, "8500c0f2", "stdlib-h2-idle-constant-2"),
+        ]
+        for rel_off, patch_hex, label in stdlib_slots:
+            sites.append(
+                (
+                    f"net/http/internal/http2.setConfigDefaults ({label})",
+                    f2_off + rel_off,
+                    ARM64_NOP,
+                    bytes.fromhex(patch_hex),
+                )
+            )
+        stdlib_tail_orig = bytes.fromhex(
+            "012040f91f2003d53f0000f1ac00005401c09ad221c2aff26100c0f2012000f9c0035fd6"
+        )
+        stdlib_tail_patch = bytes.fromhex(
+            "1f2003d5018843a93f0000f12110859aa5f47ed35f0000f142c0859a018803a9c0035fd6"
+        )
+        pos_f2_tail = _find_orig_or_patch(f2_bytes, stdlib_tail_orig, stdlib_tail_patch)
+        if pos_f2_tail == -1:
+            raise RuntimeError("Could not find tail in ARM64 net/http/internal/http2.setConfigDefaults")
+        sites.append(
+            (
+                "net/http/internal/http2.setConfigDefaults (SendPing=20s, PingTimeout=80s)",
+                f2_off + pos_f2_tail,
+                stdlib_tail_orig,
+                stdlib_tail_patch,
+            )
+        )
+
+        # 3. go_net/http2.setConfigDefaults (ReadIdle=25s, PingTimeout=50s)
+        gn_key = next((k for k in funcs if k.endswith("/go_net/http2/http2.setConfigDefaults")), None)
+        if gn_key:
+            gn_off, gn_sz = funcs[gn_key]
+            gn_bytes = data[gn_off : gn_off + gn_sz]
+            gonet_slots = [
+                (0x10, "054097d2", "go-net-h2-idle-constant-0"),
+                (0xBC, "a543baf2", "go-net-h2-idle-constant-1"),
+            ]
+            for rel_off, patch_hex, label in gonet_slots:
+                sites.append(
+                    (
+                        f"go_net/http2.setConfigDefaults ({label})",
+                        gn_off + rel_off,
+                        ARM64_NOP,
+                        bytes.fromhex(patch_hex),
+                    )
+                )
+            gonet_tail_orig = bytes.fromhex(
+                "011440f91f2003d53f0000f1ac00005401c09ad221c2aff26100c0f2011400f9c0035fd6"
+            )
+            gonet_tail_patch = bytes.fromhex(
+                "a500c0f2010842a93f0000f12110859aa5f87fd35f0000f142c0859a010802a9c0035fd6"
+            )
+            pos_gn_tail = _find_orig_or_patch(gn_bytes, gonet_tail_orig, gonet_tail_patch)
+            if pos_gn_tail == -1:
+                raise RuntimeError("Could not find tail in ARM64 go_net/http2.setConfigDefaults")
+            sites.append(
+                (
+                    "go_net/http2.setConfigDefaults (ReadIdle=25s, PingTimeout=50s)",
+                    gn_off + pos_gn_tail,
+                    gonet_tail_orig,
+                    gonet_tail_patch,
+                )
+            )
+        return sites
+
     sites = []
     # Site 1: net/http.(*Transport).protocols
     f1_off, f1_sz = funcs["net/http.(*Transport).protocols"]
@@ -100,6 +249,7 @@ def locate_h2ping_sites(data: bytes, funcs: dict):
             sites.append(("go_net/http2.setConfigDefaults (ReadIdle=25s, PingTimeout=50s)", gn_off + pos_gn, GONET_H2_ORIG, GONET_H2_PATCH))
     return sites
 
+
 def locate_1m_context_sites(data: bytes, funcs: dict):
     sites = []
     chk_key = next((k for k in funcs if k.endswith("/utils.GetCheckpointConfig")), None)
@@ -108,6 +258,76 @@ def locate_1m_context_sites(data: bytes, funcs: dict):
         None,
     )
     gw_key = next((k for k in funcs if k.endswith(".modelEntryToModelDetails")), None)
+    hyd_key = next((k for k in funcs if k.endswith(".HydrateModelEntryDefaults")), None)
+
+    if is_macho_arm64(data):
+        if chk_key:
+            f_off, f_sz = funcs[chk_key]
+            f_bytes = data[f_off : f_off + f_sz]
+            cap_orig = bytes.fromhex("02009dd26200a0f2")
+            cap_patch = bytes.fromhex("020080d20202a0f2")
+            p1 = _find_orig_or_patch(f_bytes, cap_orig, cap_patch, 0)
+            if p1 != -1:
+                sites.append(("utils.GetCheckpointConfig (cap 256K -> 1M #1)", f_off + p1, cap_orig, cap_patch))
+                p2 = _find_orig_or_patch(f_bytes, cap_orig, cap_patch, p1 + len(cap_orig))
+                if p2 != -1:
+                    sites.append(("utils.GetCheckpointConfig (cap 256K -> 1M #2)", f_off + p2, cap_orig, cap_patch))
+
+            fb_orig = bytes.fromhex("03009dd26300a0f2")
+            fb_patch = bytes.fromhex("034888d2c301a0f2")
+            p_fb = _find_orig_or_patch(f_bytes, fb_orig, fb_patch)
+            if p_fb != -1:
+                sites.append(("utils.GetCheckpointConfig (fallback 256K -> 934,464)", f_off + p_fb, fb_orig, fb_patch))
+
+        if cas_key:
+            c_off, c_sz = funcs[cas_key]
+            c_bytes = data[c_off : c_off + c_sz]
+            kc_orig = bytes.fromhex("03a8c1f26300e0f2")
+            kc_patch = bytes.fromhex("0300c0f20302e0f2")
+            p_kc = _find_orig_or_patch(c_bytes, kc_orig, kc_patch)
+            if p_kc != -1:
+                sites.append(("GetDefaultConversationalCascadeConfig (knowledge 200K -> 1M)", c_off + p_kc, kc_orig, kc_patch))
+
+        if gw_key:
+            g_off, g_sz = funcs[gw_key]
+            g_bytes = data[g_off : g_off + g_sz]
+            gw_orig = bytes.fromhex("04a881d26400a0f2")
+            gw_patch = bytes.fromhex("040080d20402a0f2")
+            p_gw = _find_orig_or_patch(g_bytes, gw_orig, gw_patch)
+            if p_gw != -1:
+                sites.append(("gateway.modelEntryToModelDetails (default input 200K -> 1M)", g_off + p_gw, gw_orig, gw_patch))
+
+        if hyd_key:
+            h_off, h_sz = funcs[hyd_key]
+            h_bytes = data[h_off : h_off + h_sz]
+            hyd_orig = bytes.fromhex("06a881d26600a0f2")
+            hyd_patch = bytes.fromhex("060080d20602a0f2")
+            p_hyd = _find_orig_or_patch(h_bytes, hyd_orig, hyd_patch)
+            if p_hyd != -1:
+                sites.append(("gateway.HydrateModelEntryDefaults (default input 200K -> 1M)", h_off + p_hyd, hyd_orig, hyd_patch))
+
+        # Site 22: utils.ClampCheckpointConfigForModelInfo (983,040 for 1M, preserves 200,000 for 200k under w3 in {0, 256000})
+        clamp_key = next((k for k in funcs if k.endswith("/utils.ClampCheckpointConfigForModelInfo")), None)
+        if clamp_key:
+            cl_off, cl_sz = funcs[clamp_key]
+            cl_bytes = data[cl_off : cl_off + cl_sz]
+            cl_orig = bytes.fromhex("23010035231480b9048893d27f0004eb6c000054e3031faa02000014630004cb031000b9")
+            cl_prev_v360 = bytes.fromhex("65f84051bf0020716418407ac1000054241480b9844040d19f00036b4d000054041000b9")
+            cl_patch = bytes.fromhex("65f84051bf0020716418407ac1000054241480b9854040d19f004171a4c0841a041000b9")
+            p_cl = _find_orig_or_patch(cl_bytes, cl_orig, cl_patch)
+            if p_cl == -1:
+                p_cl = cl_bytes.find(cl_prev_v360)
+            if p_cl != -1:
+                sites.append(
+                    (
+                        "Site 22 utils.ClampCheckpointConfigForModelInfo (983,040 for 1M, preserves 200k)",
+                        cl_off + p_cl,
+                        cl_orig,
+                        cl_patch,
+                    )
+                )
+
+        return sites
 
     if chk_key:
         f_off, f_sz = funcs[chk_key]
@@ -168,7 +388,6 @@ def locate_1m_context_sites(data: bytes, funcs: dict):
             if pos4_25 != -1:
                 sites.append(("gateway.modelEntryToModelDetails (v2.25.0 default input 200K -> 1M)", g_off + pos4_25, gw25_orig, gw25_patch))
 
-    hyd_key = next((k for k in funcs if k.endswith(".HydrateModelEntryDefaults")), None)
     if hyd_key:
         h_off, h_sz = funcs[hyd_key]
         h_bytes = data[h_off : h_off + h_sz]
@@ -181,6 +400,7 @@ def locate_1m_context_sites(data: bytes, funcs: dict):
             sites.append(("gateway.HydrateModelEntryDefaults (v2.25.0 default input 200K -> 1M)", h_off + pos_hyd, hyd_orig, hyd_patch))
 
     return sites
+
 
 def locate_media_compression_sites(data: bytes, funcs: dict):
     sites = []
@@ -198,15 +418,26 @@ def locate_media_compression_sites(data: bytes, funcs: dict):
     if cm_key:
         cm_off, cm_sz = funcs[cm_key]
         cm_bytes = data[cm_off : cm_off + cm_sz]
-        png_orig = bytes.fromhex("49b8696d6167652f706e4c8b8c24e00000004d3901755041807908677549")
-        png_patch = bytes.fromhex("49b8696d6167652f706e4c8b8c24e00000004d390175504180790867eb49")
-        pos_png = cm_bytes.find(png_orig)
-        if pos_png == -1:
-            pos_png = cm_bytes.find(png_patch)
-        if pos_png != -1:
-            sites.append(("media.CompressMedia (oversized PNG -> native JPEG Q80)", cm_off + pos_png, png_orig, png_patch))
+        if is_macho_arm64(data):
+            # ARM64: at +0x388 inside media.CompressMedia: b.ne +0x3c (e1010054) -> b +0x120 (48000014)
+            png_arm_orig = bytes.fromhex("e1010054")
+            png_arm_patch = bytes.fromhex("48000014")
+            rel = 0x388
+            if cm_bytes[rel : rel + 4] in (png_arm_orig, png_arm_patch):
+                sites.append(
+                    ("media.CompressMedia (oversized PNG -> native JPEG Q80)", cm_off + rel, png_arm_orig, png_arm_patch)
+                )
+        else:
+            png_orig = bytes.fromhex("49b8696d6167652f706e4c8b8c24e00000004d3901755041807908677549")
+            png_patch = bytes.fromhex("49b8696d6167652f706e4c8b8c24e00000004d390175504180790867eb49")
+            pos_png = cm_bytes.find(png_orig)
+            if pos_png == -1:
+                pos_png = cm_bytes.find(png_patch)
+            if pos_png != -1:
+                sites.append(("media.CompressMedia (oversized PNG -> native JPEG Q80)", cm_off + pos_png, png_orig, png_patch))
 
     return sites
+
 
 def locate_utf8_and_uri_sites(data: bytes, funcs: dict):
     sites = []
@@ -215,6 +446,20 @@ def locate_utf8_and_uri_sites(data: bytes, funcs: dict):
     if ps_key:
         ps_off, ps_sz = funcs[ps_key]
         ps_bytes = data[ps_off : ps_off + ps_sz]
+        if is_macho_arm64(data):
+            u8_arm_orig = bytes.fromhex("00350054")
+            pos_u8 = _find_orig_or_patch(ps_bytes, u8_arm_orig, ARM64_NOP, 0x220)
+            if pos_u8 != -1 and pos_u8 <= 0x230:
+                sites.append(
+                    ("json.(*Decoder).parseString (tolerate invalid UTF-8 in stream)", ps_off + pos_u8, u8_arm_orig, ARM64_NOP)
+                )
+            sr_arm_orig = bytes.fromhex("a0140054")
+            pos_sr = _find_orig_or_patch(ps_bytes, sr_arm_orig, ARM64_NOP, 0x678)
+            if pos_sr != -1 and pos_sr <= 0x688:
+                sites.append(
+                    ("json.(*Decoder).parseString (tolerate unpaired UTF-16 surrogate)", ps_off + pos_sr, sr_arm_orig, ARM64_NOP)
+                )
+            return sites
 
         u8_orig = bytes.fromhex("81fefdff0000750f0f1f4400004883ff010f8409090000")
         u8_patch = bytes.fromhex("81fefdff0000750f0f1f4400004883ff01909090909090")
@@ -256,6 +501,7 @@ def locate_utf8_and_uri_sites(data: bytes, funcs: dict):
 
     return sites
 
+
 def locate_stream_retry_sites(data: bytes, funcs: dict):
     sites = []
     ir_key = next((k for k in funcs if k.endswith("/utils.IsRetryableAPIError")), None)
@@ -263,6 +509,94 @@ def locate_stream_retry_sites(data: bytes, funcs: dict):
         return sites
     ir_off, ir_sz = funcs[ir_key]
     ir_bytes = data[ir_off : ir_off + ir_sz]
+
+    if is_macho_arm64(data):
+        sections = parse_macho_sections(data)
+        # Site 13: unexpected EOF suffix match
+        s13_arm_orig = bytes.fromhex("42f00c91630480d2")
+        s13_arm_patch = bytes.fromhex("42440d91c30180d2")
+        pos13 = _find_orig_or_patch(ir_bytes, s13_arm_orig, s13_arm_patch)
+        if pos13 != -1:
+            sites.append(
+                (
+                    "utils.IsRetryableAPIError ('unexpected EOF' mid-stream auto-retry)",
+                    ir_off + pos13,
+                    s13_arm_orig,
+                    s13_arm_patch,
+                )
+            )
+
+        # Site 14: retryableSubstrings table in Mach-O __DATA
+        fn_va = macho_raw_to_va(sections, ir_off)
+        arr_raw = None
+        arr_len = 0
+        for i in range(0, len(ir_bytes) - 8, 4):
+            w1, w2 = struct.unpack_from("<II", ir_bytes, i)
+            if (w1 & 0x9F000000) == 0x90000000 and (w2 & 0xFF800000) == 0x91000000:
+                rd1 = w1 & 0x1F
+                rn2 = (w2 >> 5) & 0x1F
+                if rd1 != rn2:
+                    continue
+                immlo = (w1 >> 29) & 0x3
+                immhi = (w1 >> 5) & 0x7FFFF
+                imm = ((immhi << 2) | immlo) << 12
+                if imm & (1 << 32):
+                    imm -= 1 << 33
+                page = ((fn_va + i) & ~0xFFF) + imm
+                add_imm = (w2 >> 10) & 0xFFF
+                hdr_va = page + add_imm
+                hdr_raw = macho_va_to_raw(sections, hdr_va)
+                if hdr_raw is not None and hdr_raw + 24 <= len(data):
+                    cand_va, cand_len, cand_cap = struct.unpack_from("<QQQ", data, hdr_raw)
+                    if cand_len == cand_cap and cand_len in (7, 15):
+                        cand_arr_raw = macho_va_to_raw(sections, cand_va)
+                        if cand_arr_raw is not None:
+                            arr_raw = cand_arr_raw
+                            arr_len = cand_len
+                            break
+
+        if arr_raw is not None and arr_len == 7:
+            entries = [struct.unpack_from("<QQ", data, arr_raw + i * 16) for i in range(7)]
+            va2, len2 = entries[2]
+            va3, len3 = entries[3]
+            va4, len4 = entries[4]
+            va6, len6 = entries[6]
+            orig_va4 = va4 if len4 == 32 else (va4 - 22)
+            va_wsasend = macho_raw_to_va(sections, data.find(b"wsasendwsarecv"))
+            va_crbp = macho_raw_to_va(sections, data.find(b"connection reset by peer"))
+            va_sre = macho_raw_to_va(sections, data.find(b"stream reading error: %w"))
+            va_se = macho_raw_to_va(sections, data.find(b"stream error: stream ID "))
+            va_unauth = macho_raw_to_va(sections, data.find(b"unauthenticated"))
+
+            s14_orig = b"".join(
+                struct.pack("<QQ", v, l)
+                for v, l in [
+                    (va_wsasend, 7),
+                    (va_wsasend + 7, 7),
+                    (va2, len2),
+                    (va3, len3),
+                    (orig_va4, 32),
+                    (va_crbp, 24),
+                    (va6, len6),
+                ]
+            )
+            s14_patch = b"".join(
+                struct.pack("<QQ", v, l)
+                for v, l in [
+                    (va_sre, 21),        # "stream reading error:"
+                    (va_se, 13),         # "stream error:"
+                    (va2, len2),         # "no such host"
+                    (va3, len3),         # "bad record MAC"
+                    (orig_va4 + 22, 10), # "connection"
+                    (va_unauth, 15),     # "unauthenticated"
+                    (va6, len6),         # "i/o timeout"
+                ]
+            )
+            sites.append(
+                ("utils.IsRetryableAPIError (retryableSubstrings table expansion)", arr_raw, s14_orig, s14_patch)
+            )
+        return sites
+
     image_base, sections = parse_pe_sections(data)
 
     # Site 13: utils.IsRetryableAPIError ("incomplete envelope: unexpected EOF" len 35 -> "unexpected EOF" len 14)
@@ -364,6 +698,7 @@ def locate_stream_retry_sites(data: bytes, funcs: dict):
 
     return sites
 
+
 def locate_bg_task_timeout_sites(data: bytes, funcs: dict):
     sites = []
     # Site 15: (*RunCommandHandler).runTaskListeners non-daemon 60s default NotificationTimeoutSeconds wakeup
@@ -371,72 +706,166 @@ def locate_bg_task_timeout_sites(data: bytes, funcs: dict):
     if rtl_key:
         rtl_off, rtl_sz = funcs[rtl_key]
         rtl_bytes = data[rtl_off : rtl_off + rtl_sz]
-        rtl_orig = bytes.fromhex(
-            "4885f60f849e000000488b394885ff0f8482000000488bbf98000000"
-            "4885ff7471803f0075104885dbbf0000000041b800000000eb7f"
-        )
-        rtl_patch = bytes.fromhex(
-            "4885f67f314885db0f8499000000807b68000f858f000000be3c000000"
-            "4889b42480000000eb0f909090909090909090909090909090"
-        )
-        pos_rtl = rtl_bytes.find(rtl_orig)
-        if pos_rtl == -1:
-            pos_rtl = rtl_bytes.find(rtl_patch)
-        if pos_rtl != -1:
-            sites.append((
-                "RunCommandHandler.runTaskListeners (non-daemon 60s default timeout wakeup)",
-                rtl_off + pos_rtl,
-                rtl_orig,
-                rtl_patch,
-            ))
+        if is_macho_arm64(data):
+            rtl_arm_orig = bytes.fromhex(
+                "650300b4260040f9c60200b4c64c40f9860200b4c600403986000037e3031faae6031faa14000014"
+            )
+            rtl_arm_patch = bytes.fromhex(
+                "040300b486a04139c6020035bf0000f1cc000054850780d2e54b00f9030000141f2003d51f2003d5"
+            )
+            pos_rtl = _find_orig_or_patch(rtl_bytes, rtl_arm_orig, rtl_arm_patch)
+            if pos_rtl != -1:
+                sites.append(
+                    (
+                        "RunCommandHandler.runTaskListeners (non-daemon 60s default timeout wakeup)",
+                        rtl_off + pos_rtl,
+                        rtl_arm_orig,
+                        rtl_arm_patch,
+                    )
+                )
         else:
-            # v2.26.0: 57-byte block (rcx=timeoutSec, rdx=cmdSpec)
-            rtl26_orig = bytes.fromhex(
-                "4885c90f8494000000488b9c2460020000488b334885f67475"
-                "488bb6980000004885f67464803e00750f4885d2be00000000bf01000000eb71"
+            rtl_orig = bytes.fromhex(
+                "4885f60f849e000000488b394885ff0f8482000000488bbf98000000"
+                "4885ff7471803f0075104885dbbf0000000041b800000000eb7f"
             )
-            rtl26_patch = bytes.fromhex(
-                "4885c97f344885d20f848f000000807a68000f8585000000b93c000000"
-                "48898c2480000000eb12909090909090909090909090909090909090"
+            rtl_patch = bytes.fromhex(
+                "4885f67f314885db0f8499000000807b68000f858f000000be3c000000"
+                "4889b42480000000eb0f909090909090909090909090909090"
             )
-            pos_rtl26 = rtl_bytes.find(rtl26_orig)
-            if pos_rtl26 == -1:
-                pos_rtl26 = rtl_bytes.find(rtl26_patch)
-            if pos_rtl26 != -1:
+            pos_rtl = rtl_bytes.find(rtl_orig)
+            if pos_rtl == -1:
+                pos_rtl = rtl_bytes.find(rtl_patch)
+            if pos_rtl != -1:
                 sites.append((
-                    "RunCommandHandler.runTaskListeners (v2.26.0 non-daemon 60s default timeout wakeup)",
-                    rtl_off + pos_rtl26,
-                    rtl26_orig,
-                    rtl26_patch,
+                    "RunCommandHandler.runTaskListeners (non-daemon 60s default timeout wakeup)",
+                    rtl_off + pos_rtl,
+                    rtl_orig,
+                    rtl_patch,
                 ))
+            else:
+                # v2.26.0: 57-byte block (rcx=timeoutSec, rdx=cmdSpec)
+                rtl26_orig = bytes.fromhex(
+                    "4885c90f8494000000488b9c2460020000488b334885f67475"
+                    "488bb6980000004885f67464803e00750f4885d2be00000000bf01000000eb71"
+                )
+                rtl26_patch = bytes.fromhex(
+                    "4885c97f344885d20f848f000000807a68000f8585000000b93c000000"
+                    "48898c2480000000eb12909090909090909090909090909090909090"
+                )
+                pos_rtl26 = rtl_bytes.find(rtl26_orig)
+                if pos_rtl26 == -1:
+                    pos_rtl26 = rtl_bytes.find(rtl26_patch)
+                if pos_rtl26 != -1:
+                    sites.append((
+                        "RunCommandHandler.runTaskListeners (v2.26.0 non-daemon 60s default timeout wakeup)",
+                        rtl_off + pos_rtl26,
+                        rtl26_orig,
+                        rtl26_patch,
+                    ))
 
     # Site 16: (*RunCommandTool).runCommand non-daemon 60s default NotificationTimeoutSeconds wakeup
     rc_key = next((k for k in funcs if k.endswith("/tools.(*RunCommandTool).runCommand")), None)
     if rc_key:
         rc_off, rc_sz = funcs[rc_key]
         rc_bytes = data[rc_off : rc_off + rc_sz]
-        for stack_disp_hex in ("68040000", "80040000"):
-            rc_orig = bytes.fromhex(
-                "488b094885c90f8488000000488b89980000004885c9747c8039007473"
-                f"488b8c24{stack_disp_hex}488b51384869c200ca9a3b4885c07f0431c0eb5d6690"
+        if is_macho_arm64(data):
+            rc_arm_orig = bytes.fromhex(
+                "e14342f9221c40f9034099d24373a7f2607c029be23742f943a0403963000036e0031faa1c000014"
+                "420040f9220300b4424c40f9e20200b442004039620200361f0000f16c000054e0031faa12000014"
             )
-            rc_patch = bytes.fromhex(
-                f"488b8c24{stack_disp_hex}807930000f8582000000488b51384885d27f09ba3c000000"
-                "488951384869c200ca9a3beb0e9090909090909090909090909090"
+            rc_arm_patch = bytes.fromhex(
+                "e14342f922c0403942040035221c40f95f0000f16c000054820780d2221c00f9034099d24373a7f2"
+                "607c029be23742f943a04039e3000036e0031faa160000141f2003d51f2003d51f2003d51f2003d5"
             )
-            pos_rc = rc_bytes.find(rc_orig)
-            if pos_rc == -1:
-                pos_rc = rc_bytes.find(rc_patch)
+            pos_rc = _find_orig_or_patch(rc_bytes, rc_arm_orig, rc_arm_patch)
             if pos_rc != -1:
-                sites.append((
-                    f"RunCommandTool.runCommand (non-daemon 60s default timeout wakeup, disp=0x{stack_disp_hex})",
-                    rc_off + pos_rc,
-                    rc_orig,
-                    rc_patch,
-                ))
-                break
+                sites.append(
+                    (
+                        "RunCommandTool.runCommand (non-daemon 60s default timeout wakeup)",
+                        rc_off + pos_rc,
+                        rc_arm_orig,
+                        rc_arm_patch,
+                    )
+                )
+        else:
+            for stack_disp_hex in ("68040000", "80040000"):
+                rc_orig = bytes.fromhex(
+                    "488b094885c90f8488000000488b89980000004885c9747c8039007473"
+                    f"488b8c24{stack_disp_hex}488b51384869c200ca9a3b4885c07f0431c0eb5d6690"
+                )
+                rc_patch = bytes.fromhex(
+                    f"488b8c24{stack_disp_hex}807930000f8582000000488b51384885d27f09ba3c000000"
+                    "488951384869c200ca9a3beb0e9090909090909090909090909090"
+                )
+                pos_rc = rc_bytes.find(rc_orig)
+                if pos_rc == -1:
+                    pos_rc = rc_bytes.find(rc_patch)
+                if pos_rc != -1:
+                    sites.append((
+                        f"RunCommandTool.runCommand (non-daemon 60s default timeout wakeup, disp=0x{stack_disp_hex})",
+                        rc_off + pos_rc,
+                        rc_orig,
+                        rc_patch,
+                    ))
+                    break
 
-    # Site 16 (v2.28.0+): (*runningCommand).waitInBackground non-daemon 60s default NotificationTimeoutSeconds wakeup
+    if is_macho_arm64(data):
+        # Site 19 (ARM64): (*AgentExecutor).transitionFromRunningToIdleOrClosed
+        tr_key = next((k for k in funcs if k.endswith("/agentexecutor.(*AgentExecutor).transitionFromRunningToIdleOrClosed")), None)
+        if tr_key:
+            tr_off, tr_sz = funcs[tr_key]
+            tr_bytes = data[tr_off : tr_off + tr_sz]
+            tr_arm_orig = bytes.fromhex("e167433981050036a4144ba9")
+            tr_arm_patch = bytes.fromhex("e16743392c000014a4144ba9")
+            pos_tr = _find_orig_or_patch(tr_bytes, tr_arm_orig, tr_arm_patch)
+            if pos_tr != -1:
+                sites.append(
+                    (
+                        "Site 19 (*AgentExecutor).transitionFromRunningToIdleOrClosed (always recheck inbox)",
+                        tr_off + pos_tr,
+                        tr_arm_orig,
+                        tr_arm_patch,
+                    )
+                )
+
+        # Site 20 (ARM64): (*AgentExecutor).startMessageWatcherLocked.func2
+        mw2_key = next((k for k in funcs if k.endswith("/agentexecutor.(*AgentExecutor).startMessageWatcherLocked.func2")), None)
+        if mw2_key:
+            mw2_off, mw2_sz = funcs[mw2_key]
+            mw2_bytes = data[mw2_off : mw2_off + mw2_sz]
+            mw2_arm_orig = bytes.fromhex("e00f4139c0010036e0874ba9")
+            mw2_arm_patch = bytes.fromhex("e00f41391f2003d5e0874ba9")
+            pos_mw2 = _find_orig_or_patch(mw2_bytes, mw2_arm_orig, mw2_arm_patch)
+            if pos_mw2 != -1:
+                sites.append(
+                    (
+                        "Site 20 (*AgentExecutor).startMessageWatcherLocked.func2 (unblock NotifyCh outer gate)",
+                        mw2_off + pos_mw2,
+                        mw2_arm_orig,
+                        mw2_arm_patch,
+                    )
+                )
+
+        # Site 21 (ARM64): (*AgentExecutor).startMessageWatcherLocked.func2.1-range1
+        mwr_key = next((k for k in funcs if k.endswith("/agentexecutor.(*AgentExecutor).startMessageWatcherLocked.func2.1-range1")), None)
+        if mwr_key:
+            mwr_off, mwr_sz = funcs[mwr_key]
+            mwr_bytes = data[mwr_off : mwr_off + mwr_sz]
+            mwr_arm_orig = bytes.fromhex("4c67e197e21f40f94300403903010037e0000036")
+            mwr_arm_patch = bytes.fromhex("e00340b2e21f40f9430040391f2003d5e0000036")
+            pos_mwr = _find_orig_or_patch(mwr_bytes, mwr_arm_orig, mwr_arm_patch)
+            if pos_mwr != -1:
+                sites.append(
+                    (
+                        "Site 21 (*AgentExecutor).startMessageWatcherLocked.func2.1-range1 (SubagentsAndTasksIdle -> 1)",
+                        mwr_off + pos_mwr,
+                        mwr_arm_orig,
+                        mwr_arm_patch,
+                    )
+                )
+        return sites
+
+    # Site 16 (v2.28.0+ x64): (*runningCommand).waitInBackground non-daemon 60s default NotificationTimeoutSeconds wakeup
     wib_key = next((k for k in funcs if k.endswith("/tools.(*runningCommand).waitInBackground")), None)
     if wib_key:
         wib_off, wib_sz = funcs[wib_key]
@@ -461,7 +890,7 @@ def locate_bg_task_timeout_sites(data: bytes, funcs: dict):
                 wib_patch,
             ))
 
-    # Site 19: (*AgentExecutor).transitionFromRunningToIdleOrClosed (always restart message watcher on Idle even after transient turn error)
+    # Site 19 (x64): (*AgentExecutor).transitionFromRunningToIdleOrClosed
     tr_key = next((k for k in funcs if k.endswith("/agentexecutor.(*AgentExecutor).transitionFromRunningToIdleOrClosed")), None)
     if tr_key:
         tr_off, tr_sz = funcs[tr_key]
@@ -479,7 +908,7 @@ def locate_bg_task_timeout_sites(data: bytes, funcs: dict):
                 tr_patch,
             ))
 
-    # Site 20: (*AgentExecutor).startMessageWatcherLocked.func2 (always run initial shouldWakeUp check immediately)
+    # Site 20 (x64): (*AgentExecutor).startMessageWatcherLocked.func2
     mw2_key = next((k for k in funcs if k.endswith("/agentexecutor.(*AgentExecutor).startMessageWatcherLocked.func2")), None)
     if mw2_key:
         mw2_off, mw2_sz = funcs[mw2_key]
@@ -497,7 +926,7 @@ def locate_bg_task_timeout_sites(data: bytes, funcs: dict):
                 mw2_patch,
             ))
 
-    # Site 21: (*AgentExecutor).startMessageWatcherLocked.func2.1-range1 (forward all Idle AgentState updates to wake selectgo when permanent watcher consumes NotifyCh)
+    # Site 21 (x64): (*AgentExecutor).startMessageWatcherLocked.func2.1-range1
     mwr_key = next((k for k in funcs if k.endswith("/agentexecutor.(*AgentExecutor).startMessageWatcherLocked.func2.1-range1")), None)
     if mwr_key:
         mwr_off, mwr_sz = funcs[mwr_key]
@@ -515,7 +944,6 @@ def locate_bg_task_timeout_sites(data: bytes, funcs: dict):
                 disp32 = funcs[is_run_key][0] - (mwr_off + pos_mwr + 5)
                 call_orig = b"\xe8" + struct.pack("<i", disp32)
             else:
-                # Version-guarded fallback for v2.28.0 x64 layout if symbol is stripped
                 call_orig = bytes.fromhex("e8a7bb70ff")
             mwr_orig = call_orig + mwr_tail_orig
         if pos_mwr != -1:
@@ -526,4 +954,41 @@ def locate_bg_task_timeout_sites(data: bytes, funcs: dict):
                 mwr_patch,
             ))
 
+    return sites
+
+
+def locate_oauth_token_sites(data: bytes, funcs: dict):
+    sites = []
+    ca_key = next((k for k in funcs if k.endswith("/codeassistclient.RefreshingTokenSource")), None)
+    if ca_key:
+        ca_off, ca_sz = funcs[ca_key]
+        ca_bytes = data[ca_off : ca_off + ca_sz]
+        if is_macho_arm64(data):
+            x6_5m = bytes.fromhex("060097d2862cbbf2a608c0f2")
+            x6_20m = bytes.fromhex("06009cd246b2acf2e622c0f2")
+            p_x6 = _find_orig_or_patch(ca_bytes, x6_5m, x6_20m)
+            if p_x6 != -1:
+                sites.append(
+                    ("codeassistclient.RefreshingTokenSource (5m -> 20m #1)", ca_off + p_x6, x6_5m, x6_20m)
+                )
+            x2_5m = bytes.fromhex("020097d2822cbbf2a208c0f2")
+            x2_20m = bytes.fromhex("02009cd242b2acf2e222c0f2")
+            p_x2_1 = _find_orig_or_patch(ca_bytes, x2_5m, x2_20m, 0)
+            if p_x2_1 != -1:
+                sites.append(
+                    ("codeassistclient.RefreshingTokenSource (5m -> 20m #2)", ca_off + p_x2_1, x2_5m, x2_20m)
+                )
+                p_x2_2 = _find_orig_or_patch(ca_bytes, x2_5m, x2_20m, p_x2_1 + len(x2_5m))
+                if p_x2_2 != -1:
+                    sites.append(
+                        ("codeassistclient.RefreshingTokenSource (5m -> 20m #3)", ca_off + p_x2_2, x2_5m, x2_20m)
+                    )
+        else:
+            ns_5m = struct.pack("<Q", 300_000_000_000)
+            ns_20m = struct.pack("<Q", 1_200_000_000_000)
+            idx_ca = _find_orig_or_patch(ca_bytes, b"\x48\xb8" + ns_5m, b"\x48\xb8" + ns_20m)
+            if idx_ca != -1:
+                sites.append(
+                    ("codeassistclient.RefreshingTokenSource (5m -> 20m)", ca_off + idx_ca + 2, ns_5m, ns_20m)
+                )
     return sites

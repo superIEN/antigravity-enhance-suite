@@ -1,0 +1,21 @@
+{
+  "schema_version": "harness_guardrails.entrypoint_registry.v1",
+  "project_root": ".",
+  "primary_entrypoints": [
+    {
+      "entrypoint_id": "cli_main",
+      "path": "guardrails/harness_guardrails.py",
+      "language": "python",
+      "entry_symbols": ["main"],
+      "live_dispatch_containers": ["SUBCOMMAND_HANDLERS"],
+      "required_reachable_modules": [
+        "guardrails/read_auditor.py",
+        "guardrails/citation_verifier.py",
+        "guardrails/substance_verifier.py",
+        "guardrails/archunit_macos_bridge.py"
+      ]
+    }
+  ],
+  "forbid_self_referential_entrypoint": true,
+  "forbid_cli_entrypoint_override_in_declarations": true
+}

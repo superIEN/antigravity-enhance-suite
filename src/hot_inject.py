@@ -1,12 +1,16 @@
-"""Live CDP Hot-Injector for Antigravity Enhance Suite."""
+"""Live CDP Hot-Injector for Antigravity Enhance Suite (Windows & macOS)."""
+from __future__ import annotations
+
 import base64
 import json
 import os
 import socket
 import struct
+import sys
 import time
 import urllib.request
 from pathlib import Path
+from typing import Optional
 
 
 def recv_exact(sock: socket.socket, n: int) -> bytes:
@@ -20,7 +24,7 @@ def recv_exact(sock: socket.socket, n: int) -> bytes:
 
 
 def cdp_eval(port: int, ws_path: str, req_id: int, expression: str, timeout_s: float = 12.0):
-    sock = socket.create_connection(("127.0.0.1", port), timeout=timeout_s)
+    sock = socket.create_connection(("127.0.0.1", port), timeout_s)
     try:
         key = base64.b64encode(os.urandom(16)).decode("ascii")
         handshake = (
@@ -76,10 +80,16 @@ def cdp_eval(port: int, ws_path: str, req_id: int, expression: str, timeout_s: f
         sock.close()
 
 
-def hot_inject_running_windows(loader_path: Path, devtools_port_file: Path | None = None) -> list[dict]:
+def default_devtools_port_file() -> Path:
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Antigravity" / "DevToolsActivePort"
+    appdata = os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))
+    return Path(appdata) / "Antigravity" / "DevToolsActivePort"
+
+
+def hot_inject_running_windows(loader_path: Path, devtools_port_file: Optional[Path] = None) -> list[dict]:
     if devtools_port_file is None:
-        appdata = os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))
-        devtools_port_file = Path(appdata) / "Antigravity" / "DevToolsActivePort"
+        devtools_port_file = default_devtools_port_file()
     if not devtools_port_file.exists():
         return []
 
@@ -87,7 +97,10 @@ def hot_inject_running_windows(loader_path: Path, devtools_port_file: Path | Non
     if not lines:
         return []
     port = int(lines[0])
-    targets = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=3).read().decode("utf-8"))
+    try:
+        targets = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=3).read().decode("utf-8"))
+    except Exception:
+        return []
     pages = [t for t in targets if t.get("type") == "page" and "127.0.0.1:" in t.get("url", "")]
 
     loader_code = loader_path.read_text(encoding="utf-8")

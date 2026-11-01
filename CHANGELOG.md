@@ -4,6 +4,27 @@
 
 ---
 
+## [v3.4.0] - 2026-11-01
+
+### 新增与优化 (Added & Changed)
+- **macOS Apple Silicon (`darwin-arm64`) 全栈原生适配与 1M 上下文真实解锁（Sites 1–22，共 29 处二进制补丁）**：
+  - **新增 `Site 22 (utils.ClampCheckpointConfigForModelInfo)`**：根治桌面端因 `applyFeatureProviderCheckpointOverrideConfig`（`0x1014a0cb8`）覆写 `MaxTokenLimit = 256,000` 导致每 ~250k 自动触发有损压缩（`<CONTEXT_SUMMARY>`）的底层顽疾；通过 9 指令 `csel w4, w5, w4, gt` 原地补丁，对 `1,048,576` 上下文模型（如 `gemini-4-argon-high`）精确解锁为 **`983,040` Tokens**（`1,048,576 - 65,536`），同时在 `w3 == 0` 与 `w3 == 256,000` 双路径下对 `200,000` 上下文模型（Claude 系列）100% 保持 **`200,000` Tokens** 零回退；
+  - **macOS ARM64 `Sites 19–21` 响应式唤醒竞态根治**：移植并验证 `(*AgentExecutor).transitionFromRunningToIdleOrClosed`、`(*AgentExecutor).startMessageWatcherLocked.func2` 与 `(*AgentExecutor).startMessageWatcherLocked.func2.1-range1`（`(*AgentState).SubagentsAndTasksIdle -> 1`）三处控制流补丁；
+  - **Hardened Runtime 与 `allow-jit` 签名保全**：在 `build_ls.py`、`agy_suite.py` 与 `patch_sites_macos_v36.py` 中强制携带 `--identifier language_server --options runtime --entitlements`（`com.apple.security.cs.allow-jit = true`）签名，并与 macOS `.app` 离线克隆 Google Team（`EQHXZ8M8AV`）库加载约束签名及新 inode 原子替换闭环；
+  - **新增结构化 Protobuf 会话数据库无损升级器（`src/upgrade_db_context_limit.py`）**：采用递归 Protobuf Wire 语法树解析精确匹配 `executor_metadata`（`$.10.2.5`）与 `gen_metadata`（`$.1.9.10.4`），利用 `256,000`（`80 d0 0f`）与 `983,040`（`80 80 3c`）同为 3 字节 Varint 的等长性质，在 `BEGIN IMMEDIATE` 事务与 `sqlite3.backup()` 在线备份下无损将存量会话升级至 `983,040`。
+- **桌面渲染增强套件（`src/agy-enhance-loader.js` · `3.6.0-macos-merged`）架构升级（经 Grok 4.7 `xhigh` `500k` 4 轮极限并发对抗审计）**：
+  - **按 ID 集合差分（Set-Diff）+ 双源 1:1 归一的响应式看门狗**：以 `rec.activeBgIds` 集合差分替代纯整数计数（解决同周期一退一进 `{bg-a, bg-b} -> {bg-b, bg-c}` 漏检），通过 `rec.taskToStepMap` 将 Provider 后台任务行与运行中 `invokeSubagent` 步骤 1:1 归一为 `step:${stepIndex}`（消除 Provider 行提前消失引发的假下降沿），折叠 `backgroundTasksUpdate`/`pendingAgentMessagesUpdate` 与 `globalThis.__asu` 稀疏补丁，并在 `SendAgentMessage` 返回时核对 `rec.epoch === reqEpoch` 与 `rec.bgFinishedEdgeTs === sentEdge`；
+  - **Mission HUD 看门狗可观测状态胶囊（`#m-wd`）**：在任务态势托盘顶栏右侧实时展示 `后台 N`、`等待接管`、`已接管` 三态胶囊；
+  - **`WeakMap` React Fiber 缓存与 250ms HUD 合并节流**：将 DOM 节点到 Fiber 实例的查找降为 $O(1)$（含 `null` 缓存命中），并保留思考流内联单句定性摘要（含 `nextToolDesc` 上下文推导）与点击捕获展开守卫；
+  - **新增会话级自适应 Base64 预算媒体守护工装（`src/compress_tempmedia.py`）**：按 `18 MB` Base64 安全天花板自动规划图片尺寸与质量，支持基于 `_bak_orig` 无损备份的二阶段自适应重编码、白底 Alpha 合成、EXIF 方向校正、`sips` 防小图放大、非图视频媒体诚实核算与 POSIX `fcntl.flock` 目录锁，根治 `.tempmediaStorage` 突破 30MB 导致的 `400 FAILED_PRECONDITION` 会话死锁。
+- **AGY 防退化 Harness 四大护栏与 `ArchUnit 0.3` 强契约桥接（`guardrails/`）**：
+  - **护栏 1（`read_auditor.py`）**：锁定 `transcript_full.jsonl` 唯一工具正文源，通吃三类 AGY 截断头方言，按行窗 `(L1, L2)` 独立闭合字节坐标，配合 `read_snapshots.jsonl` 实现改后旧读失效与等长改写检出，对缺失/未读 `output.txt` 执行 Fail-Closed；
+  - **护栏 2（`citation_verifier.py`）**：检测 `/compact` 压缩事件并强制核验目标源码重读，执行 Python AST 与 JS 词法剥离注释/字符串后的定义级符号 + 行区间重叠核验，三维反漂移诊断 100% 捕获 `cmd_check_completion`、`ArchUnit030Tests`、`pre -> invoke`；
+  - **护栏 3（`substance_verifier.py`）**：锁定 `entrypoint_registry.json`，沿 AST `Call` 与活分发注册表追踪可达性（在 Python/JS 双语种拦截 `boundSpecialistServices` 死字典旁路），通过 `run-and-attest` 生成带宿主日志 `ATTESTED_EVIDENCE_NONCE` 锚点的受控实证；
+  - **护栏 4（`archunit_macos_bridge.py` & `harness_guardrails.py`）**：核验 macOS `codesign` 与规范源 SHA256，强映射读回 `objects`/`empirical_evidence`/`verdict`，反向审计独审实例自身的 `transcript_full.jsonl` 真读覆盖率，并严格分列 `technical_gate_passed` 与 `triad_complete`。
+
+---
+
 ## [v3.3.0] - 2026-10-29
 
 ### 新增与优化 (Added & Changed)
