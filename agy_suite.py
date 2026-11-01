@@ -1,26 +1,38 @@
 #!/usr/bin/env python3
-"""Antigravity Enhance Suite — Unified CLI Installer, Inspector, Rollback & Live Hot-Injector.
+"""Antigravity Enhance Suite v3.4.0 — Unified CLI Installer, Inspector, Rollback, Live Hot-Injector, DB Upgrader & Media Guard (Windows & macOS).
 
 Usage:
-    python agy_suite.py inspect [--agy-dir PATH]
-    python agy_suite.py install [--agy-dir PATH] [--runtime-dir PATH] [--hot-inject]
-    python agy_suite.py rollback [--agy-dir PATH] [--runtime-dir PATH]
-    python agy_suite.py hot-inject [--runtime-dir PATH]
+    python3 agy_suite.py inspect [--agy-dir PATH]
+    python3 agy_suite.py install [--agy-dir PATH] [--runtime-dir PATH] [--hot-inject] [--strict-asar]
+    python3 agy_suite.py rollback [--agy-dir PATH] [--runtime-dir PATH]
+    python3 agy_suite.py hot-inject [--runtime-dir PATH]
+    python3 agy_suite.py upgrade-db [--all] [--upgrade-to 983040]
+    python3 agy_suite.py compress-media [--check]
 """
+from __future__ import annotations
+
 import argparse
 import datetime
 import hashlib
 import json
 import os
+import plistlib
 import shutil
 import struct
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from src import build_asar, build_ls, hot_inject, patch_sites
 
 
 def default_agy_dir() -> Path:
+    if sys.platform == "darwin":
+        user_app = Path.home() / "Applications" / "Antigravity.app"
+        if user_app.exists():
+            return user_app
+        return Path("/Applications/Antigravity.app")
     local_app = os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
     return Path(local_app) / "Programs" / "antigravity"
 
@@ -29,8 +41,59 @@ def default_runtime_dir() -> Path:
     return Path(os.environ.get("AGY_ENHANCE_DIR", str(Path.home() / ".gemini" / "agy-enhance")))
 
 
+def resolve_ls_binaries(agy_dir: Path) -> list[Path]:
+    bin_dir = agy_dir / "resources" / "bin"
+    bins: list[Path] = []
+    for name in ("language_server_windows_x64.exe", "language_server.exe"):
+        p = bin_dir / name
+        if p.exists():
+            bins.append(p)
+    return bins
+
+
+def resolve_agy_paths(agy_dir: Path) -> dict:
+    p = agy_dir.resolve()
+    if sys.platform == "darwin" or p.name.endswith(".app") or (p / "Contents" / "Resources" / "app.asar").exists():
+        if p.name == "Resources" and p.parent.name == "Contents":
+            app_bundle = p.parent.parent
+        elif p.name == "Contents":
+            app_bundle = p.parent
+        else:
+            app_bundle = p
+        ls_path = app_bundle / "Contents" / "Resources" / "bin" / "language_server"
+        return {
+            "is_mac_bundle": True,
+            "app_bundle": app_bundle,
+            "asar_path": app_bundle / "Contents" / "Resources" / "app.asar",
+            "ls_path": ls_path,
+            "ls_bins": [ls_path] if ls_path.exists() else [],
+            "info_plist_path": app_bundle / "Contents" / "Info.plist",
+            "main_exec_path": app_bundle / "Contents" / "MacOS" / "Antigravity",
+            "code_resources_path": app_bundle / "Contents" / "_CodeSignature" / "CodeResources",
+        }
+    ls_bins = resolve_ls_binaries(p)
+    return {
+        "is_mac_bundle": False,
+        "app_bundle": None,
+        "asar_path": p / "resources" / "app.asar",
+        "ls_path": ls_bins[0] if ls_bins else (p / "resources" / "bin" / "language_server.exe"),
+        "ls_bins": ls_bins,
+    }
+
+
 def sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def atomic_replace_from_file(src_path: Path, dst_path: Path):
+    """Copy src_path to a new temporary inode in dst_path.parent and atomically rename over dst_path."""
+    tmp_path = dst_path.parent / f".{dst_path.name}.tmp.{os.getpid()}"
+    if tmp_path.exists():
+        tmp_path.unlink()
+    shutil.copy2(src_path, tmp_path)
+    with tmp_path.open("rb") as f:
+        os.fsync(f.fileno())
+    os.replace(tmp_path, dst_path)
 
 
 def read_asar_version(asar_path: Path) -> str:
@@ -44,23 +107,123 @@ def read_asar_version(asar_path: Path) -> str:
     return pkg.get("version", "unknown")
 
 
-def resolve_ls_binaries(agy_dir: Path) -> list[Path]:
-    bin_dir = agy_dir / "resources" / "bin"
-    bins = []
-    for name in ("language_server_windows_x64.exe", "language_server.exe"):
-        p = bin_dir / name
-        if p.exists():
-            bins.append(p)
-    return bins
+def find_clean_mac_factory_bundle(app_bundle: Path, ver: str) -> Path:
+    """If an earlier patch preserved the Google-signed factory original .app bundle, prefer it for clean baselines."""
+    candidates = sorted(app_bundle.parent.glob(".Antigravity-original-*.app"))
+    for cand in candidates:
+        cand_asar = cand / "Contents" / "Resources" / "app.asar"
+        cand_ls = cand / "Contents" / "Resources" / "bin" / "language_server"
+        if cand_asar.is_file() and cand_ls.is_file():
+            try:
+                if read_asar_version(cand_asar) == ver:
+                    return cand
+            except Exception:
+                pass
+    return app_bundle
+
+
+def stage_and_sign_mac_bundle(
+    source_bundle: Path,
+    cand_asar: Path,
+    cand_ls: Path,
+    asar_header_sha256: str,
+    orig_main_bak: Path,
+    orig_info_plist_bak: Path,
+    runtime_dir: Path,
+) -> Path:
+    """Clone Antigravity.app into staging dir, apply cand_asar + cand_ls + Info.plist hash, and sign offline."""
+    staging_root = runtime_dir / "staged_bundle"
+    staged_app = staging_root / "Antigravity.app"
+    if staged_app.exists():
+        shutil.rmtree(staged_app)
+    staging_root.mkdir(parents=True, exist_ok=True)
+
+    subprocess.run(["/bin/cp", "-cRp", str(source_bundle), str(staged_app)], check=True)
+
+    atomic_replace_from_file(orig_main_bak, staged_app / "Contents" / "MacOS" / "Antigravity")
+    plist_data = plistlib.loads(orig_info_plist_bak.read_bytes())
+    if "ElectronAsarIntegrity" in plist_data and "Resources/app.asar" in plist_data["ElectronAsarIntegrity"]:
+        plist_data["ElectronAsarIntegrity"]["Resources/app.asar"]["hash"] = asar_header_sha256
+    staged_info_plist = staged_app / "Contents" / "Info.plist"
+    staged_info_plist.write_bytes(plistlib.dumps(plist_data))
+
+    atomic_replace_from_file(cand_asar, staged_app / "Contents" / "Resources" / "app.asar")
+    atomic_replace_from_file(cand_ls, staged_app / "Contents" / "Resources" / "bin" / "language_server")
+    (staged_app / "Contents" / "Resources" / "bin" / "language_server").chmod(0o755)
+
+    with tempfile.NamedTemporaryFile("w", suffix=".entitlements.plist", delete=False) as tf:
+        tf.write(build_ls.ENTITLEMENTS_XML)
+        ls_ent_path = Path(tf.name)
+    try:
+        subprocess.run(
+            [
+                "/usr/bin/codesign",
+                "--force",
+                "--sign",
+                "-",
+                "--identifier",
+                "language_server",
+                "--options",
+                "runtime",
+                "--entitlements",
+                str(ls_ent_path),
+                "--timestamp=none",
+                str(staged_app / "Contents" / "Resources" / "bin" / "language_server"),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        ls_ent_path.unlink(missing_ok=True)
+
+    orig_ent_raw = subprocess.run(
+        ["/usr/bin/codesign", "-d", "--entitlements", ":-", str(orig_main_bak)],
+        capture_output=True,
+        check=True,
+    ).stdout
+    ent = plistlib.loads(orig_ent_raw) if orig_ent_raw else {}
+    ent["com.apple.security.cs.disable-library-validation"] = True
+    ent_path = staging_root / "root-entitlements.plist"
+    ent_path.write_bytes(plistlib.dumps(ent))
+
+    constraint = {"team-identifier": "EQHXZ8M8AV"}
+    constraint_path = staging_root / "google-library-constraint.plist"
+    constraint_path.write_bytes(plistlib.dumps(constraint))
+
+    subprocess.run(
+        [
+            "/usr/bin/codesign",
+            "--force",
+            "--sign",
+            "-",
+            "--preserve-metadata=identifier,flags",
+            "--entitlements",
+            str(ent_path),
+            "--library-constraint",
+            str(constraint_path),
+            "--timestamp=none",
+            str(staged_app),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["/usr/bin/codesign", "--verify", "--deep", "--strict", str(staged_app)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return staged_app
 
 
 def cmd_inspect(args):
-    agy_dir = Path(args.agy_dir)
-    asar_path = agy_dir / "resources" / "app.asar"
-    ls_bins = resolve_ls_binaries(agy_dir)
-    if not asar_path.exists() or not ls_bins:
-        raise FileNotFoundError(f"Antigravity binaries not found under {agy_dir}")
-    ls_path = ls_bins[0]
+    paths = resolve_agy_paths(Path(args.agy_dir))
+    asar_path = paths["asar_path"]
+    ls_path = paths["ls_path"]
+    if not asar_path.exists() or not ls_path.exists():
+        raise FileNotFoundError(f"Antigravity binaries not found under {args.agy_dir}")
 
     ver = read_asar_version(asar_path)
     raw_ls = ls_path.read_bytes()
@@ -72,42 +235,63 @@ def cmd_inspect(args):
         + patch_sites.locate_utf8_and_uri_sites(raw_ls, funcs)
         + patch_sites.locate_stream_retry_sites(raw_ls, funcs)
         + patch_sites.locate_bg_task_timeout_sites(raw_ls, funcs)
+        + patch_sites.locate_oauth_token_sites(raw_ls, funcs)
     )
     report = {
+        "platform": "darwin-arm64" if patch_sites.is_macho_arm64(raw_ls) else "win32-x64",
         "antigravity_version": ver,
         "app_asar": {"path": str(asar_path), "size": asar_path.stat().st_size, "sha256": sha256_file(asar_path)},
         "language_server": {"path": str(ls_path), "size": len(raw_ls), "sha256": hashlib.sha256(raw_ls).hexdigest()},
         "gopclntab_functions": len(funcs),
-        "locatable_base_sites": len(sites),
+        "locatable_sites": len(sites),
     }
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 
 def cmd_install(args):
-    agy_dir = Path(args.agy_dir)
+    paths = resolve_agy_paths(Path(args.agy_dir))
     runtime_dir = Path(args.runtime_dir)
     runtime_dir.mkdir(parents=True, exist_ok=True)
 
-    prod_asar = agy_dir / "resources" / "app.asar"
-    ls_bins = resolve_ls_binaries(agy_dir)
+    prod_asar = paths["asar_path"]
+    prod_ls = paths["ls_path"]
+    ls_bins = paths["ls_bins"]
     if not prod_asar.exists() or not ls_bins:
-        raise FileNotFoundError(f"Antigravity installation not found at {agy_dir}")
-    prod_ls = ls_bins[0]
+        raise FileNotFoundError(f"Antigravity installation not found at {args.agy_dir}")
 
     ver = read_asar_version(prod_asar)
+    ls_bak_name = f"language_server.orig_{ver}.bak" if paths["is_mac_bundle"] else f"language_server.exe.orig_{ver}.bak"
     orig_asar_bak = runtime_dir / f"app.asar.orig_{ver}.bak"
-    orig_ls_bak = runtime_dir / f"language_server.exe.orig_{ver}.bak"
+    orig_ls_bak = runtime_dir / ls_bak_name
 
-    if not orig_asar_bak.exists():
-        shutil.copy2(prod_asar, orig_asar_bak)
-    if not orig_ls_bak.exists():
-        shutil.copy2(prod_ls, orig_ls_bak)
+    if paths["is_mac_bundle"]:
+        factory_bundle = find_clean_mac_factory_bundle(paths["app_bundle"], ver)
+        orig_info_plist_bak = runtime_dir / f"Info.plist.orig_{ver}.bak"
+        orig_main_bak = runtime_dir / f"Antigravity.orig_{ver}.bak"
+        orig_code_res_bak = runtime_dir / f"CodeResources.orig_{ver}.bak"
+        if not orig_asar_bak.exists():
+            shutil.copy2(factory_bundle / "Contents" / "Resources" / "app.asar", orig_asar_bak)
+        if not orig_ls_bak.exists():
+            shutil.copy2(factory_bundle / "Contents" / "Resources" / "bin" / "language_server", orig_ls_bak)
+        if not orig_info_plist_bak.exists():
+            shutil.copy2(factory_bundle / "Contents" / "Info.plist", orig_info_plist_bak)
+        if not orig_main_bak.exists():
+            shutil.copy2(factory_bundle / "Contents" / "MacOS" / "Antigravity", orig_main_bak)
+        if not orig_code_res_bak.exists():
+            shutil.copy2(factory_bundle / "Contents" / "_CodeSignature" / "CodeResources", orig_code_res_bak)
+    else:
+        if not orig_asar_bak.exists():
+            shutil.copy2(prod_asar, orig_asar_bak)
+        if not orig_ls_bak.exists():
+            shutil.copy2(prod_ls, orig_ls_bak)
 
     repo_loader = Path(__file__).resolve().parent / "src" / "agy-enhance-loader.js"
     target_loader = runtime_dir / "agy-enhance-loader.js"
-    shutil.copy2(repo_loader, target_loader)
+    if repo_loader.resolve() != target_loader.resolve():
+        shutil.copy2(repo_loader, target_loader)
 
-    cand_ls = runtime_dir / "language_server.exe.v3.candidate"
+    cand_ls_name = "language_server.v3.candidate" if paths["is_mac_bundle"] else "language_server.exe.v3.candidate"
+    cand_ls = runtime_dir / cand_ls_name
     cand_asar = runtime_dir / "app.asar.v3.candidate"
     staging_js = runtime_dir / "staged_dist_js"
 
@@ -116,59 +300,91 @@ def cmd_install(args):
 
     asar_deployed_live = False
     asar_warning = None
-    tmp_prod_asar = prod_asar.parent / f"app.asar.tmp.{os.getpid()}"
-    shutil.copy2(cand_asar, tmp_prod_asar)
-    try:
-        os.replace(tmp_prod_asar, prod_asar)
+    ls_deployed_live = False
+
+    if paths["is_mac_bundle"]:
+        staged_app = stage_and_sign_mac_bundle(
+            paths["app_bundle"],
+            cand_asar,
+            cand_ls,
+            asar_receipt["header_sha256"],
+            orig_main_bak,
+            orig_info_plist_bak,
+            runtime_dir,
+        )
+        for rel in [
+            "Contents/Resources/app.asar",
+            "Contents/Info.plist",
+            "Contents/Resources/bin/language_server",
+            "Contents/MacOS/Antigravity",
+            "Contents/_CodeSignature/CodeResources",
+        ]:
+            atomic_replace_from_file(staged_app / rel, paths["app_bundle"] / rel)
+        subprocess.run(
+            ["/usr/bin/codesign", "--verify", "--deep", "--strict", str(paths["app_bundle"])],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        shutil.rmtree(staged_app.parent, ignore_errors=True)
+        shutil.rmtree(staging_js, ignore_errors=True)
         asar_deployed_live = True
-    except PermissionError:
-        old_asar = prod_asar.parent / f"app.asar.old.{os.getpid()}"
+        ls_deployed_live = True
+    else:
+        tmp_prod_asar = prod_asar.parent / f"app.asar.tmp.{os.getpid()}"
+        shutil.copy2(cand_asar, tmp_prod_asar)
         try:
-            if old_asar.exists():
-                old_asar.unlink()
-            os.rename(prod_asar, old_asar)
             os.replace(tmp_prod_asar, prod_asar)
             asar_deployed_live = True
-        except PermissionError as exc:
-            if old_asar.exists() and not prod_asar.exists():
-                try:
-                    os.rename(old_asar, prod_asar)
-                except OSError:
-                    pass
-            if tmp_prod_asar.exists():
-                tmp_prod_asar.unlink()
-            asar_warning = (
-                f"app.asar is locked by a running Antigravity process ({exc}); "
-                f"verified candidate staged at {cand_asar}. Close Antigravity and re-run install, "
-                f"or pass --hot-inject for immediate live UI injection."
-            )
-            print(f"[WARN] {asar_warning}", file=sys.stderr)
-            if getattr(args, "strict_asar", False):
-                raise RuntimeError(asar_warning) from exc
-
-    ls_deployed_live = False
-    for target_ls in ls_bins:
-        tmp_prod_ls = target_ls.parent / f"{target_ls.name}.tmp.{os.getpid()}"
-        shutil.copy2(cand_ls, tmp_prod_ls)
-        try:
-            os.replace(tmp_prod_ls, target_ls)
-            ls_deployed_live = True
         except PermissionError:
-            old_ls = target_ls.parent / f"{target_ls.name}.old.{os.getpid()}"
-            if old_ls.exists():
-                old_ls.unlink()
-            os.rename(target_ls, old_ls)
-            os.replace(tmp_prod_ls, target_ls)
-            ls_deployed_live = True
+            old_asar = prod_asar.parent / f"app.asar.old.{os.getpid()}"
+            try:
+                if old_asar.exists():
+                    old_asar.unlink()
+                os.rename(prod_asar, old_asar)
+                os.replace(tmp_prod_asar, prod_asar)
+                asar_deployed_live = True
+            except PermissionError as exc:
+                if old_asar.exists() and not prod_asar.exists():
+                    try:
+                        os.rename(old_asar, prod_asar)
+                    except OSError:
+                        pass
+                if tmp_prod_asar.exists():
+                    tmp_prod_asar.unlink()
+                asar_warning = (
+                    f"app.asar is locked by a running Antigravity process ({exc}); "
+                    f"verified candidate staged at {cand_asar}. Close Antigravity and re-run install, "
+                    f"or pass --hot-inject for immediate live UI injection."
+                )
+                print(f"[WARN] {asar_warning}", file=sys.stderr)
+                if getattr(args, "strict_asar", False):
+                    raise RuntimeError(asar_warning) from exc
+
+        for target_ls in ls_bins:
+            tmp_prod_ls = target_ls.parent / f"{target_ls.name}.tmp.{os.getpid()}"
+            shutil.copy2(cand_ls, tmp_prod_ls)
+            try:
+                os.replace(tmp_prod_ls, target_ls)
+                ls_deployed_live = True
+            except PermissionError:
+                old_ls = target_ls.parent / f"{target_ls.name}.old.{os.getpid()}"
+                if old_ls.exists():
+                    old_ls.unlink()
+                os.rename(target_ls, old_ls)
+                os.replace(tmp_prod_ls, target_ls)
+                ls_deployed_live = True
 
     tx_receipt = {
         "timestamp": datetime.datetime.now().isoformat(),
+        "platform": "darwin-arm64" if paths["is_mac_bundle"] else "win32-x64",
         "version": ver,
         "runtime_dir": str(runtime_dir),
         "asar_deployed_live": asar_deployed_live,
         "ls_deployed_live": ls_deployed_live,
         "ls_receipt": ls_receipt,
         "asar_receipt": asar_receipt,
+        "desktop_enhance_version": "3.6.0-macos-merged",
     }
     if asar_warning:
         tx_receipt["asar_warning"] = asar_warning
@@ -182,28 +398,47 @@ def cmd_install(args):
 
 
 def cmd_rollback(args):
-    agy_dir = Path(args.agy_dir)
+    paths = resolve_agy_paths(Path(args.agy_dir))
     runtime_dir = Path(args.runtime_dir)
-    prod_asar = agy_dir / "resources" / "app.asar"
-    ls_bins = resolve_ls_binaries(agy_dir)
-    if not ls_bins:
-        raise FileNotFoundError(f"Language server binaries not found under {agy_dir}")
-    prod_ls = ls_bins[0]
+    prod_asar = paths["asar_path"]
+    prod_ls = paths["ls_path"]
+    ls_bins = paths["ls_bins"]
     ver = read_asar_version(prod_asar)
 
+    ls_bak_name = f"language_server.orig_{ver}.bak" if paths["is_mac_bundle"] else f"language_server.exe.orig_{ver}.bak"
     orig_asar_bak = runtime_dir / f"app.asar.orig_{ver}.bak"
-    orig_ls_bak = runtime_dir / f"language_server.exe.orig_{ver}.bak"
+    orig_ls_bak = runtime_dir / ls_bak_name
     if not orig_asar_bak.exists() or not orig_ls_bak.exists():
         raise FileNotFoundError(f"Baseline backups for v{ver} not found in {runtime_dir}")
 
-    shutil.copy2(orig_asar_bak, prod_asar)
-    for target_ls in ls_bins:
-        try:
-            shutil.copy2(orig_ls_bak, target_ls)
-        except PermissionError:
-            old_ls = target_ls.parent / f"{target_ls.name}.old.{os.getpid()}"
-            os.rename(target_ls, old_ls)
-            shutil.copy2(orig_ls_bak, target_ls)
+    if paths["is_mac_bundle"]:
+        orig_info_plist_bak = runtime_dir / f"Info.plist.orig_{ver}.bak"
+        orig_main_bak = runtime_dir / f"Antigravity.orig_{ver}.bak"
+        orig_code_res_bak = runtime_dir / f"CodeResources.orig_{ver}.bak"
+        for src_bak, dst_file in [
+            (orig_asar_bak, prod_asar),
+            (orig_ls_bak, prod_ls),
+            (orig_info_plist_bak, paths["info_plist_path"]),
+            (orig_main_bak, paths["main_exec_path"]),
+            (orig_code_res_bak, paths["code_resources_path"]),
+        ]:
+            if src_bak.exists():
+                atomic_replace_from_file(src_bak, dst_file)
+        subprocess.run(
+            ["/usr/bin/codesign", "--verify", "--deep", "--strict", str(paths["app_bundle"])],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    else:
+        shutil.copy2(orig_asar_bak, prod_asar)
+        for target_ls in ls_bins:
+            try:
+                shutil.copy2(orig_ls_bak, target_ls)
+            except PermissionError:
+                old_ls = target_ls.parent / f"{target_ls.name}.old.{os.getpid()}"
+                os.rename(target_ls, old_ls)
+                shutil.copy2(orig_ls_bak, target_ls)
 
     print(json.dumps({
         "status": "rolled_back",
@@ -223,7 +458,7 @@ def cmd_hot_inject(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Antigravity Enhance Suite CLI")
+    parser = argparse.ArgumentParser(description="Antigravity Enhance Suite CLI (v3.4.0)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_ins = sub.add_parser("inspect", help="Inspect current Antigravity installation & patch sites")

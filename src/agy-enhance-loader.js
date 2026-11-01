@@ -1,5 +1,5 @@
 /**
- * Antigravity Controlled Host Enhancement, Deep Chinese Localization & Streaming Mission HUD Runtime (v3.1.1)
+ * Antigravity Controlled Host Enhancement, Deep Chinese Localization & Streaming Mission HUD Runtime (v3.6.0-macos-merged)
  * - True async readyPromise & same-version idempotent reuse.
  * - Full Mode C consumer suspension (disconnects observer, timers, and removes non-wakeup DOM hosts).
  * - MutationObserver strictly filters out all [id^="agy-"] self-mutations (zero ring self-trigger loop).
@@ -8,7 +8,7 @@
  * - Native Settings integration (Settings -> Appearance: Interface Language & Widescreen Academic Typography).
  */
 (function () {
-  const VERSION = '3.1.1';
+  const VERSION = '3.6.0-macos-merged';
 
   if (
     globalThis.__AGY_V3__ &&
@@ -210,7 +210,7 @@
           const tempIds = new Set();
           const keptProjs = allProjs.filter((entry) => {
             const nm = String(entry?.project?.name || '');
-            const isTemp = /AppData[\\/]Local[\\/]Temp[\\/](?:agy_|ocr_)/i.test(nm);
+            const isTemp = /(?:(?:AppData[\\/]Local[\\/]Temp|(?:^|[\\/])var[\\/]folders[\\/][^\\/]+[\\/][^\\/]+[\\/]T|(?:^|[\\/])tmp)[\\/])(?:agy_|ocr_)/i.test(nm);
             if (isTemp && entry?.project?.id) tempIds.add(entry.project.id);
             return !isTemp;
           });
@@ -775,6 +775,9 @@
     'Runs in the cloud': '在云端运行',
     'On this computer': '本机环境',
     'Local Windows environment': '本地 Windows 环境',
+    'Local macOS environment': '本地 macOS 环境',
+    'Local Mac environment': '本地 Mac 环境',
+    'Local Linux environment': '本地 Linux 环境',
     // --- 设置全分页、按键展开栏与内置技能深度汉化扩展 ---
     'Models': '模型与额度',
     'Models & Usage': '模型与额度用量',
@@ -1293,6 +1296,13 @@
       if ((tag === 'INPUT' || tag === 'TEXTAREA') && !allowSearchInputPlaceholder) return true;
       if (cur.isContentEditable) return true;
       if (cur.id && cur.id.startsWith('agy-')) return true;
+      if (
+        cur.previousElementSibling &&
+        cur.previousElementSibling.getAttribute &&
+        cur.previousElementSibling.getAttribute('data-testid') === 'thinking-collapsible-trigger'
+      ) {
+        return true;
+      }
 
       const cls = typeof cur.className === 'string' ? cur.className : '';
       if (
@@ -1458,8 +1468,8 @@
           txt === 'ABFS Workspace (Alpha)' ||
           /Work in a (?:CitC|Cog) workspace/i.test(titleAttr) ||
           /Create a new Fig workspace/i.test(titleAttr) ||
-          /\\AppData\\Local\\Temp\\(?:agy_|ocr_)/i.test(txt) ||
-          /\\AppData\\Local\\Temp\\(?:agy_|ocr_)/i.test(titleAttr)
+          /(?:(?:AppData[\\/]Local[\\/]Temp|(?:^|[\\/])var[\\/]folders[\\/][^\\/]+[\\/][^\\/]+[\\/]T|(?:^|[\\/])tmp)[\\/])(?:agy_|ocr_)/i.test(txt) ||
+          /(?:(?:AppData[\\/]Local[\\/]Temp|(?:^|[\\/])var[\\/]folders[\\/][^\\/]+[\\/][^\\/]+[\\/]T|(?:^|[\\/])tmp)[\\/])(?:agy_|ocr_)/i.test(titleAttr)
         ) {
           item.style.setProperty('display', 'none', 'important');
         }
@@ -1524,6 +1534,9 @@
   }
 
   function setWindowTitleBarColors(color, symbolColor) {
+    if (typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent || '')) {
+      return;
+    }
     if (bridge && typeof bridge.setTitleBarOverlay === 'function') {
       bridge.setTitleBarOverlay({ color, symbolColor }).catch(() => {});
     } else if (window.electronNative && typeof window.electronNative.setTitleBarOverlay === 'function') {
@@ -1590,7 +1603,7 @@
         border-radius: 999px;
         font-size: 11px;
         font-weight: 600;
-        font-family: "JetBrains Mono", "Microsoft YaHei", monospace, system-ui;
+        font-family: "JetBrains Mono", "SF Mono", "Menlo", "PingFang SC", "Microsoft YaHei", monospace, system-ui;
         line-height: 1;
         user-select: none;
         white-space: nowrap;
@@ -1626,19 +1639,37 @@
         flex-shrink: 0;
       }
 
-      /* Stream Qualitative UX Inline Enhancements (Minimalist Native Style) */
+      /* Stream Qualitative UX Inline Enhancements (Minimalist Codex-like Style) */
+      button[data-testid="thinking-collapsible-trigger"] + div,
+      button[data-testid="tool-group-collapsible"] + div {
+        display: none !important;
+      }
+      button[data-testid="thinking-collapsible-trigger"][data-agy-user-expanded="1"][aria-expanded="true"] + div,
+      button[data-testid="tool-group-collapsible"][data-agy-user-expanded="1"][aria-expanded="true"] + div {
+        display: block !important;
+      }
+      button[data-testid="thinking-collapsible-trigger"] svg:last-child,
+      button[data-testid="tool-group-collapsible"] svg:last-child {
+        transform: rotate(0deg) !important;
+        transition: transform 0.15s ease !important;
+      }
+      button[data-testid="thinking-collapsible-trigger"][data-agy-user-expanded="1"][aria-expanded="true"] svg:last-child,
+      button[data-testid="tool-group-collapsible"][data-agy-user-expanded="1"][aria-expanded="true"] svg:last-child {
+        transform: rotate(90deg) !important;
+      }
       .agy-think-inline-summary {
         display: inline-flex;
         align-items: center;
         margin-left: 6px;
         color: var(--muted-foreground, #6b7280);
-        font-size: 12.5px;
+        font-size: 12px;
         font-weight: 400;
-        max-width: min(56vw, 600px);
+        max-width: min(54vw, 560px);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
         pointer-events: none;
+        opacity: 0.88;
       }
       .agy-think-inline-summary::before {
         content: "·";
@@ -1690,26 +1721,23 @@
         margin-right: 6px;
         opacity: 0.65;
       }
-      /* Keep the single-line breathing "思考中…" indicator, but hide its expandable raw thinking body & chevron */
-      button[data-testid="thinking-collapsible-trigger"] {
-        pointer-events: none !important;
-        cursor: default !important;
-      }
-      button[data-testid="thinking-collapsible-trigger"] svg,
-      button[data-testid="thinking-collapsible-trigger"] + div {
-        display: none !important;
-      }
-      button[data-testid="tool-group-collapsible"]:not([data-agy-user-expanded="1"]) + div {
-        display: none !important;
-      }
-      button[data-testid="tool-group-collapsible"]:not([data-agy-user-expanded="1"]) svg:last-child {
-        transform: rotate(-90deg) !important;
-      }
       [data-testid="project-selector-new-workspace"],
-      [role="option"]:has(span[title*="\\AppData\\Local\\Temp\\agy_"]),
-      [role="option"]:has(span[title*="\\AppData\\Local\\Temp\\ocr_"]),
-      [role="menuitem"]:has(span[title*="\\AppData\\Local\\Temp\\agy_"]),
-      [role="menuitem"]:has(span[title*="\\AppData\\Local\\Temp\\ocr_"]) {
+      [role="option"]:has(span[title*="\\\\AppData\\\\Local\\\\Temp\\\\agy_"]),
+      [role="option"]:has(span[title*="\\\\AppData\\\\Local\\\\Temp\\\\ocr_"]),
+      [role="option"]:has(span[title*="AppData/Local/Temp/agy_"]),
+      [role="option"]:has(span[title*="AppData/Local/Temp/ocr_"]),
+      [role="option"]:has(span[title*="/T/agy_"]),
+      [role="option"]:has(span[title*="/T/ocr_"]),
+      [role="menuitem"]:has(span[title*="\\\\AppData\\\\Local\\\\Temp\\\\agy_"]),
+      [role="menuitem"]:has(span[title*="\\\\AppData\\\\Local\\\\Temp\\\\ocr_"]),
+      [role="menuitem"]:has(span[title*="AppData/Local/Temp/agy_"]),
+      [role="menuitem"]:has(span[title*="AppData/Local/Temp/ocr_"]),
+      [role="option"]:has(span[title*="/tmp/agy_"]),
+      [role="option"]:has(span[title*="/tmp/ocr_"]),
+      [role="menuitem"]:has(span[title*="/T/agy_"]),
+      [role="menuitem"]:has(span[title*="/T/ocr_"]),
+      [role="menuitem"]:has(span[title*="/tmp/agy_"]),
+      [role="menuitem"]:has(span[title*="/tmp/ocr_"]) {
         display: none !important;
       }
       [data-testid="project-selector-search"] + div {
@@ -2182,7 +2210,7 @@
           }
         }
       }
-      if (!maxTokens || maxTokens <= 0) maxTokens = 900000;
+      if (!maxTokens || maxTokens <= 0) maxTokens = 983040;
 
       const percent = (usedTokens / maxTokens) * 100;
       return {
@@ -2344,18 +2372,22 @@
   const STEP_STATUS_INTERRUPTED = 12;
 
   function mergeBufferedConversationState(cid) {
-    const records = globalThis.__asu?.conversations?.get?.(cid);
+    const records = globalThis.__asu?.conversations?.get?.(cid) || globalThis.__asu?.[cid];
     if (!Array.isArray(records) || records.length === 0) return null;
 
     const stepsByIndex = new Map();
+    const bgByIndex = new Map();
+    const pendingByIndex = new Map();
     let maxTotalLength = 0;
+    let bgTotalLength = null;
+    let pendingTotalLength = null;
     let latestStatus = null;
     let latestFullyIdle = null;
     let latestTrajectoryId = '';
     let hasTerminalError = false;
 
     for (const rec of records) {
-      const u = rec?.update;
+      const u = rec?.update || rec;
       if (!u) continue;
       if (u.trajectoryId) latestTrajectoryId = u.trajectoryId;
       if (u.status !== undefined) latestStatus = u.status;
@@ -2376,6 +2408,45 @@
           if (idx + 1 > maxTotalLength) maxTotalLength = idx + 1;
         }
       }
+      const bu = u.backgroundTasksUpdate;
+      if (bu) {
+        if (Array.isArray(bu.backgroundTasks)) {
+          const indices = Array.isArray(bu.indices) ? bu.indices : [];
+          for (let i = 0; i < bu.backgroundTasks.length; i++) {
+            const idx = typeof indices[i] === 'number' ? indices[i] : i;
+            if (bu.backgroundTasks[i] == null) bgByIndex.delete(idx);
+            else bgByIndex.set(idx, bu.backgroundTasks[i]);
+          }
+        }
+        if (typeof bu.totalLength === 'number') {
+          bgTotalLength = bu.totalLength;
+        }
+      }
+      const pu = u.pendingAgentMessagesUpdate;
+      if (pu) {
+        if (Array.isArray(pu.pendingAgentMessages)) {
+          const indices = Array.isArray(pu.indices) ? pu.indices : [];
+          for (let i = 0; i < pu.pendingAgentMessages.length; i++) {
+            const idx = typeof indices[i] === 'number' ? indices[i] : i;
+            if (pu.pendingAgentMessages[i] == null) pendingByIndex.delete(idx);
+            else pendingByIndex.set(idx, pu.pendingAgentMessages[i]);
+          }
+        }
+        if (typeof pu.totalLength === 'number') {
+          pendingTotalLength = pu.totalLength;
+        }
+      }
+    }
+
+    if (typeof bgTotalLength === 'number') {
+      for (const idx of [...bgByIndex.keys()]) {
+        if (idx >= bgTotalLength) bgByIndex.delete(idx);
+      }
+    }
+    if (typeof pendingTotalLength === 'number') {
+      for (const idx of [...pendingByIndex.keys()]) {
+        if (idx >= pendingTotalLength) pendingByIndex.delete(idx);
+      }
     }
 
     const tailIndex = maxTotalLength > 0 ? maxTotalLength - 1 : -1;
@@ -2386,7 +2457,10 @@
       fullyIdle: latestFullyIdle,
       hasTerminalError,
       tailIndex,
-      tailStep
+      tailStep,
+      backgroundTasks: bgByIndex.size > 0 || bgTotalLength !== null ? [...bgByIndex.values()] : null,
+      pendingAgentMessages: pendingByIndex.size > 0 || pendingTotalLength !== null ? [...pendingByIndex.values()] : null,
+      pendingTotalLength
     };
   }
 
@@ -2463,7 +2537,7 @@
 
     if (globalPrefs.enabled && globalPrefs.lang !== 'en') {
       enhanceConversationStreamDOM();
-      updateMissionHud();
+      pollMissionHud(false);
     } else {
       hideMissionHud();
     }
@@ -2478,6 +2552,15 @@
   let missionHudCollapsed = true;
   let inlineSeqCounter = 0;
   const domElementUidMap = new WeakMap();
+  const reactFiberCache = new WeakMap();
+  let lastMissionPollTs = 0;
+
+  function pollMissionHud(force = false) {
+    const now = Date.now();
+    if (!force && now - lastMissionPollTs < 250) return;
+    lastMissionPollTs = now;
+    updateMissionHud();
+  }
 
   function getStableDomUid(el) {
     let id = domElementUidMap.get(el);
@@ -2490,16 +2573,22 @@
 
   function getReactFiber(el) {
     if (!el || typeof el !== 'object') return null;
+    if (reactFiberCache.has(el)) {
+      return reactFiberCache.get(el);
+    }
+    let found = null;
     try {
       const keys = Object.keys(el);
       for (let i = 0; i < keys.length; i++) {
         const k = keys[i];
         if (k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$')) {
-          return el[k];
+          found = el[k];
+          break;
         }
       }
     } catch (e) {}
-    return null;
+    reactFiberCache.set(el, found);
+    return found;
   }
 
   function findAncestorFiberProps(el, predicate, maxDepth = 18) {
@@ -2636,7 +2725,7 @@
         cleaned.length >= 6 &&
         cleaned.length <= 96 &&
         /[\u4e00-\u9fa5]{3,}/.test(cleaned) &&
-        !/^(https?:|file:\/\/|[A-Za-z]:\\|import\s|def\s|function\s|const\s|var\s|let\s)/.test(cleaned)
+        !/^(https?:|file:\/\/|[A-Za-z]:\\|\/(?:Users|Applications|var|tmp|private|opt|etc)\/|import\s|def\s|function\s|const\s|var\s|let\s)/.test(cleaned)
       ) {
         zhSentences.push(cleaned);
       }
@@ -2833,12 +2922,58 @@
     return '';
   }
 
+  function onCollapsibleClickCapture(e) {
+    if (disposed || !globalPrefs.enabled || !e || !e.target || !e.target.closest) return;
+    const btn = e.target.closest(
+      'button[data-testid="thinking-collapsible-trigger"], button[data-testid="tool-group-collapsible"]'
+    );
+    if (!btn) return;
+
+    const reactExpanded = btn.getAttribute('aria-expanded') === 'true';
+    const isCurrentlyVisible =
+      btn.getAttribute('data-agy-user-expanded') === '1' &&
+      reactExpanded &&
+      Boolean(btn.nextElementSibling);
+    const wantExpand = !isCurrentlyVisible;
+
+    if (wantExpand) {
+      btn.setAttribute('data-agy-user-expanded', '1');
+      if (btn.nextElementSibling) {
+        btn.nextElementSibling.style.removeProperty('display');
+      }
+      if (reactExpanded) {
+        // React already mounted the body div (e.g. while actively streaming/running);
+        // stop propagation so neither legacy element listeners nor React unmount it.
+        e.stopImmediatePropagation();
+        e.stopPropagation();
+      } else {
+        // Let the event reach React's root listener to mount the body div, and ensure
+        // data-agy-user-expanded="1" remains set even if a legacy element listener ran.
+        queueMicrotask(() => {
+          btn.setAttribute('data-agy-user-expanded', '1');
+          if (btn.nextElementSibling) {
+            btn.nextElementSibling.style.removeProperty('display');
+          }
+        });
+      }
+    } else {
+      btn.removeAttribute('data-agy-user-expanded');
+      if (btn.nextElementSibling) {
+        btn.nextElementSibling.style.removeProperty('display');
+      }
+      if (reactExpanded) {
+        e.stopImmediatePropagation();
+        e.stopPropagation();
+      }
+    }
+  }
+
   function enhanceConversationStreamDOM() {
     if (!document.querySelectorAll) return;
 
-    // Remove any noisy inline filename/tool tails on collapsed headers
+    // Remove any noisy inline filename/tool tails on collapsed tool-group headers
     const noisyInlineEls = document.querySelectorAll(
-      '.agy-stage-qualitative-sub, .agy-think-inline-summary, [id^="agy-stream-stage-sub-"], [id^="agy-stream-think-inline-"]'
+      '.agy-stage-qualitative-sub, [id^="agy-stream-stage-sub-"]'
     );
     for (const el of noisyInlineEls) {
       el.remove();
@@ -2875,59 +3010,74 @@
       }
     }
 
-    // Keep the breathing single-line thinking indicator visible, but hide its expanded raw thinking body
+    // Codex-style thinking headers: default-collapsed, 1-click expandable anytime, with single-sentence Chinese summary
     const thinkBtns = document.querySelectorAll('button[data-testid="thinking-collapsible-trigger"]');
+    let thinkIdx = 0;
     for (const tb of thinkBtns) {
+      thinkIdx++;
       tb.style.removeProperty('display');
+      tb.style.removeProperty('pointer-events');
+      tb.style.removeProperty('cursor');
       if (tb.parentElement) {
         tb.parentElement.style.removeProperty('display');
       }
       if (tb.nextElementSibling) {
-        tb.nextElementSibling.style.setProperty('display', 'none', 'important');
+        tb.nextElementSibling.style.removeProperty('display');
       }
       const w = document.createTreeWalker(tb, NodeFilter.SHOW_TEXT, null);
       while (w.nextNode()) {
-        processTextNode(w.currentNode);
+        const tn = w.currentNode;
+        if (tn.parentElement && tn.parentElement.classList && tn.parentElement.classList.contains('agy-think-inline-summary')) {
+          continue;
+        }
+        processTextNode(tn);
+      }
+
+      const thinkProps = findAncestorFiberProps(tb, (p) => typeof p.thinking === 'string' && p.thinking.length > 0);
+      if (thinkProps && thinkProps.thinking) {
+        let nextToolDesc = '';
+        const stepHolder = findAncestorFiberProps(tb, (p) => Boolean(p.step && p.step.step?.case === 'plannerResponse'));
+        const grpHolder = findAncestorFiberProps(tb, (p) => Array.isArray(p.steps) || Array.isArray(p.segment?.steps));
+        const grpSteps = grpHolder?.steps || grpHolder?.segment?.steps || [];
+        if (stepHolder?.step && grpSteps.length > 0) {
+          const curStepIndex = stepHolder.step.metadata?.sourceTrajectoryStepInfo?.stepIndex;
+          let sIdx = grpSteps.indexOf(stepHolder.step);
+          if (sIdx < 0 && typeof curStepIndex === 'number') {
+            sIdx = grpSteps.findIndex((s) => s?.metadata?.sourceTrajectoryStepInfo?.stepIndex === curStepIndex);
+          }
+          if (sIdx >= 0 && sIdx + 1 < grpSteps.length) {
+            nextToolDesc = describeStepQualitatively(grpSteps[sIdx + 1]);
+          }
+        }
+        const digest = parseThinkingQualitativeDigest(thinkProps.thinking, nextToolDesc);
+        const headline = digest && digest.headline ? digest.headline : '';
+        if (headline) {
+          let inlineSpan = tb.querySelector('.agy-think-inline-summary');
+          if (!inlineSpan) {
+            inlineSpan = document.createElement('span');
+            inlineSpan.id = `agy-stream-think-inline-${thinkIdx}`;
+            inlineSpan.className = 'agy-think-inline-summary';
+            const lastSvg = tb.querySelector('svg:last-child');
+            if (lastSvg && lastSvg.parentElement === tb) {
+              tb.insertBefore(inlineSpan, lastSvg);
+            } else {
+              tb.appendChild(inlineSpan);
+            }
+          }
+          if (inlineSpan.textContent !== headline) {
+            inlineSpan.textContent = headline;
+          }
+        }
       }
     }
 
-    // Re-translate any already-tracked text nodes & lock ONLY inner tool-group-collapsible containers (never worked-for-collapsible!)
+    // Re-translate tracked text nodes on tool-group & worked-for headers while preserving user expansion state
     const summaryBtns = document.querySelectorAll(
       'button[data-testid="tool-group-collapsible"], button[data-testid="worked-for-collapsible"]'
     );
     for (const gbtn of summaryBtns) {
-      const isToolGroup = gbtn.getAttribute('data-testid') === 'tool-group-collapsible';
-      if (isToolGroup) {
-        if (!gbtn.hasAttribute('data-agy-click-bound')) {
-          gbtn.setAttribute('data-agy-click-bound', '1');
-          gbtn.addEventListener(
-            'click',
-            (e) => {
-              if (!e.isTrusted) return;
-              const cur = gbtn.getAttribute('data-agy-user-expanded') === '1';
-              if (cur) {
-                gbtn.removeAttribute('data-agy-user-expanded');
-                if (gbtn.nextElementSibling) {
-                  gbtn.nextElementSibling.style.setProperty('display', 'none', 'important');
-                }
-              } else {
-                gbtn.setAttribute('data-agy-user-expanded', '1');
-                if (gbtn.nextElementSibling) {
-                  gbtn.nextElementSibling.style.removeProperty('display');
-                }
-              }
-            },
-            true
-          );
-        }
-        if (gbtn.getAttribute('data-agy-user-expanded') !== '1' && gbtn.nextElementSibling) {
-          gbtn.nextElementSibling.style.setProperty('display', 'none', 'important');
-        }
-      } else {
-        // For worked-for-collapsible, ALWAYS ensure its nextElementSibling is NOT hidden by inline display:none!
-        if (gbtn.nextElementSibling) {
-          gbtn.nextElementSibling.style.removeProperty('display');
-        }
+      if (gbtn.nextElementSibling) {
+        gbtn.nextElementSibling.style.removeProperty('display');
       }
       const w = document.createTreeWalker(gbtn, NodeFilter.SHOW_TEXT, null);
       while (w.nextNode()) {
@@ -3007,25 +3157,40 @@
 
   // Reactive Wakeup Watchdog state per conversation (prevents hung background tasks / subagents from leaving main conversation stuck in IDLE)
   const wakeupWatchdogByConvo = new Map();
-  let wakeupRpcInFlight = false;
+  const MAX_WAKEUPS_PER_IDLE_EPISODE = 3;
 
-  function triggerNativeSystemWakeupRpc(cid, reason) {
-    if (disposed || !globalPrefs.enabled || !cid || wakeupRpcInFlight) return;
-    if (typeof window.fetch !== 'function') return;
+  function abortInFlightWakeupRpc(rec) {
+    if (!rec) return;
+    rec.epoch = (rec.epoch || 0) + 1;
+    if (rec.abortCtrl) {
+      try {
+        rec.abortCtrl.abort();
+      } catch (e) {}
+      rec.abortCtrl = null;
+    }
+    rec.rpcInFlight = false;
+    rec.inFlightReason = '';
+  }
+
+  function triggerNativeSystemWakeupRpc(cid, reason, rec, reqEpoch, onSuccessCommit) {
+    if (disposed || !globalPrefs.enabled || !cid || !rec || rec.rpcInFlight) return false;
+    if (typeof window.fetch !== 'function') return false;
 
     const csrf =
       window.__APP_CONFIG__?.csrfToken ||
       (document.cookie ? document.cookie.split('; ').find((a) => a.startsWith('csrfToken='))?.split('=')[1] : '') ||
       '';
-    if (!csrf) return;
+    if (!csrf) return false;
 
-    wakeupRpcInFlight = true;
+    rec.rpcInFlight = true;
+    rec.inFlightReason = reason;
     const ctrl = new AbortController();
+    rec.abortCtrl = ctrl;
     const timer = setTimeout(() => ctrl.abort(), 8000);
 
     (async () => {
       try {
-        await window.fetch(
+        const resp = await window.fetch(
           `${window.location.origin}/exa.language_server_pb.LanguageServerService/SendAgentMessage`,
           {
             method: 'POST',
@@ -3042,50 +3207,178 @@
             signal: ctrl.signal
           }
         );
+        if (ctrl.signal.aborted || disposed || rec.epoch !== reqEpoch) {
+          return;
+        }
+        if (resp && resp.ok) {
+          const doneTs = Date.now();
+          rec.lastFailedAttemptTs = 0;
+          if (typeof onSuccessCommit === 'function') {
+            onSuccessCommit(doneTs);
+          }
+          syncMissionHudWatchdogPill();
+        } else {
+          rec.lastFailedAttemptTs = Date.now();
+        }
       } catch (e) {
+        if (!ctrl.signal.aborted && rec.epoch === reqEpoch) {
+          rec.lastFailedAttemptTs = Date.now();
+        }
       } finally {
         clearTimeout(timer);
-        wakeupRpcInFlight = false;
+        if (rec.abortCtrl === ctrl) {
+          rec.abortCtrl = null;
+        }
+        if (rec.epoch === reqEpoch) {
+          rec.rpcInFlight = false;
+          rec.inFlightReason = '';
+        }
       }
     })();
+    return true;
   }
 
-  function evaluateReactiveWakeupWatchdog(cid, totalStepsCount, activeBgCount, pendingMsgCount, mainExecutorRunning, isFullyIdle) {
-    if (!cid || disposed || !globalPrefs.enabled) return;
-    const now = Date.now();
+  function ensureWatchdogConvoRecord(cid, totalStepsCount = 0, stepProgressSig = '', mainExecutorRunning = false) {
     let rec = wakeupWatchdogByConvo.get(cid);
     if (!rec) {
+      const now = Date.now();
       rec = {
+        epoch: 1,
+         initialized: false,
         lastStepsCount: totalStepsCount,
+        lastStepProgressSig: stepProgressSig,
         lastStepChangeTs: now,
-        hadActiveBgWhileMainIdle: !mainExecutorRunning && (activeBgCount > 0 || isFullyIdle === false),
+        lastBgStartTs: now,
+        activeBgIds: new Set(),
+        finishedBgIds: [],
+        taskToStepMap: new Map(),
+        bgByIndex: new Map(),
+        pendingByIndex: new Map(),
+        lastNonDaemonBgCount: 0,
+        hadActiveBgWhileMainIdle: false,
         bgFinishedEdgeTs: 0,
         pendingMsgFirstSeenTs: 0,
         lastWakeupSentTs: 0,
-        wakeupCount: 0
+        lastWakeupStepsCount: -1,
+        lastFailedAttemptTs: 0,
+        wakeupCount: 0,
+        rpcInFlight: false,
+        inFlightReason: '',
+        abortCtrl: null
       };
       wakeupWatchdogByConvo.set(cid, rec);
+    }
+    return rec;
+  }
+
+  function evaluateReactiveWakeupWatchdog(
+    cid,
+    totalStepsCount,
+    stepProgressSig,
+    nextBgIdsInput,
+    pendingMsgCount,
+    mainExecutorRunning,
+    turnCompletedQuietly = false
+  ) {
+    if (!cid || disposed || !globalPrefs.enabled) return;
+    const now = Date.now();
+    const nextBgIds =
+      nextBgIdsInput instanceof Set
+        ? nextBgIdsInput
+        : new Set(Array.isArray(nextBgIdsInput) ? nextBgIdsInput : []);
+    const nonDaemonBgCount = nextBgIds.size;
+
+    const rec = ensureWatchdogConvoRecord(cid, totalStepsCount, stepProgressSig, mainExecutorRunning);
+    if (!rec.initialized) {
+      rec.initialized = true;
+      rec.lastStepsCount = totalStepsCount;
+      rec.lastStepProgressSig = stepProgressSig;
+      rec.lastStepChangeTs = now;
+      rec.lastBgStartTs = now;
+      rec.activeBgIds = new Set(nextBgIds);
+      rec.finishedBgIds = [];
+      rec.lastNonDaemonBgCount = !mainExecutorRunning ? nonDaemonBgCount : 0;
+      rec.hadActiveBgWhileMainIdle = !mainExecutorRunning && nonDaemonBgCount > 0;
+      rec.bgFinishedEdgeTs = 0;
+      rec.pendingMsgFirstSeenTs = !mainExecutorRunning && pendingMsgCount > 0 ? now : 0;
       return;
     }
 
-    if (totalStepsCount !== rec.lastStepsCount || mainExecutorRunning) {
+    const stepsCountChanged = totalStepsCount !== rec.lastStepsCount;
+    const prevBgIds = rec.activeBgIds instanceof Set ? rec.activeBgIds : new Set();
+    const finished = [];
+    const started = [];
+    if (!mainExecutorRunning || stepsCountChanged) {
+      for (const id of prevBgIds) {
+        if (!nextBgIds.has(id)) {
+          if (id === 'children:active' && nextBgIds.size > 0) continue;
+          finished.push(id);
+        }
+      }
+      for (const id of nextBgIds) {
+        if (!prevBgIds.has(id)) started.push(id);
+      }
+      rec.activeBgIds = new Set(nextBgIds);
+    }
+
+    const prevBgCount = typeof rec.lastNonDaemonBgCount === 'number' ? rec.lastNonDaemonBgCount : 0;
+    const waitingOnBgWhileMainIdle = !mainExecutorRunning && nonDaemonBgCount > 0;
+    const bgDecreasedWhileMainIdle =
+      !mainExecutorRunning &&
+      !(stepsCountChanged && nonDaemonBgCount === 0) &&
+      (finished.length > 0 ||
+        (prevBgCount > 0 && nonDaemonBgCount < prevBgCount) ||
+        (rec.hadActiveBgWhileMainIdle && nonDaemonBgCount === 0));
+
+    // Only reset wakeupCount when all non-daemon background tasks have cleared or substantive multi-step work occurred
+    if (
+      (nonDaemonBgCount === 0 && pendingMsgCount === 0 && (stepsCountChanged || mainExecutorRunning)) ||
+      (rec.lastWakeupStepsCount >= 0 && totalStepsCount >= rec.lastWakeupStepsCount + 4)
+    ) {
+      rec.wakeupCount = 0;
+      rec.lastWakeupStepsCount = -1;
+    }
+
+    const sigChanged = stepProgressSig !== rec.lastStepProgressSig;
+    if (stepsCountChanged || sigChanged || mainExecutorRunning) {
+      if (stepsCountChanged || mainExecutorRunning) {
+        abortInFlightWakeupRpc(rec);
+      }
       rec.lastStepsCount = totalStepsCount;
-      rec.lastStepChangeTs = now;
-      if (mainExecutorRunning) {
+      rec.lastStepProgressSig = stepProgressSig;
+      if (stepsCountChanged || mainExecutorRunning) {
+        rec.lastStepChangeTs = now;
+      }
+      if (mainExecutorRunning || (stepsCountChanged && nonDaemonBgCount === 0)) {
         rec.hadActiveBgWhileMainIdle = false;
         rec.bgFinishedEdgeTs = 0;
         rec.pendingMsgFirstSeenTs = 0;
       }
     }
 
-    const waitingOnBgWhileMainIdle = !mainExecutorRunning && (activeBgCount > 0 || isFullyIdle === false);
-    if (rec.hadActiveBgWhileMainIdle && !waitingOnBgWhileMainIdle && !mainExecutorRunning) {
+    if (!mainExecutorRunning && started.length > 0) {
+      rec.lastBgStartTs = now;
+      if (rec.rpcInFlight && rec.inFlightReason === 'background_work_65s_check') {
+        abortInFlightWakeupRpc(rec);
+      }
+    }
+    if (bgDecreasedWhileMainIdle) {
       rec.bgFinishedEdgeTs = now;
+      if (finished.length > 0) {
+        rec.finishedBgIds = finished;
+      }
+      if (nonDaemonBgCount === 0) {
+        rec.hadActiveBgWhileMainIdle = false;
+      }
     }
     if (waitingOnBgWhileMainIdle) {
       rec.hadActiveBgWhileMainIdle = true;
     } else if (mainExecutorRunning) {
       rec.hadActiveBgWhileMainIdle = false;
+      rec.bgFinishedEdgeTs = 0;
+    }
+    if (!mainExecutorRunning || stepsCountChanged) {
+      rec.lastNonDaemonBgCount = nonDaemonBgCount;
     }
 
     if (!mainExecutorRunning && pendingMsgCount > 0) {
@@ -3094,43 +3387,66 @@
       rec.pendingMsgFirstSeenTs = 0;
     }
 
-    // Never send wakeup if the main executor loop is actively running or waiting for user approval button
-    if (mainExecutorRunning || realAgentState === 'WAITING') {
+    // Never send wakeup if the main executor loop is actively running, waiting for user approval, or an RPC is already in flight
+    if (mainExecutorRunning || realAgentState === 'WAITING' || rec.rpcInFlight) {
       return;
     }
 
-    // Enforce a minimum 45s cooldown between watchdog wakeup signals for the same conversation
+    // Cap wakeups per idle episode so a permanently orphaned background task never spams the conversation
+    if (rec.wakeupCount >= MAX_WAKEUPS_PER_IDLE_EPISODE) {
+      return;
+    }
+
+    // Enforce a minimum 45s cooldown after a successful wakeup, and 10s retry backoff after a failed HTTP/network attempt
     if (rec.lastWakeupSentTs && now - rec.lastWakeupSentTs < 45000) {
+      return;
+    }
+    if (rec.lastFailedAttemptTs && now - rec.lastFailedAttemptTs < 10000) {
       return;
     }
 
     const mainIdleDurationMs = now - rec.lastStepChangeTs;
+    const bgIdleDurationMs = now - Math.max(rec.lastStepChangeTs, rec.lastBgStartTs || 0);
+    const reqEpoch = rec.epoch;
 
     // Condition 1: Undelivered pending messages sitting in AgentState while main executor has been idle > 5s
     if (pendingMsgCount > 0 && rec.pendingMsgFirstSeenTs && now - rec.pendingMsgFirstSeenTs > 5000 && mainIdleDurationMs > 5000) {
-      rec.lastWakeupSentTs = now;
-      rec.pendingMsgFirstSeenTs = now;
-      rec.wakeupCount += 1;
-      triggerNativeSystemWakeupRpc(cid, 'undelivered_pending_message');
+      triggerNativeSystemWakeupRpc(cid, 'undelivered_pending_message', rec, reqEpoch, (doneTs) => {
+        if (rec.epoch !== reqEpoch) return;
+        rec.lastWakeupSentTs = doneTs;
+        rec.lastWakeupStepsCount = totalStepsCount;
+        rec.pendingMsgFirstSeenTs = doneTs;
+        rec.wakeupCount += 1;
+      });
       return;
     }
 
-    // Condition 2: Background task or subagent finished while main executor was idle, and main executor stayed idle > 6s without starting a new turn
+    // Condition 2: Non-daemon background task or subagent finished while main executor was idle (including 2 -> 1 or ID swap), and main executor stayed idle > 6s
     if (rec.bgFinishedEdgeTs && now - rec.bgFinishedEdgeTs > 6000 && mainIdleDurationMs > 6000) {
-      rec.lastWakeupSentTs = now;
-      rec.bgFinishedEdgeTs = 0;
-      rec.hadActiveBgWhileMainIdle = false;
-      rec.wakeupCount += 1;
-      triggerNativeSystemWakeupRpc(cid, 'background_work_completed');
+      const sentEdge = rec.bgFinishedEdgeTs;
+      triggerNativeSystemWakeupRpc(cid, 'background_work_completed', rec, reqEpoch, (doneTs) => {
+        if (rec.epoch !== reqEpoch) return;
+        rec.lastWakeupSentTs = doneTs;
+        rec.lastWakeupStepsCount = totalStepsCount;
+        if (rec.bgFinishedEdgeTs === sentEdge) {
+          rec.bgFinishedEdgeTs = 0;
+        }
+        rec.hadActiveBgWhileMainIdle = rec.activeBgIds.size > 0;
+        rec.wakeupCount += 1;
+      });
       return;
     }
 
-    // Condition 3: Background task or subagent still hanging while main executor has been sitting idle for > 65s without advancing steps
-    if (waitingOnBgWhileMainIdle && mainIdleDurationMs > 65000) {
-      rec.lastWakeupSentTs = now;
-      rec.lastStepChangeTs = now;
-      rec.wakeupCount += 1;
-      triggerNativeSystemWakeupRpc(cid, 'background_work_65s_check');
+    // Condition 3: Non-daemon background task or subagent still hanging while main executor has been sitting idle for > 65s without advancing steps
+    if (waitingOnBgWhileMainIdle && !turnCompletedQuietly && bgIdleDurationMs > 65000) {
+      triggerNativeSystemWakeupRpc(cid, 'background_work_65s_check', rec, reqEpoch, (doneTs) => {
+        if (rec.epoch !== reqEpoch) return;
+        rec.lastWakeupSentTs = doneTs;
+        rec.lastWakeupStepsCount = totalStepsCount;
+        rec.lastStepChangeTs = doneTs;
+        rec.lastBgStartTs = doneTs;
+        rec.wakeupCount += 1;
+      });
     }
   }
 
@@ -3440,10 +3756,14 @@
     const seenStepObjs = new Set();
     const seenRuntimeKeys = new Set();
     let totalStepsCount = 0;
-    let providerBgTaskCount = 0;
+    let providerDaemonCount = 0;
     let providerPendingMsgCount = 0;
     let providerExecStatus = null;
     let providerFullyIdle = null;
+    let providerHasActiveChildren = false;
+    const rawProviderTasks = [];
+    const convoRec = cid ? ensureWatchdogConvoRecord(cid) : null;
+    const mergedSnap = cid ? mergeBufferedConversationState(cid) : null;
 
     const av = activeCv.querySelector ? activeCv.querySelector('[data-testid="autoscroll-viewport"]') : null;
     if (av) {
@@ -3454,15 +3774,89 @@
         totalStepsCount = Number(st?.trajectorySlice?.totalStepsLength || 0);
         if (st?.executorLoopStatus !== undefined) providerExecStatus = st.executorLoopStatus;
         if (st?.fullyIdle !== undefined) providerFullyIdle = st.fullyIdle;
+        if (st?.hasActiveChildren === true) providerHasActiveChildren = true;
+
+        // Prefer authoritative st.backgroundTasks array; only fall back to sparse st.backgroundTasksUpdate when full array is absent
         if (Array.isArray(st?.backgroundTasks)) {
-          providerBgTaskCount += st.backgroundTasks.length;
+          if (convoRec) {
+            convoRec.bgByIndex.clear();
+            for (let i = 0; i < st.backgroundTasks.length; i++) {
+              if (st.backgroundTasks[i] != null) convoRec.bgByIndex.set(i, st.backgroundTasks[i]);
+            }
+          }
+          for (const t of st.backgroundTasks) {
+            if (t != null) rawProviderTasks.push(t);
+          }
+        } else if (st?.backgroundTasksUpdate && convoRec) {
+          const upd = st.backgroundTasksUpdate;
+          if (Array.isArray(upd.backgroundTasks)) {
+            const indices = Array.isArray(upd.indices) ? upd.indices : [];
+            for (let i = 0; i < upd.backgroundTasks.length; i++) {
+              const idx = typeof indices[i] === 'number' ? indices[i] : i;
+              if (upd.backgroundTasks[i] == null) convoRec.bgByIndex.delete(idx);
+              else convoRec.bgByIndex.set(idx, upd.backgroundTasks[i]);
+            }
+          }
+          if (typeof upd.totalLength === 'number') {
+            for (const idx of [...convoRec.bgByIndex.keys()]) {
+              if (idx >= upd.totalLength) convoRec.bgByIndex.delete(idx);
+            }
+          }
+          for (const t of convoRec.bgByIndex.values()) {
+            if (t != null) rawProviderTasks.push(t);
+          }
+        } else if (Array.isArray(mergedSnap?.backgroundTasks)) {
+          for (const t of mergedSnap.backgroundTasks) {
+            if (t != null) rawProviderTasks.push(t);
+          }
         }
+
         if (Array.isArray(st?.activeSubagents)) {
-          providerBgTaskCount += st.activeSubagents.length;
+          for (const sub of st.activeSubagents) {
+            if (sub != null) rawProviderTasks.push(sub);
+          }
         }
-        if (Array.isArray(st?.pendingMessages)) {
-          providerPendingMsgCount = st.pendingMessages.length;
+
+        // Pending agent messages: support full arrays and sparse pendingAgentMessagesUpdate
+        const fullPending = Array.isArray(st?.pendingAgentMessages)
+          ? st.pendingAgentMessages
+          : Array.isArray(st?.pendingMessages)
+            ? st.pendingMessages
+            : null;
+        if (fullPending) {
+          providerPendingMsgCount = fullPending.length;
+          if (convoRec) {
+            convoRec.pendingByIndex.clear();
+            for (let i = 0; i < fullPending.length; i++) {
+              if (fullPending[i] != null) convoRec.pendingByIndex.set(i, fullPending[i]);
+            }
+          }
+        } else if (st?.pendingAgentMessagesUpdate && convoRec) {
+          const pu = st.pendingAgentMessagesUpdate;
+          if (Array.isArray(pu.pendingAgentMessages)) {
+            const indices = Array.isArray(pu.indices) ? pu.indices : [];
+            for (let i = 0; i < pu.pendingAgentMessages.length; i++) {
+              const idx = typeof indices[i] === 'number' ? indices[i] : i;
+              if (pu.pendingAgentMessages[i] == null) convoRec.pendingByIndex.delete(idx);
+              else convoRec.pendingByIndex.set(idx, pu.pendingAgentMessages[i]);
+            }
+          }
+          if (typeof pu.totalLength === 'number') {
+            for (const idx of [...convoRec.pendingByIndex.keys()]) {
+              if (idx >= pu.totalLength) convoRec.pendingByIndex.delete(idx);
+            }
+          }
+          providerPendingMsgCount = Math.max(
+            convoRec.pendingByIndex.size,
+            typeof pu.totalLength === 'number' ? pu.totalLength : 0
+          );
+        } else if (mergedSnap?.pendingAgentMessages) {
+          providerPendingMsgCount = Math.max(
+            mergedSnap.pendingAgentMessages.length,
+            typeof mergedSnap.pendingTotalLength === 'number' ? mergedSnap.pendingTotalLength : 0
+          );
         }
+
         const sliceSteps = st?.trajectorySlice?.stepsInSlice || [];
         for (const s of sliceSteps) {
           if (s && !seenStepObjs.has(s)) {
@@ -3507,24 +3901,61 @@
 
       if (sCase === 'plannerResponse' || !isRunning) continue;
 
+      const stepIdx = st.metadata?.sourceTrajectoryStepInfo?.stepIndex ?? i;
       const desc = describeStepQualitatively(st);
-      if (toolName === 'run_command' || sCase === 'runCommand') {
-        const key = `cmd:${st.metadata?.sourceTrajectoryStepInfo?.stepIndex ?? i}`;
+      if (toolName === 'run_command' || toolName.endsWith(':run_command') || sCase === 'runCommand') {
+        const key = `cmd:${stepIdx}`;
+        const isDaemonStep = Boolean(
+          args.IsDaemon === true ||
+            args.isDaemon === true ||
+            sVal.IsDaemon === true ||
+            sVal.isDaemon === true
+        );
+        const isNonBlockingStep = Boolean(
+          args.blocking === false ||
+            sVal.blocking === false ||
+            args.runPersistent === true ||
+            sVal.runPersistent === true
+        );
+        const rawWaitMs =
+          args.WaitMsBeforeAsync ??
+          args.waitMsBeforeAsync ??
+          sVal.WaitMsBeforeAsync ??
+          sVal.waitMsBeforeAsync;
+        const waitMsNum =
+          typeof rawWaitMs === 'number'
+            ? rawWaitMs
+            : typeof rawWaitMs === 'bigint'
+              ? Number(rawWaitMs)
+              : typeof rawWaitMs === 'string' && rawWaitMs.trim() !== ''
+                ? Number(rawWaitMs)
+                : NaN;
+        const isAsyncBgCmd = isDaemonStep || isNonBlockingStep || (Number.isFinite(waitMsNum) && waitMsNum <= 1000);
         if (!seenRuntimeKeys.has(key)) {
           seenRuntimeKeys.add(key);
           activeRuntimes.push({
             kind: 'cmd',
+            stepIndex: stepIdx,
+            taskId: args.taskId || sVal.taskId || args.commandId || sVal.commandId || null,
+            isBackground: isAsyncBgCmd,
+            isDaemon: isDaemonStep,
             role: desc || '正在执行终端核验任务',
             statusText: '运行中'
           });
         }
-      } else if (toolName === 'invoke_subagent' || sCase === 'invokeSubagent') {
-        const roleName = cleanNaturalSentence(args.Role || (Array.isArray(sVal.subagents) && sVal.subagents[0]?.role) || '专项子智能体');
-        const key = `sub:${roleName}:${i}`;
+      } else if (toolName === 'invoke_subagent' || toolName.endsWith(':invoke_subagent') || sCase === 'invokeSubagent') {
+        const roleName = cleanNaturalSentence(
+          args.Role || args.role || sVal.Role || sVal.role || (Array.isArray(sVal.subagents) && sVal.subagents[0]?.role) || '专项子智能体'
+        );
+        const key = `sub:${roleName}:${stepIdx}`;
         if (!seenRuntimeKeys.has(key)) {
           seenRuntimeKeys.add(key);
           activeRuntimes.push({
             kind: 'subagent',
+            stepIndex: stepIdx,
+            taskId: args.conversationId || sVal.conversationId || null,
+            isBackground: true,
+            isDaemon: false,
             role: `子智能体（${roleName}）正在独立执行专项核查`,
             statusText: '独立运行中'
           });
@@ -3535,6 +3966,9 @@
           seenRuntimeKeys.add(key);
           activeRuntimes.push({
             kind: 'tool',
+            stepIndex: stepIdx,
+            isBackground: false,
+            isDaemon: false,
             role: desc,
             statusText: '执行中'
           });
@@ -3547,22 +3981,116 @@
       realAgentState === 'THINKING' ||
       activeRuntimes.length > 0;
 
-    // Evaluate Reactive Wakeup Watchdog for hung background tasks / subagents / undelivered messages
-    const mergedSnap = cid ? mergeBufferedConversationState(cid) : null;
+    // Build deduplicated Set of non-daemon background task/subagent IDs (joining provider rows with running steps)
+    const nextBgIds = new Set();
+    const bgStepRuntimes = activeRuntimes.filter((r) => r.isBackground === true && !r.isDaemon);
+    const daemonRuntimeCount = activeRuntimes.filter((r) => r.isBackground === true && r.isDaemon === true).length;
+    const fgRuntimeCount = activeRuntimes.filter((r) => !r.isBackground).length;
+
+    const unclaimedStepIds = bgStepRuntimes.map((r) => `step:${r.stepIndex}`);
+    const taskToStepMap = convoRec ? convoRec.taskToStepMap : new Map();
+
+    for (let idx = 0; idx < rawProviderTasks.length; idx++) {
+      const t = rawProviderTasks[idx];
+      const isDaemonTask = Boolean(
+        t &&
+          (t.isDaemon === true ||
+            t.IsDaemon === true ||
+            t.taskSnapshot?.isDaemon === true ||
+            t.taskSnapshot?.IsDaemon === true)
+      );
+      if (isDaemonTask) {
+        providerDaemonCount += 1;
+        continue;
+      }
+      const explicitStepIdx =
+        t?.stepIndex ??
+        t?.taskSnapshot?.stepIndex ??
+        t?.step?.metadata?.sourceTrajectoryStepInfo?.stepIndex;
+      if (explicitStepIdx !== undefined && explicitStepIdx !== null) {
+        const sid = `step:${explicitStepIdx}`;
+        nextBgIds.add(sid);
+        const uPos = unclaimedStepIds.indexOf(sid);
+        if (uPos >= 0) unclaimedStepIds.splice(uPos, 1);
+        continue;
+      }
+      const rawId =
+        t?.id ??
+        t?.taskId ??
+        t?.commandId ??
+        t?.conversationId ??
+        t?.taskSnapshot?.taskId ??
+        t?.taskSnapshot?.id ??
+        t?.taskSnapshot?.commandId;
+      const taskKey = rawId !== undefined && rawId !== null ? `task:${rawId}` : `idx:${idx}`;
+      let mappedStepId = taskToStepMap.get(taskKey);
+      if (mappedStepId) {
+        const uPos = unclaimedStepIds.indexOf(mappedStepId);
+        if (uPos >= 0) unclaimedStepIds.splice(uPos, 1);
+        nextBgIds.add(mappedStepId);
+      } else if (unclaimedStepIds.length > 0) {
+        mappedStepId = unclaimedStepIds.shift();
+        taskToStepMap.set(taskKey, mappedStepId);
+        nextBgIds.add(mappedStepId);
+      } else {
+        nextBgIds.add(taskKey);
+      }
+    }
+
+    for (const r of bgStepRuntimes) {
+      nextBgIds.add(`step:${r.stepIndex}`);
+    }
+
+    const daemonBgCount = daemonRuntimeCount + providerDaemonCount;
+    if (providerHasActiveChildren && nextBgIds.size === 0 && daemonBgCount === 0) {
+      nextBgIds.add('children:active');
+    }
+    const nonDaemonBgCount = nextBgIds.size;
+
     const effExecStatus = providerExecStatus ?? mergedSnap?.status ?? null;
     const effFullyIdle = providerFullyIdle ?? mergedSnap?.fullyIdle ?? null;
+    const isExecExplicitlyIdle =
+      effExecStatus === 1 ||
+      effExecStatus === 'EXECUTOR_LOOP_STATUS_IDLE' ||
+      effExecStatus === 'CASCADE_RUN_STATUS_IDLE';
+    const prevActiveBgCount = convoRec?.activeBgIds instanceof Set ? convoRec.activeBgIds.size : 0;
     const mainExecutorRunning =
       effExecStatus === 2 ||
+      effExecStatus === 4 ||
       effExecStatus === 'EXECUTOR_LOOP_STATUS_RUNNING' ||
-      realAgentState === 'THINKING';
+      effExecStatus === 'CASCADE_RUN_STATUS_RUNNING' ||
+      effExecStatus === 'CASCADE_RUN_STATUS_BUSY' ||
+      realAgentState === 'THINKING' ||
+      fgRuntimeCount > 0 ||
+      (!isExecExplicitlyIdle &&
+        prevActiveBgCount === 0 &&
+        (realAgentState === 'RUNNING' || effFullyIdle === false) &&
+        nonDaemonBgCount === 0 &&
+        daemonBgCount === 0);
+
+    const effTotalSteps = totalStepsCount > 0 ? totalStepsCount : allSteps.length;
+    const tailStepObj = allSteps.length > 0 ? allSteps[allSteps.length - 1] : mergedSnap?.tailStep || null;
+    const tailStepIdx =
+      tailStepObj?.metadata?.sourceTrajectoryStepInfo?.stepIndex ??
+      mergedSnap?.tailIndex ??
+      allSteps.length - 1;
+    const tailStepStatus = tailStepObj?.status ?? tailStepObj?.step?.status ?? 'none';
+    const stepProgressSig = `${effTotalSteps}:${allSteps.length}:${tailStepIdx}:${tailStepStatus}:${fgRuntimeCount}`;
+
+    const isExecIdle = isExecExplicitlyIdle || effExecStatus === null;
+    const isTailPlannerDone =
+      tailStepObj?.step?.case === 'plannerResponse' &&
+      (tailStepStatus === 3 || tailStepStatus === 'CORTEX_STEP_STATUS_DONE');
+    const turnCompletedQuietly = Boolean(isExecIdle && effFullyIdle === true && isTailPlannerDone);
 
     evaluateReactiveWakeupWatchdog(
       cid,
-      totalStepsCount || allSteps.length,
-      activeRuntimes.length + providerBgTaskCount,
+      effTotalSteps,
+      stepProgressSig,
+      nextBgIds,
       providerPendingMsgCount,
       mainExecutorRunning,
-      effFullyIdle
+      turnCompletedQuietly
     );
 
     // 3. Use real LLM mission summarization (via GetModelResponse MODEL_PLACEHOLDER_M18) with instant cache
@@ -3809,6 +4337,19 @@
         .mission-box.dark .rt-status {
           color: #60a5fa;
         }
+        .wd-pill {
+          font-size: 11px;
+          line-height: 16px;
+          padding: 0 6px;
+          border-radius: 999px;
+          background: rgba(37, 99, 235, 0.1);
+          color: #2563eb;
+          font-weight: 500;
+        }
+        .mission-box.dark .wd-pill {
+          color: #93c5fd;
+          background: rgba(147, 197, 253, 0.12);
+        }
       </style>
       <div class="mission-box" id="m-box">
         <div class="mission-top" id="m-top" title="点击收起或展开阶段任务清单">
@@ -3817,6 +4358,7 @@
             <span class="goal-text" id="m-goal"></span>
           </div>
           <div class="top-right">
+            <span id="m-wd" class="wd-pill" hidden></span>
             <span id="m-phase"></span>
             <span id="m-fold">▾</span>
           </div>
@@ -3834,6 +4376,7 @@
       top: missionHudShadow.getElementById('m-top'),
       dot: missionHudShadow.getElementById('m-dot'),
       goal: missionHudShadow.getElementById('m-goal'),
+      wd: missionHudShadow.getElementById('m-wd'),
       phase: missionHudShadow.getElementById('m-phase'),
       fold: missionHudShadow.getElementById('m-fold'),
       taskList: missionHudShadow.getElementById('m-task-list'),
@@ -3847,6 +4390,25 @@
         missionHudCollapsed = !missionHudCollapsed;
         updateMissionHud();
       });
+    }
+  }
+
+  function syncMissionHudWatchdogPill() {
+    if (!missionHudRefs.wd) return;
+    const wdRec = wakeupWatchdogByConvo.get(getActiveConversationId());
+    const activeBgCnt = wdRec?.activeBgIds instanceof Set ? wdRec.activeBgIds.size : 0;
+    const nowMs = Date.now();
+    let wdText = '';
+    if (wdRec?.lastWakeupSentTs && nowMs - wdRec.lastWakeupSentTs < 15000) {
+      wdText = '已接管';
+    } else if (wdRec?.bgFinishedEdgeTs || wdRec?.pendingMsgFirstSeenTs) {
+      wdText = '等待接管';
+    } else if (activeBgCnt > 0) {
+      wdText = `后台 ${activeBgCnt}`;
+    }
+    missionHudRefs.wd.hidden = !wdText;
+    if (missionHudRefs.wd.textContent !== wdText) {
+      missionHudRefs.wd.textContent = wdText;
     }
   }
 
@@ -3910,6 +4472,7 @@
     if (missionHudRefs.phase) {
       missionHudRefs.phase.textContent = totalTasks > 0 ? `${doneTasks} / ${totalTasks}` : '';
     }
+    syncMissionHudWatchdogPill();
 
     if (missionHudRefs.taskList) {
       const taskHtml = state.tasks
@@ -4093,6 +4656,15 @@
       } catch (e) {}
       activeLlmSummaryAbortCtrl = null;
     }
+    for (const rec of wakeupWatchdogByConvo.values()) {
+      if (rec && rec.abortCtrl) {
+        try {
+          rec.abortCtrl.abort();
+        } catch (e) {}
+        rec.abortCtrl = null;
+      }
+      if (rec) rec.rpcInFlight = false;
+    }
     llmSummaryInFlight = false;
     if (ringTimer) {
       clearInterval(ringTimer);
@@ -4111,6 +4683,7 @@
       mutObserver = null;
     }
     window.removeEventListener('resize', onWindowResize);
+    window.removeEventListener('click', onCollapsibleClickCapture, true);
     document.removeEventListener('visibilitychange', onVisibilityChange);
     document.removeEventListener('mousedown', onDocumentMouseDownForRing, true);
     ctxRingHovered = false;
@@ -4143,6 +4716,7 @@
     if (!consumersActive) {
       consumersActive = true;
       window.addEventListener('resize', onWindowResize, { passive: true });
+      window.addEventListener('click', onCollapsibleClickCapture, true);
       document.addEventListener('visibilitychange', onVisibilityChange);
       document.addEventListener('mousedown', onDocumentMouseDownForRing, true);
 
@@ -4370,7 +4944,17 @@
     readyPromise: initPromise,
     isDisposed: () => disposed,
     getAgentState: () => realAgentState,
-    getWakeupWatchdogState: () => Object.fromEntries(wakeupWatchdogByConvo.entries()),
+    getWakeupWatchdogState: () =>
+      Object.fromEntries(
+        Array.from(wakeupWatchdogByConvo.entries()).map(([k, v]) => [
+          k,
+          {
+            ...v,
+            activeBgIds: v?.activeBgIds instanceof Set ? [...v.activeBgIds] : [],
+            finishedBgIds: Array.isArray(v?.finishedBgIds) ? [...v.finishedBgIds] : []
+          }
+        ])
+      ),
     dispose
   };
   window.__AGY_ENHANCE_CLEANUP__ = dispose;

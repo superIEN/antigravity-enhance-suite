@@ -86,7 +86,11 @@ def patch_storage_js(code: str) -> str:
             if ((0, fs_1.existsSync)(this.storagePath)) {
                 const raw = await fs.readFile(this.storagePath, 'utf-8');
                 if (raw && raw.trim() !== '') {
-                    currentItems = JSON.parse(raw);
+                    try {
+                        currentItems = JSON.parse(raw);
+                    } catch {
+                        currentItems = {};
+                    }
                 }
             }
             for (const [key, value] of Object.entries(changes)) {
@@ -146,19 +150,24 @@ def patch_ipc_handlers_js(code: str) -> str:
         }
     });"""
 
-    new_overlay = """    function isTrustedAgySender(_event) {
+    new_overlay = """    const languageServer_agy_ipc = require('./languageServer');
+
+    function isTrustedAgySender(_event) {
         if (!_event || !_event.sender || _event.sender.isDestroyed()) return null;
         if (_event.senderFrame !== _event.sender.mainFrame) return null;
         const win = electron_1.BrowserWindow.fromWebContents(_event.sender);
         if (!win || win.isDestroyed()) return null;
         try {
             const parsed = new URL(_event.sender.getURL() || '');
+            const liveLsPort = (0, languageServer_agy_ipc.getLsPort)();
             if (
                 parsed.protocol !== 'https:' ||
                 parsed.hostname !== '127.0.0.1' ||
                 parsed.username !== '' ||
                 parsed.password !== '' ||
-                !/^\d+$/.test(parsed.port)
+                !/^\\d+$/.test(parsed.port) ||
+                liveLsPort <= 0 ||
+                Number(parsed.port) !== liveLsPort
             ) {
                 return null;
             }
@@ -187,8 +196,10 @@ def patch_ipc_handlers_js(code: str) -> str:
         }
     });
 
-    // Antigravity v3.1.1 Single-Writer Preference Service (Disk-First Commit + Optimistic Concurrency)
+    // Antigravity v3.6.0-macos-merged Single-Writer Preference Service (Disk-First Commit + Optimistic Concurrency)
+    const path = require('path');
     const os_agy = require('os');
+    const fsSync = require('fs');
     const agyRuntimeDir = process.env.AGY_ENHANCE_DIR || path.join(os_agy.homedir(), '.gemini', 'agy-enhance');
     const agyPrefsPath = path.join(agyRuntimeDir, 'preferences.v3.json');
     const agyBackupsDir = path.join(agyRuntimeDir, 'backups');
@@ -205,7 +216,6 @@ def patch_ipc_handlers_js(code: str) -> str:
     };
     let agyPrefsState = JSON.parse(JSON.stringify(DEFAULT_AGY_PREFS));
     try {
-        const fsSync = require('fs');
         if (fsSync.existsSync(agyPrefsPath)) {
             const loaded = JSON.parse(fsSync.readFileSync(agyPrefsPath, 'utf-8'));
             if (loaded && typeof loaded.revision === 'number' && loaded.global) {
@@ -218,7 +228,7 @@ def patch_ipc_handlers_js(code: str) -> str:
                         lang: loaded.global.lang === 'en' ? 'en' : 'zh-std',
                         widescreen: typeof loaded.global.widescreen === 'boolean' ? loaded.global.widescreen : true,
                     },
-                    windowDefaults: {},
+                    windowDefaults: (loaded.windowDefaults && typeof loaded.windowDefaults === 'object') ? loaded.windowDefaults : {},
                 };
             }
         }
@@ -236,8 +246,16 @@ def patch_ipc_handlers_js(code: str) -> str:
         return clean;
     }
 
-    function validateWindowPatch(_patch) {
-        return {};
+    function validateWindowPatch(patch) {
+        if (!patch || typeof patch !== 'object') return {};
+        const clean = {};
+        if ('enabled' in patch && typeof patch.enabled === 'boolean') clean.enabled = patch.enabled;
+        if ('widescreen' in patch && typeof patch.widescreen === 'boolean') clean.widescreen = patch.widescreen;
+        if ('hudCollapsed' in patch && typeof patch.hudCollapsed === 'boolean') clean.hudCollapsed = patch.hudCollapsed;
+        if ('bossMode' in patch && typeof patch.bossMode === 'boolean') clean.bossMode = patch.bossMode;
+        if ('theme' in patch && patch.theme === 'native') clean.theme = 'native';
+        if ('lang' in patch && ['en', 'zh-std'].includes(patch.lang)) clean.lang = patch.lang;
+        return clean;
     }
 
     electron_1.ipcMain.handle('agy:get-preferences', async (_event) => {
@@ -305,6 +323,7 @@ def patch_ipc_handlers_js(code: str) -> str:
             }
 
             // Persist to disk FIRST; only commit memory & broadcast if disk write succeeds!
+            await fs.mkdir(agyRuntimeDir, { recursive: true });
             const tmp = agyPrefsPath + '.tmp.' + process.pid;
             await fs.writeFile(tmp, JSON.stringify(nextState, null, 2), 'utf-8');
             await fs.rename(tmp, agyPrefsPath);
@@ -334,7 +353,7 @@ def patch_ipc_handlers_js(code: str) -> str:
             await fs.mkdir(agyBackupsDir, { recursive: true });
             const safeOrigin = String(backupPayload.origin || 'default').replace(/[^a-zA-Z0-9_.-]/g, '_');
             const outFile = path.join(agyBackupsDir, `legacy_flags_${safeOrigin}.json`);
-            if (!(0, fs_1.existsSync)(outFile)) {
+            if (!fsSync.existsSync(outFile)) {
                 await fs.writeFile(outFile, JSON.stringify(backupPayload, null, 2), 'utf-8');
             }
             return true;
@@ -384,11 +403,35 @@ def patch_utils_js(code: str, loader_sha256: str, loader_byte_len: int) -> str:
     new_create = f"""let _defaultStorageManager = null;
 const crypto_agy = require("crypto");
 const os_agy = require("os");
-const AGY_LOADER_PATH = process.env.AGY_LOADER_PATH || path.join(os_agy.homedir(), ".gemini", "agy-enhance", "agy-enhance-loader.js");
+const path_agy = typeof path_1 !== "undefined" && path_1.default ? path_1.default : require("path");
+const AGY_LOADER_PATH = process.env.AGY_LOADER_PATH || path_agy.join(os_agy.homedir(), ".gemini", "agy-enhance", "agy-enhance-loader.js");
 const EXPECTED_LOADER_SHA256 = "{loader_sha256}";
 const EXPECTED_LOADER_BYTES = {loader_byte_len};
-const EXPECTED_LOADER_VERSION = "3.1.1";
+const EXPECTED_LOADER_VERSION = "3.6.0-macos-merged";
 const languageServer_agy = require("./languageServer");
+
+function verifyLoaderIntegrity(rawBytes, actualSha) {{
+    if (rawBytes.length === EXPECTED_LOADER_BYTES && actualSha === EXPECTED_LOADER_SHA256) {{
+        return true;
+    }}
+    try {{
+        const receiptPath = path_agy.join(path_agy.dirname(AGY_LOADER_PATH), "last_install_receipt.json");
+        if (fs.existsSync(receiptPath)) {{
+            const receipt = JSON.parse(fs.readFileSync(receiptPath, "utf-8"));
+            const selfUtilsSha = crypto_agy.createHash("sha256").update(fs.readFileSync(__filename)).digest("hex");
+            if (
+                receipt &&
+                receipt.desktop_enhance_version === EXPECTED_LOADER_VERSION &&
+                receipt.utils_js_sha256 === selfUtilsSha &&
+                receipt.loader_bytes === rawBytes.length &&
+                receipt.loader_sha256 === actualSha
+            ) {{
+                return true;
+            }}
+        }}
+    }} catch {{}}
+    return false;
+}}
 
 function attachControlledEnhancement(win) {{
     const wc = win.webContents;
@@ -409,12 +452,9 @@ function attachControlledEnhancement(win) {{
             if (!expectedOrigin || new URL(currentUrl).origin !== expectedOrigin) return;
             if (!fs.existsSync(AGY_LOADER_PATH)) return;
             const rawBytes = await fs.promises.readFile(AGY_LOADER_PATH);
-            if (rawBytes.length !== EXPECTED_LOADER_BYTES) {{
-                throw new Error(`Loader size mismatch: ${{rawBytes.length}} != ${{EXPECTED_LOADER_BYTES}}`);
-            }}
             const actualSha = crypto_agy.createHash('sha256').update(rawBytes).digest('hex');
-            if (actualSha !== EXPECTED_LOADER_SHA256) {{
-                throw new Error(`Loader SHA256 mismatch: ${{actualSha}} != ${{EXPECTED_LOADER_SHA256}}`);
+            if (!verifyLoaderIntegrity(rawBytes, actualSha)) {{
+                throw new Error(`Loader integrity mismatch: len=${{rawBytes.length}} (expected ${{EXPECTED_LOADER_BYTES}}), sha=${{actualSha}} (expected ${{EXPECTED_LOADER_SHA256}})`);
             }}
             if (disposed || wc.isDestroyed() || expectedGeneration !== generation) return;
             const loaderSource = rawBytes.toString('utf-8');
@@ -428,7 +468,7 @@ function attachControlledEnhancement(win) {{
                 throw new Error('Loader initialization receipt invalid: ' + JSON.stringify(receipt));
             }}
         }} catch (err) {{
-            console.error('[AGY-v3.1.1] Enhancement load skipped or failed:', err);
+            console.error('[AGY-v3.6.0-macos-merged] Enhancement load skipped or failed:', err);
         }}
     }}
 
@@ -510,8 +550,12 @@ function terminateChildBounded(child, graceMs = 3000) {
         setTimeout(() => {
             if (settled) return;
             try {
-                if (child.pid !== undefined) process.kill(child.pid, 'SIGKILL');
-            } catch {}
+                child.kill('SIGKILL');
+            } catch {
+                try {
+                    if (child.pid !== undefined) process.kill(child.pid, 'SIGKILL');
+                } catch {}
+            }
             setTimeout(() => {
                 finish(child.exitCode !== null || child.signalCode !== null);
             }, 1000);
@@ -663,6 +707,7 @@ function terminateChildBounded(child, graceMs = 3000) {
         });
         let resolved = false;
         let logStreamEnded = false;
+        let timer = null;
         const endLogStreamSafe = () => {
             if (!logStreamEnded) {
                 logStreamEnded = true;
@@ -677,13 +722,13 @@ function terminateChildBounded(child, graceMs = 3000) {
             endLogStreamSafe();
             if (!resolved) {
                 resolved = true;
-                clearTimeout(timer);
+                if (timer !== null) clearTimeout(timer);
                 spawnErr.isSpawnError = child.pid === undefined;
                 spawnErr.childConfirmedExited = exited;
                 reject(spawnErr);
             }
         });
-        const timer = setTimeout(() => {
+        timer = setTimeout(() => {
             if (!resolved) {
                 resolved = true;
                 void terminateChildBounded(child, 3000).then((exited) => {
@@ -892,7 +937,8 @@ def build_candidate_asar(orig_asar_path: Path, loader_path: Path, candidate_asar
     pkg_json = json.loads(pkg_bytes.decode("utf-8"))
     app_version = pkg_json.get("version", "unknown")
 
-    node_bin = shutil.which("node") or "node"
+    search_path = os.environ.get("PATH", "") + os.pathsep + "/opt/homebrew/bin:/usr/local/bin"
+    node_bin = shutil.which("node", path=search_path) or "node"
     chk_loader = subprocess.run([node_bin, "--check", str(loader_path)], capture_output=True, text=True)
     if chk_loader.returncode != 0:
         raise RuntimeError(f"Syntax error in {loader_path.name}:\n{chk_loader.stderr}")
@@ -966,6 +1012,7 @@ def build_candidate_asar(orig_asar_path: Path, loader_path: Path, candidate_asar
     walk_and_repack(new_header, [])
 
     header_json_bytes = json.dumps(new_header, separators=(",", ":")).encode("utf-8")
+    header_sha256 = sha256_hex(header_json_bytes)
     json_len = len(header_json_bytes)
     align_pad = (4 - (json_len % 4)) % 4
     inner_size = 4 + json_len + align_pad
@@ -984,6 +1031,7 @@ def build_candidate_asar(orig_asar_path: Path, loader_path: Path, candidate_asar
         "app_version": app_version,
         "orig_sha256": orig_sha,
         "candidate_sha256": cand_sha,
+        "header_sha256": header_sha256,
         "loader_sha256": loader_sha,
         "loader_bytes": loader_len,
         "patched_modules": list(patched_dist_bytes.keys()),

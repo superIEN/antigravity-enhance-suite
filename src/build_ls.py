@@ -1,12 +1,29 @@
-"""Portable Language Server Binary Patcher & Verifier for Antigravity (v2.24.0 / v2.25.0 / v2.26.0 / v2.27.0 / v2.28.0+)."""
+"""Portable Language Server Binary Patcher & Verifier for Antigravity (Windows PE x86_64 & macOS Mach-O ARM64, v2.24.0–v2.28.0+)."""
+from __future__ import annotations
+
 import hashlib
+import os
 import struct
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
+
 from . import patch_sites as p
 
 NS_5_MIN = struct.pack("<Q", 300_000_000_000)
 NS_10_SEC = struct.pack("<Q", 10_000_000_000)
 NS_20_MIN = struct.pack("<Q", 1_200_000_000_000)
+
+ENTITLEMENTS_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+\t<key>com.apple.security.cs.allow-jit</key>
+\t<true/>
+</dict>
+</plist>
+"""
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -18,9 +35,92 @@ def build_and_verify_ls(orig_ls_path: Path, candidate_ls_path: Path) -> dict:
     base_sha = sha256_bytes(raw_base)
     raw = bytearray(raw_base)
     funcs = p.parse_gopclntab(raw)
-    image_base, sections = p.parse_pe_sections(raw)
-
     patched_sites = []
+
+    if p.is_macho_arm64(raw):
+        all_sites = (
+            p.locate_h2ping_sites(raw, funcs)
+            + p.locate_1m_context_sites(raw, funcs)
+            + p.locate_media_compression_sites(raw, funcs)
+            + p.locate_utf8_and_uri_sites(raw, funcs)
+            + p.locate_stream_retry_sites(raw, funcs)
+            + p.locate_bg_task_timeout_sites(raw, funcs)
+            + p.locate_oauth_token_sites(raw, funcs)
+        )
+        assert len(all_sites) >= 28, f"Expected >=28 Mach-O ARM64 sites (Sites 1..22), got {len(all_sites)}"
+        for name, off, before, after in all_sites:
+            cur = bytes(raw[off : off + len(before)])
+            if "retryableSubstrings" in name or "ClampCheckpointConfigForModelInfo" in name:
+                assert len(cur) == len(after)
+            else:
+                assert cur in (before, after), f"Unexpected bytes at {name} (@0x{off:x})"
+            raw[off : off + len(after)] = after
+            patched_sites.append({"name": name, "offset": f"0x{off:x}"})
+
+        oa_key = next((k for k in funcs if k.endswith("/oauth2.(*Token).expired")), None)
+        if oa_key:
+            oa_off, oa_sz = funcs[oa_key]
+            oa_bytes = raw[oa_off : oa_off + oa_sz]
+            arm_10s = bytes.fromhex("05809cd26581aaf24500c0f2")
+            idx_oa = oa_bytes.find(arm_10s)
+            if idx_oa != -1:
+                site18_off = oa_off + idx_oa
+                raw[site18_off : site18_off + len(arm_10s)] = arm_10s
+                patched_sites.append(
+                    {"name": "Site 18 oauth2.(*Token).expired 10s default verified", "offset": f"0x{site18_off:x}"}
+                )
+
+        candidate_ls_path.parent.mkdir(parents=True, exist_ok=True)
+        candidate_ls_path.write_bytes(raw)
+        candidate_ls_path.chmod(0o755)
+        unsigned_sha = sha256_bytes(raw)
+
+        if sys.platform == "darwin" and os.path.exists("/usr/bin/codesign"):
+            with tempfile.NamedTemporaryFile("w", suffix=".entitlements.plist", delete=False) as tf:
+                tf.write(ENTITLEMENTS_XML)
+                ent_path = Path(tf.name)
+            try:
+                subprocess.run(
+                    [
+                        "/usr/bin/codesign",
+                        "--force",
+                        "--sign",
+                        "-",
+                        "--identifier",
+                        "language_server",
+                        "--options",
+                        "runtime",
+                        "--entitlements",
+                        str(ent_path),
+                        "--timestamp=none",
+                        str(candidate_ls_path),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            finally:
+                ent_path.unlink(missing_ok=True)
+            subprocess.run(
+                ["/usr/bin/codesign", "--verify", "--deep", "--strict", str(candidate_ls_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        signed_raw = candidate_ls_path.read_bytes()
+        cand_sha = sha256_bytes(signed_raw)
+        return {
+            "platform": "darwin-arm64",
+            "orig_sha256": base_sha,
+            "unsigned_candidate_sha256": unsigned_sha,
+            "candidate_sha256": cand_sha,
+            "size_bytes": len(signed_raw),
+            "patched_sites_count": len(patched_sites),
+            "patched_sites": patched_sites,
+        }
+
+    image_base, sections = p.parse_pe_sections(raw)
 
     base_sites = (
         p.locate_h2ping_sites(raw, funcs)
@@ -66,6 +166,14 @@ def build_and_verify_ls(orig_ls_path: Path, candidate_ls_path: Path) -> dict:
         entries[4] = [orig_va4 + 22, 10]
         entries[5] = [va_unauth_lower, 15]
         entries[13] = [va13, 6]
+    elif arr_len == 7:
+        va0, _ = entries[0]
+        va4, len4 = entries[4]
+        orig_va4 = va4 if len4 == 32 else (va4 - 22)
+        entries[0] = [va0, 3]
+        entries[1] = [va_sre, 21]
+        entries[4] = [orig_va4 + 22, 10]
+        entries[5] = [va_unauth_lower, 15]
     else:
         va0, _ = entries[0]
         va2, len2 = entries[2]
@@ -111,6 +219,7 @@ def build_and_verify_ls(orig_ls_path: Path, candidate_ls_path: Path) -> dict:
     candidate_ls_path.write_bytes(raw)
     cand_sha = sha256_bytes(raw)
     return {
+        "platform": "win32-x64",
         "orig_sha256": base_sha,
         "candidate_sha256": cand_sha,
         "size_bytes": len(raw),
