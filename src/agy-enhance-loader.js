@@ -9,10 +9,12 @@
  */
 (function () {
   const VERSION = '3.6.0-macos-merged';
+  const BUILD_STAMP = '20261102-v3.7-hud-think';
 
   if (
     globalThis.__AGY_V3__ &&
     globalThis.__AGY_V3__.version === VERSION &&
+    globalThis.__AGY_V3__.buildStamp === BUILD_STAMP &&
     typeof globalThis.__AGY_V3__.isDisposed === 'function' &&
     !globalThis.__AGY_V3__.isDisposed() &&
     globalThis.__AGY_V3__.readyPromise
@@ -40,7 +42,9 @@
     enabled: true,
     theme: 'native',
     lang: 'zh-std',
-    widescreen: true
+    widescreen: true,
+    translateThinking: true,
+    missionHud: true
   };
 
   let localRevision = 0;
@@ -1639,12 +1643,13 @@
         flex-shrink: 0;
       }
 
-      /* Stream Qualitative UX Inline Enhancements (Minimalist Codex-like Style) */
-      button[data-testid="thinking-collapsible-trigger"] + div,
+      /* Stream Qualitative UX Inline Enhancements (Minimalist Codex-like Style + Streaming Zh Thinking) */
+      button[data-testid="thinking-collapsible-trigger"]:not([data-agy-user-expanded="1"]):not([data-agy-auto-streaming="1"]) + div,
       button[data-testid="tool-group-collapsible"] + div {
         display: none !important;
       }
       button[data-testid="thinking-collapsible-trigger"][data-agy-user-expanded="1"][aria-expanded="true"] + div,
+      button[data-testid="thinking-collapsible-trigger"][data-agy-auto-streaming="1"][aria-expanded="true"] + div,
       button[data-testid="tool-group-collapsible"][data-agy-user-expanded="1"][aria-expanded="true"] + div {
         display: block !important;
       }
@@ -1654,8 +1659,79 @@
         transition: transform 0.15s ease !important;
       }
       button[data-testid="thinking-collapsible-trigger"][data-agy-user-expanded="1"][aria-expanded="true"] svg:last-child,
+      button[data-testid="thinking-collapsible-trigger"][data-agy-auto-streaming="1"][aria-expanded="true"] svg:last-child,
       button[data-testid="tool-group-collapsible"][data-agy-user-expanded="1"][aria-expanded="true"] svg:last-child {
         transform: rotate(90deg) !important;
+      }
+      button[data-testid="thinking-collapsible-trigger"] + div[data-agy-zh-mode="zh"] > :not(.agy-think-zh-panel) {
+        display: none !important;
+      }
+      button[data-testid="thinking-collapsible-trigger"] + div[data-agy-zh-mode="raw"] > .agy-think-zh-panel {
+        display: block !important;
+      }
+      button[data-testid="thinking-collapsible-trigger"] + div[data-agy-zh-mode="raw"] > .agy-think-zh-panel .agy-think-zh-body {
+        display: none !important;
+      }
+      .agy-think-zh-panel {
+        margin: 4px 0 8px 0;
+        padding: 8px 12px;
+        border-radius: 8px;
+        border: 1px solid rgba(128, 128, 128, 0.16);
+        background: rgba(128, 128, 128, 0.04);
+        font-size: 13px;
+        line-height: 1.65;
+        color: var(--foreground, inherit);
+      }
+      .agy-think-zh-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 4px;
+        font-size: 11.5px;
+        color: var(--muted-foreground, #6b7280);
+      }
+      .agy-think-zh-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-weight: 500;
+      }
+      .agy-think-zh-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #10b981;
+        display: inline-block;
+      }
+      .agy-think-zh-dot.streaming {
+        background: #2563eb;
+      }
+      .agy-think-raw-toggle {
+        background: transparent;
+        border: 1px solid rgba(128, 128, 128, 0.22);
+        border-radius: 5px;
+        padding: 1px 7px;
+        font-size: 11px;
+        color: var(--muted-foreground, #6b7280);
+        cursor: pointer;
+      }
+      .agy-think-raw-toggle:hover {
+        color: var(--foreground, inherit);
+        border-color: rgba(128, 128, 128, 0.4);
+      }
+      .agy-think-zh-body {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .agy-think-zh-para {
+        margin: 0;
+      }
+      .agy-think-zh-para.tail-raw {
+        opacity: 0.82;
       }
       .agy-think-inline-summary {
         display: inline-flex;
@@ -2922,21 +2998,426 @@
     return '';
   }
 
+  // Thinking translation cache & single-flight state
+  const thinkingParaCache = new Map();
+  const thinkingTailStateByUid = new Map();
+  let activeThinkingTransAbortCtrl = null;
+  let thinkingTransInFlight = false;
+  let thinkingTransReqSeq = 0;
+  let thinkingTailTimer = null;
+  let thinkingTransRetryTimer = null;
+  let lastThinkingTransFailTs = 0;
+
+  function normalizeThinkingParagraph(p) {
+    return stripBackendTags(String(p || '')).replace(/\s+/g, ' ').trim();
+  }
+
+  function isAlreadyChineseParagraph(p) {
+    const stripped = String(p || '')
+      .replace(/```[\s\S]*?(?:```|$)/g, '')
+      .replace(/`[^`]*`/g, '')
+      .replace(/https?:\/\/\S+/g, '')
+      .replace(/[A-Za-z]:\\[^\s`"'<>]+|\/(?:Users|var|tmp|etc|home|opt|src|dist|tests)\/[^\s`"'<>]+/g, '');
+    const hanziMatches = stripped.match(/[\u4e00-\u9fff]/g) || [];
+    const hanziCount = hanziMatches.length;
+    const englishWords = stripped.match(/\b[A-Za-z]{3,}\b/g) || [];
+    if (hanziCount >= 4 && englishWords.length <= 2) return true;
+    const nonSpaceLen = stripped.replace(/\s+/g, '').length;
+    if (nonSpaceLen === 0) return true;
+    return hanziCount >= 8 && hanziCount / nonSpaceLen >= 0.45;
+  }
+
+  function maskCodeAndPathsForTranslation(text) {
+    const placeholders = [];
+    const put = (raw) => {
+      const token = `__AGY_PH_${placeholders.length}__`;
+      placeholders.push(raw);
+      return token;
+    };
+    let masked = String(text || '');
+    masked = masked.replace(/```[\s\S]*?(?:```|$)/g, (m) => put(m));
+    masked = masked.replace(/`[^`\n]+`/g, (m) => put(m));
+    masked = masked.replace(
+      /[A-Za-z]:\\[^\s`"'<>()]+|\/(?:Users|var|tmp|etc|home|opt|src|dist|tests)\/[^\s`"'<>()]+/g,
+      (m) => put(m)
+    );
+    return { masked, placeholders };
+  }
+
+  function unmaskCodeAndPaths(translated, placeholders) {
+    let out = String(translated || '');
+    for (let i = 0; i < placeholders.length; i++) {
+      out = out.replace(new RegExp(`__AGY_PH_${i}__`, 'g'), placeholders[i]);
+    }
+    return out;
+  }
+
+  function splitThinkingIntoParagraphs(rawThinking, isStreaming) {
+    const normalized = String(rawThinking || '').replace(/\r\n/g, '\n');
+    const endsWithBlankLine = /\n\s*\n\s*$/.test(normalized);
+    const parts = normalized
+      .split(/\n\s*\n/)
+      .map((s) => stripBackendTags(s).trim())
+      .filter((s) => s.length > 0);
+    if (parts.length === 0) {
+      return { completed: [], tail: '' };
+    }
+    if (!isStreaming || endsWithBlankLine) {
+      return { completed: parts, tail: '' };
+    }
+    return {
+      completed: parts.slice(0, -1),
+      tail: parts[parts.length - 1]
+    };
+  }
+
+  function getThinkingButtonLabelTextExcludingSummary(tb) {
+    if (!tb) return '';
+    let label = '';
+    const w = document.createTreeWalker(tb, NodeFilter.SHOW_TEXT, null);
+    while (w.nextNode()) {
+      const tn = w.currentNode;
+      if (
+        tn.parentElement &&
+        tn.parentElement.classList &&
+        tn.parentElement.classList.contains('agy-think-inline-summary')
+      ) {
+        continue;
+      }
+      label += tn.nodeValue || '';
+    }
+    return label.trim();
+  }
+
+  function isThinkingTriggerActivelyStreaming(tb, stepObj) {
+    const label = getThinkingButtonLabelTextExcludingSummary(tb);
+    const isCompletedLabel = /\bThought\b/i.test(label) || /^思考\s*·/.test(label);
+    if (isCompletedLabel) return false;
+    if (/\bThinking\b/i.test(label) || /思考中/.test(label)) return true;
+    if (stepObj) {
+      const st = stepObj.status;
+      const isStepRunning =
+        st === 1 ||
+        st === 2 ||
+        st === 9 ||
+        st === 'CORTEX_STEP_STATUS_RUNNING' ||
+        st === 'CORTEX_STEP_STATUS_GENERATING';
+      const hasResponse = Boolean(stepObj.step?.value?.response);
+      if (isStepRunning && !hasResponse) return true;
+    }
+    return false;
+  }
+
+  function triggerThinkingParagraphsTranslation(paragraphsToTranslate) {
+    if (
+      disposed ||
+      !globalPrefs.enabled ||
+      globalPrefs.lang === 'en' ||
+      globalPrefs.translateThinking === false ||
+      !Array.isArray(paragraphsToTranslate) ||
+      paragraphsToTranslate.length === 0
+    ) {
+      return;
+    }
+    if (typeof window.fetch !== 'function') return;
+
+    const now = Date.now();
+    if (lastThinkingTransFailTs > 0 && now - lastThinkingTransFailTs < 3500) {
+      return;
+    }
+
+    // Blueprint summarization has priority over thinking translation; retry shortly if blueprint is in flight
+    if (llmSummaryInFlight || thinkingTransInFlight) {
+      if (!thinkingTransRetryTimer) {
+        thinkingTransRetryTimer = setTimeout(() => {
+          thinkingTransRetryTimer = null;
+          if (!disposed && globalPrefs.enabled && globalPrefs.translateThinking !== false) {
+            enhanceConversationStreamDOM();
+          }
+        }, 450);
+      }
+      return;
+    }
+
+    const csrf =
+      window.__APP_CONFIG__?.csrfToken ||
+      (document.cookie ? document.cookie.split('; ').find((a) => a.startsWith('csrfToken='))?.split('=')[1] : '') ||
+      '';
+    if (!csrf) return;
+
+    const batch = paragraphsToTranslate.slice(0, 3);
+    const maskedBatch = batch.map((normText) => {
+      const { masked, placeholders } = maskCodeAndPathsForTranslation(normText);
+      return { normText, masked, placeholders };
+    });
+
+    thinkingTransInFlight = true;
+    const reqId = ++thinkingTransReqSeq;
+    const reqLsGen = currentLsGeneration;
+    const ctrl = new AbortController();
+    activeThinkingTransAbortCtrl = ctrl;
+    const timer = setTimeout(() => ctrl.abort(), 10000);
+
+    const prompt = [
+      '你是一个专业精准的计算机与学术双语实时翻译器。请将以下 JSON 数组中的英文思考推理段落逐段忠实流畅地翻译为简体中文。',
+      '硬性规则：1) 严禁修改任何形如 __AGY_PH_0__ 的占位符，必须原样保留在译文对应位置；2) 保持原意，不要添加总结套话；3) 仅输出严格合法的 JSON 对象，格式为 {"translations":["第一段中文译文","第二段中文译文"]}，数组长度必须与输入完全一致。',
+      '待译段落 JSON：',
+      JSON.stringify(maskedBatch.map((b) => b.masked))
+    ].join('\n');
+
+    (async () => {
+      try {
+        const resp = await window.fetch(
+          `${window.location.origin}/exa.language_server_pb.LanguageServerService/GetModelResponse`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Connect-Protocol-Version': '1',
+              'x-codeium-csrf-token': csrf
+            },
+            body: JSON.stringify({
+              prompt,
+              model: 'MODEL_PLACEHOLDER_M18'
+            }),
+            signal: ctrl.signal
+          }
+        );
+        if (!resp.ok) {
+          lastThinkingTransFailTs = Date.now();
+          return;
+        }
+        const data = await resp.json();
+        if (disposed || reqId !== thinkingTransReqSeq || reqLsGen !== currentLsGeneration) return;
+        let rawResp = String(data?.response || '').trim();
+        rawResp = rawResp.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+        const mJson = rawResp.match(/\{[\s\S]*\}/);
+        let transArr = null;
+        if (mJson) {
+          try {
+            const parsed = JSON.parse(mJson[0]);
+            if (Array.isArray(parsed?.translations)) {
+              transArr = parsed.translations;
+            }
+          } catch (e) {}
+        }
+        if (!transArr && maskedBatch.length === 1 && rawResp && !rawResp.startsWith('{')) {
+          transArr = [rawResp];
+        }
+        if (Array.isArray(transArr) && transArr.length > 0) {
+          lastThinkingTransFailTs = 0;
+          for (let i = 0; i < maskedBatch.length; i++) {
+            const item = maskedBatch[i];
+            const rawTr = typeof transArr[i] === 'string' ? transArr[i].trim() : '';
+            if (rawTr) {
+              const restored = unmaskCodeAndPaths(rawTr, item.placeholders);
+              if (thinkingParaCache.size > 600) {
+                const firstKey = thinkingParaCache.keys().next().value;
+                if (firstKey !== undefined) thinkingParaCache.delete(firstKey);
+              }
+              thinkingParaCache.set(item.normText, restored);
+            }
+          }
+          if (!disposed && globalPrefs.enabled && globalPrefs.translateThinking !== false) {
+            enhanceConversationStreamDOM();
+          }
+        } else {
+          lastThinkingTransFailTs = Date.now();
+        }
+      } catch (e) {
+        if (!ctrl.signal.aborted) {
+          lastThinkingTransFailTs = Date.now();
+        }
+      } finally {
+        clearTimeout(timer);
+        if (activeThinkingTransAbortCtrl === ctrl) {
+          activeThinkingTransAbortCtrl = null;
+        }
+        thinkingTransInFlight = false;
+      }
+    })();
+  }
+
+  function renderThinkingChinesePanel(tb, rawThinking, isStreaming) {
+    const bodyDiv = tb.nextElementSibling;
+    if (!bodyDiv) return;
+
+    const uid = getStableDomUid(tb);
+    const panelId = `agy-stream-think-zh-${uid}`;
+    let panel = bodyDiv.querySelector(`#${panelId}`) || bodyDiv.querySelector('.agy-think-zh-panel');
+
+    if (globalPrefs.translateThinking === false || globalPrefs.lang === 'en' || globalPrefs.bossMode) {
+      bodyDiv.removeAttribute('data-agy-zh-mode');
+      if (panel) panel.remove();
+      return;
+    }
+
+    const { completed, tail } = splitThinkingIntoParagraphs(rawThinking, isStreaming);
+    if (completed.length === 0 && !tail) return;
+
+    const pendingToTranslate = [];
+    const renderedParagraphs = [];
+
+    for (const p of completed) {
+      const norm = normalizeThinkingParagraph(p);
+      if (!norm) continue;
+      if (isAlreadyChineseParagraph(norm)) {
+        renderedParagraphs.push({ text: norm, isZh: true, isTail: false });
+      } else if (thinkingParaCache.has(norm)) {
+        renderedParagraphs.push({ text: thinkingParaCache.get(norm), isZh: true, isTail: false });
+      } else {
+        pendingToTranslate.push(norm);
+        renderedParagraphs.push({ text: norm, isZh: false, isTail: false });
+      }
+    }
+
+    let tailReadyForTrans = false;
+    if (tail) {
+      const normTail = normalizeThinkingParagraph(tail);
+      if (normTail) {
+        if (isAlreadyChineseParagraph(normTail)) {
+          renderedParagraphs.push({ text: normTail, isZh: true, isTail: true });
+        } else if (thinkingParaCache.has(normTail)) {
+          renderedParagraphs.push({ text: thinkingParaCache.get(normTail), isZh: true, isTail: true });
+        } else {
+          const now = Date.now();
+          let tailSt = thinkingTailStateByUid.get(uid);
+          if (!tailSt || tailSt.text !== normTail) {
+            tailSt = { text: normTail, changedAt: now };
+            thinkingTailStateByUid.set(uid, tailSt);
+            if (thinkingTailTimer) {
+              clearTimeout(thinkingTailTimer);
+            }
+            thinkingTailTimer = setTimeout(() => {
+              thinkingTailTimer = null;
+              if (!disposed && globalPrefs.enabled && globalPrefs.translateThinking !== false) {
+                enhanceConversationStreamDOM();
+              }
+            }, 720);
+          } else if (normTail.length >= 40 && now - tailSt.changedAt >= 700) {
+            tailReadyForTrans = true;
+            pendingToTranslate.push(normTail);
+          }
+          renderedParagraphs.push({ text: normTail, isZh: false, isTail: true });
+        }
+      }
+    } else {
+      thinkingTailStateByUid.delete(uid);
+    }
+
+    const isVisibleNow =
+      (tb.getAttribute('data-agy-user-expanded') === '1' ||
+        (tb.getAttribute('data-agy-auto-streaming') === '1' && tb.getAttribute('data-agy-user-collapsed') !== '1')) &&
+      tb.getAttribute('aria-expanded') === 'true';
+
+    if (isVisibleNow && pendingToTranslate.length > 0 && (completed.length > 0 || tailReadyForTrans)) {
+      triggerThinkingParagraphsTranslation(pendingToTranslate);
+    }
+
+    if (!bodyDiv.getAttribute('data-agy-zh-mode')) {
+      bodyDiv.setAttribute('data-agy-zh-mode', 'zh');
+    }
+    const curMode = bodyDiv.getAttribute('data-agy-zh-mode') || 'zh';
+
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.id = panelId;
+      panel.className = 'agy-think-zh-panel';
+
+      const header = document.createElement('div');
+      header.className = 'agy-think-zh-header';
+
+      const badge = document.createElement('span');
+      badge.className = 'agy-think-zh-badge';
+      const dot = document.createElement('span');
+      dot.className = 'agy-think-zh-dot';
+      const statusSpan = document.createElement('span');
+      statusSpan.className = 'agy-think-zh-status';
+      badge.appendChild(dot);
+      badge.appendChild(statusSpan);
+
+      const toggleBtn = document.createElement('button');
+      toggleBtn.type = 'button';
+      toggleBtn.className = 'agy-think-raw-toggle';
+      toggleBtn.textContent = curMode === 'raw' ? '返回中文译文' : '查看英文原稿';
+      toggleBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const nextMode = bodyDiv.getAttribute('data-agy-zh-mode') === 'raw' ? 'zh' : 'raw';
+        bodyDiv.setAttribute('data-agy-zh-mode', nextMode);
+        toggleBtn.textContent = nextMode === 'raw' ? '返回中文译文' : '查看英文原稿';
+      });
+
+      header.appendChild(badge);
+      header.appendChild(toggleBtn);
+
+      const contentBox = document.createElement('div');
+      contentBox.className = 'agy-think-zh-body';
+
+      panel.appendChild(header);
+      panel.appendChild(contentBox);
+      bodyDiv.appendChild(panel);
+    }
+
+    const dotEl = panel.querySelector('.agy-think-zh-dot');
+    if (dotEl) {
+      dotEl.classList.toggle('streaming', isStreaming);
+    }
+    const statusEl = panel.querySelector('.agy-think-zh-status');
+    if (statusEl) {
+      const desiredStatus = isStreaming
+        ? pendingToTranslate.length > 0
+          ? '思考过程实时中文同传中…'
+          : '思考过程实时中文展示中'
+        : '思考过程中文译文';
+      if (statusEl.textContent !== desiredStatus) {
+        statusEl.textContent = desiredStatus;
+      }
+    }
+    const toggleBtnEl = panel.querySelector('.agy-think-raw-toggle');
+    if (toggleBtnEl) {
+      const desiredBtnTxt = curMode === 'raw' ? '返回中文译文' : '查看英文原稿';
+      if (toggleBtnEl.textContent !== desiredBtnTxt) {
+        toggleBtnEl.textContent = desiredBtnTxt;
+      }
+    }
+
+    const contentBox = panel.querySelector('.agy-think-zh-body');
+    if (contentBox) {
+      const sig = renderedParagraphs.map((rp) => `${rp.isZh ? '1' : '0'}:${rp.text}`).join('\n---\n');
+      if (contentBox.getAttribute('data-sig') !== sig) {
+        contentBox.setAttribute('data-sig', sig);
+        contentBox.textContent = '';
+        for (const rp of renderedParagraphs) {
+          const pEl = document.createElement('p');
+          pEl.className = rp.isTail && !rp.isZh ? 'agy-think-zh-para tail-raw' : 'agy-think-zh-para';
+          pEl.textContent = rp.text;
+          contentBox.appendChild(pEl);
+        }
+      }
+    }
+  }
+
   function onCollapsibleClickCapture(e) {
     if (disposed || !globalPrefs.enabled || !e || !e.target || !e.target.closest) return;
+    if (e.target.closest('.agy-think-raw-toggle')) return;
     const btn = e.target.closest(
       'button[data-testid="thinking-collapsible-trigger"], button[data-testid="tool-group-collapsible"]'
     );
     if (!btn) return;
 
     const reactExpanded = btn.getAttribute('aria-expanded') === 'true';
+    const isUserExpanded = btn.getAttribute('data-agy-user-expanded') === '1';
+    const isAutoStreaming =
+      btn.getAttribute('data-agy-auto-streaming') === '1' &&
+      btn.getAttribute('data-agy-user-collapsed') !== '1';
     const isCurrentlyVisible =
-      btn.getAttribute('data-agy-user-expanded') === '1' &&
+      (isUserExpanded || isAutoStreaming) &&
       reactExpanded &&
       Boolean(btn.nextElementSibling);
     const wantExpand = !isCurrentlyVisible;
 
     if (wantExpand) {
+      btn.removeAttribute('data-agy-user-collapsed');
       btn.setAttribute('data-agy-user-expanded', '1');
       if (btn.nextElementSibling) {
         btn.nextElementSibling.style.removeProperty('display');
@@ -2946,6 +3427,7 @@
         // stop propagation so neither legacy element listeners nor React unmount it.
         e.stopImmediatePropagation();
         e.stopPropagation();
+        enhanceConversationStreamDOM();
       } else {
         // Let the event reach React's root listener to mount the body div, and ensure
         // data-agy-user-expanded="1" remains set even if a legacy element listener ran.
@@ -2954,10 +3436,15 @@
           if (btn.nextElementSibling) {
             btn.nextElementSibling.style.removeProperty('display');
           }
+          enhanceConversationStreamDOM();
         });
       }
     } else {
       btn.removeAttribute('data-agy-user-expanded');
+      if (btn.getAttribute('data-agy-auto-streaming') === '1') {
+        btn.setAttribute('data-agy-user-collapsed', '1');
+        btn.removeAttribute('data-agy-auto-streaming');
+      }
       if (btn.nextElementSibling) {
         btn.nextElementSibling.style.removeProperty('display');
       }
@@ -3010,7 +3497,7 @@
       }
     }
 
-    // Codex-style thinking headers: default-collapsed, 1-click expandable anytime, with single-sentence Chinese summary
+    // Codex-style thinking headers: auto-expanded with live Chinese translation while streaming, auto-collapsed on completion, 1-click expandable anytime
     const thinkBtns = document.querySelectorAll('button[data-testid="thinking-collapsible-trigger"]');
     let thinkIdx = 0;
     for (const tb of thinkBtns) {
@@ -3034,9 +3521,28 @@
       }
 
       const thinkProps = findAncestorFiberProps(tb, (p) => typeof p.thinking === 'string' && p.thinking.length > 0);
-      if (thinkProps && thinkProps.thinking) {
+      const stepHolder = findAncestorFiberProps(tb, (p) => Boolean(p.step && p.step.step?.case === 'plannerResponse'));
+      const rawThinkingText =
+        (thinkProps && typeof thinkProps.thinking === 'string' && thinkProps.thinking) ||
+        stepHolder?.step?.step?.value?.thinking ||
+        '';
+      const isStreamingNow = isThinkingTriggerActivelyStreaming(tb, stepHolder?.step);
+
+      if (globalPrefs.translateThinking === false || globalPrefs.lang === 'en' || globalPrefs.bossMode) {
+        tb.removeAttribute('data-agy-auto-streaming');
+      } else if (isStreamingNow) {
+        if (tb.getAttribute('data-agy-user-collapsed') !== '1') {
+          tb.setAttribute('data-agy-auto-streaming', '1');
+        }
+      } else {
+        if (tb.getAttribute('data-agy-auto-streaming') !== null) {
+          tb.removeAttribute('data-agy-auto-streaming');
+        }
+        tb.removeAttribute('data-agy-user-collapsed');
+      }
+
+      if (rawThinkingText) {
         let nextToolDesc = '';
-        const stepHolder = findAncestorFiberProps(tb, (p) => Boolean(p.step && p.step.step?.case === 'plannerResponse'));
         const grpHolder = findAncestorFiberProps(tb, (p) => Array.isArray(p.steps) || Array.isArray(p.segment?.steps));
         const grpSteps = grpHolder?.steps || grpHolder?.segment?.steps || [];
         if (stepHolder?.step && grpSteps.length > 0) {
@@ -3049,7 +3555,7 @@
             nextToolDesc = describeStepQualitatively(grpSteps[sIdx + 1]);
           }
         }
-        const digest = parseThinkingQualitativeDigest(thinkProps.thinking, nextToolDesc);
+        const digest = parseThinkingQualitativeDigest(rawThinkingText, nextToolDesc);
         const headline = digest && digest.headline ? digest.headline : '';
         if (headline) {
           let inlineSpan = tb.querySelector('.agy-think-inline-summary');
@@ -3068,6 +3574,8 @@
             inlineSpan.textContent = headline;
           }
         }
+
+        renderThinkingChinesePanel(tb, rawThinkingText, isStreamingNow);
       }
     }
 
@@ -3465,6 +3973,280 @@
     } catch (e) {}
   }
 
+  const userInputLedgerByConvo = new Map();
+  const lastBlueprintAttemptTsByConvo = new Map();
+  let llmSummaryReqSeq = 0;
+
+  function extractUserInputPlainText(step) {
+    if (!step || step.step?.case !== 'userInput') return '';
+    const sv = step.step?.value || {};
+    let txt = '';
+    if (Array.isArray(sv.items)) {
+      txt = sv.items
+        .map((it) => (typeof it?.text === 'string' ? it.text : ''))
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+    }
+    if (!txt && typeof sv.text === 'string') txt = sv.text.trim();
+    if (!txt && typeof sv.content === 'string') txt = sv.content.trim();
+    if (!txt && typeof sv.prompt === 'string') txt = sv.prompt.trim();
+    if (!txt) {
+      try {
+        txt = JSON.stringify(sv, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
+      } catch (e) {}
+    }
+    if (!txt) return '';
+    if (txt.includes('[System Reactive Wakeup') || txt.includes('<SYSTEM_MESSAGE>')) {
+      return '';
+    }
+    return txt;
+  }
+
+  function updateAndGetUserInputLedger(cid, allSteps) {
+    if (!cid) return { entries: [], latestUserStepIndex: -1, latestUserText: '' };
+    let ledger = userInputLedgerByConvo.get(cid);
+    if (!ledger) {
+      ledger = new Map();
+      userInputLedgerByConvo.set(cid, ledger);
+    }
+    for (let i = 0; i < allSteps.length; i++) {
+      const s = allSteps[i];
+      if (!s || s.step?.case !== 'userInput') continue;
+      const uTxt = extractUserInputPlainText(s);
+      if (!uTxt) continue;
+      const stepIdx = s.metadata?.sourceTrajectoryStepInfo?.stepIndex ?? i;
+      if (!ledger.has(stepIdx)) {
+        ledger.set(stepIdx, {
+          stepIndex: stepIdx,
+          text: uTxt.replace(/\s+/g, ' ').trim().slice(0, 400)
+        });
+      }
+    }
+    const entries = Array.from(ledger.values()).sort((a, b) => a.stepIndex - b.stepIndex);
+    const latest = entries.length > 0 ? entries[entries.length - 1] : null;
+    return {
+      entries,
+      latestUserStepIndex: latest ? latest.stepIndex : -1,
+      latestUserText: latest ? latest.text : ''
+    };
+  }
+
+  function formatUserLedgerForPrompt(entries) {
+    if (!Array.isArray(entries) || entries.length === 0) return [];
+    const lines = [];
+    const first = entries[0];
+    lines.push(`[初始核心指令 step=${first.stepIndex}] ${first.text}`);
+    const tailEntries = entries.slice(1).slice(-4);
+    let budget = 1600;
+    for (const item of tailEntries) {
+      if (budget <= 0) break;
+      const chunk = item.text.slice(0, budget);
+      budget -= chunk.length;
+      lines.push(`[后续追加指令 step=${item.stepIndex}] ${chunk}`);
+    }
+    return lines;
+  }
+
+  function computeTitleOverlapRatio(a, b) {
+    const s1 = String(a || '').replace(/^\d+\.\s*/, '').trim();
+    const s2 = String(b || '').replace(/^\d+\.\s*/, '').trim();
+    if (!s1 || !s2) return 0;
+    if (s1 === s2) return 1;
+    const set1 = new Set(s1.split(''));
+    const set2 = new Set(s2.split(''));
+    let common = 0;
+    for (const ch of set1) {
+      if (set2.has(ch)) common++;
+    }
+    return common / Math.max(1, Math.min(set1.size, set2.size));
+  }
+
+  function reconcileBlueprintTasks(prevCache, nextTasks, latestUserStepIndex, isRunningNow, turnCompletedQuietly) {
+    const isSameUserTurn =
+      Boolean(prevCache) &&
+      Array.isArray(prevCache.tasks) &&
+      prevCache.tasks.length > 0 &&
+      (prevCache.lastUserStepIndex === undefined || prevCache.lastUserStepIndex === latestUserStepIndex);
+
+    let merged = [];
+    if (isSameUserTurn) {
+      const prevTasks = prevCache.tasks;
+      const frozenDone = [];
+      for (let i = 0; i < prevTasks.length; i++) {
+        const pt = prevTasks[i];
+        if (pt.status === 'done' && ((pt.doneCount || 1) >= 2 || i < prevTasks.length - 1)) {
+          frozenDone.push({
+            status: 'done',
+            title: pt.title,
+            outcome: pt.outcome || '已完成',
+            doneCount: (pt.doneCount || 1) + 1
+          });
+        } else {
+          break;
+        }
+      }
+
+      const prevActive = prevTasks.find((t) => t.status === 'active');
+      merged = [...frozenDone];
+
+      for (const nt of nextTasks) {
+        const dupFrozen = frozenDone.some((fd) => computeTitleOverlapRatio(fd.title, nt.title) >= 0.65);
+        if (dupFrozen) continue;
+
+        let finalTitle = nt.title;
+        if (prevActive && computeTitleOverlapRatio(prevActive.title, nt.title) >= 0.58) {
+          finalTitle = prevActive.title;
+        }
+
+        const prevMatch = prevTasks.find((pt) => computeTitleOverlapRatio(pt.title, finalTitle) >= 0.65);
+        const nextStatus = nt.status === 'active' ? 'active' : nt.status === 'todo' ? 'todo' : 'done';
+        const doneCount =
+          nextStatus === 'done'
+            ? (prevMatch && prevMatch.status === 'done' ? (prevMatch.doneCount || 1) + 1 : 1)
+            : 0;
+
+        merged.push({
+          status: nextStatus,
+          title: finalTitle,
+          outcome: nt.outcome,
+          doneCount
+        });
+      }
+
+      if (merged.length === 0) {
+        merged = nextTasks.map((t) => ({
+          status: t.status,
+          title: t.title,
+          outcome: t.outcome,
+          doneCount: t.status === 'done' ? 1 : 0
+        }));
+      }
+    } else {
+      merged = nextTasks.map((t) => ({
+        status: t.status,
+        title: t.title,
+        outcome: t.outcome,
+        doneCount: t.status === 'done' ? 1 : 0
+      }));
+    }
+
+    merged = merged.slice(0, 5);
+
+    // Enforce at most one 'active' task, and ensure coherent status with isRunningNow / turnCompletedQuietly
+    let seenActive = false;
+    for (const t of merged) {
+      if (t.status === 'active') {
+        if (!seenActive) {
+          seenActive = true;
+        } else {
+          t.status = 'todo';
+        }
+      }
+    }
+    if (isRunningNow && !seenActive && merged.length > 0) {
+      const firstTodo = merged.find((t) => t.status === 'todo');
+      if (firstTodo) {
+        firstTodo.status = 'active';
+      }
+    } else if (!isRunningNow && turnCompletedQuietly && seenActive) {
+      const hasTodo = merged.some((t) => t.status === 'todo');
+      if (!hasTodo) {
+        for (const t of merged) {
+          if (t.status === 'active') {
+            t.status = 'done';
+            t.doneCount = Math.max(1, t.doneCount || 1);
+          }
+        }
+      }
+    }
+
+    return merged;
+  }
+
+  function evaluateMissionDrift(allSteps, ledgerInfo, llmCached) {
+    const latestUserStepIndex = ledgerInfo?.latestUserStepIndex ?? -1;
+    const latestUserText = ledgerInfo?.latestUserText || '';
+
+    // 1. Read-only / Audit-first instruction boundary check against write tools in the current user turn
+    const isReadOnlyInstruction =
+      /(?:只读|仅排查|只排查|不要改代码|不要修改|不修改任何文件|先不要改|先调起.*审核|只分析|只讨论)/.test(
+        latestUserText
+      ) && !/^(?:可以|认可|同意|开始施工|正式开工)/.test(latestUserText.trim());
+
+    let consecutiveCmdErrors = 0;
+    let lastFailedTarget = '';
+
+    for (let i = 0; i < allSteps.length; i++) {
+      const s = allSteps[i];
+      if (!s) continue;
+      const stepIdx = s.metadata?.sourceTrajectoryStepInfo?.stepIndex ?? i;
+      if (latestUserStepIndex >= 0 && stepIdx <= latestUserStepIndex) continue;
+
+      const sc = s.step?.case || '';
+      const sv = s.step?.value || {};
+      const args = (sc === 'generic' && sv.args && typeof sv.args === 'object') ? sv.args : sv;
+      const tname = String(s.metadata?.toolCall?.name || sc || '');
+      const targetStr = String(
+        args.Path || args.TargetFile || args.filePath || args.CommandLine || args.commandLine || args.toolSummary || ''
+      );
+      if (/probe_fiber_live|probe_ctx_live|hot_inject_live|list_ls_rpcs/i.test(targetStr)) continue;
+
+      if (isReadOnlyInstruction) {
+        const isWriteTool =
+          /(?:^|:)(?:edit_file|write_file|replace_file_content|multi_replace_file_content|writeToFile|codeAction)$/i.test(
+            tname
+          ) ||
+          sc === 'writeToFile' ||
+          sc === 'codeAction';
+        const isScratchFile = /[\\/]scratch[\\/]|grok_audit_brief/i.test(targetStr);
+        if (isWriteTool && !isScratchFile) {
+          const fname = basenameFromUriOrPath(targetStr) || '工程文件';
+          return {
+            hasDrift: true,
+            reason: `当前指令要求先审核或只读排查，但检测到模型已修改 ${fname}`
+          };
+        }
+      }
+
+      const st = s.status;
+      const isErr =
+        st === 4 ||
+        st === 7 ||
+        st === 'CORTEX_STEP_STATUS_ERROR' ||
+        st === 'CORTEX_STEP_STATUS_INVALID';
+      const isDone = st === 3 || st === 'CORTEX_STEP_STATUS_DONE';
+      if (sc === 'generic' || sc === 'runCommand' || tname) {
+        if (isErr) {
+          consecutiveCmdErrors += 1;
+          lastFailedTarget = basenameFromUriOrPath(targetStr) || targetStr.slice(0, 28) || tname;
+          if (consecutiveCmdErrors >= 3) {
+            return {
+              hasDrift: true,
+              reason: `连续 ${consecutiveCmdErrors} 步操作报错失败（${lastFailedTarget}），请注意是否陷入原地打转`
+            };
+          }
+        } else if (isDone) {
+          consecutiveCmdErrors = 0;
+        }
+      }
+    }
+
+    if (
+      llmCached &&
+      typeof llmCached.driftWarning === 'string' &&
+      llmCached.driftWarning.trim().length >= 6 &&
+      (llmCached.lastUserStepIndex === undefined || llmCached.lastUserStepIndex === latestUserStepIndex)
+    ) {
+      return {
+        hasDrift: true,
+        reason: llmCached.driftWarning.trim()
+      };
+    }
+
+    return { hasDrift: false, reason: '' };
+  }
+
   function savePersistedLlmSummaryCache() {
     try {
       const obj = {};
@@ -3474,6 +4256,11 @@
           sig: v.sig,
           title: v.title,
           tasks: v.tasks,
+          driftWarning: v.driftWarning || '',
+          lastUserStepIndex: v.lastUserStepIndex,
+          lastThinkStepIndex: v.lastThinkStepIndex,
+          lastTotalSteps: v.lastTotalSteps,
+          wasTurnCompletedQuietly: v.wasTurnCompletedQuietly,
           updatedAt: v.updatedAt
         };
       }
@@ -3481,38 +4268,75 @@
     } catch (e) {}
   }
 
-  function buildTraceTextForLlm(allSteps) {
+  function buildTraceTextForLlm(allSteps, ledgerInfo, existingCache) {
     const traceLines = [];
-    const startIdx = Math.max(0, allSteps.length - 26);
+    if (ledgerInfo && Array.isArray(ledgerInfo.entries) && ledgerInfo.entries.length > 0) {
+      traceLines.push(...formatUserLedgerForPrompt(ledgerInfo.entries));
+    }
+    if (
+      existingCache &&
+      typeof existingCache.title === 'string' &&
+      Array.isArray(existingCache.tasks) &&
+      existingCache.tasks.length > 0 &&
+      (existingCache.lastUserStepIndex === undefined ||
+        existingCache.lastUserStepIndex === ledgerInfo?.latestUserStepIndex)
+    ) {
+      const prevJson = JSON.stringify({
+        title: existingCache.title,
+        tasks: existingCache.tasks.map((t) => ({
+          status: t.status,
+          title: t.title,
+          outcome: t.outcome
+        }))
+      });
+      traceLines.push(`[上一版阶段蓝图（同一轮指令内请保持已完成阶段与总体结构稳定）] ${prevJson}`);
+    }
+
+    const startIdx = Math.max(0, allSteps.length - 22);
     for (let i = startIdx; i < allSteps.length; i++) {
       const s = allSteps[i];
       if (!s) continue;
+      const stepIdx = s.metadata?.sourceTrajectoryStepInfo?.stepIndex ?? i;
       const sc = s.step?.case || '';
       const sv = s.step?.value || {};
       const st = s.status;
       if (sc === 'userInput') {
-        let uTxt = '';
-        try {
-          uTxt = JSON.stringify(sv, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
-        } catch (e) {}
-        if (uTxt) traceLines.push(`[用户请求 step=${i}] ${uTxt.slice(0, 180)}`);
+        const uTxt = extractUserInputPlainText(s);
+        if (uTxt) traceLines.push(`[用户请求 step=${stepIdx}] ${uTxt.replace(/\s+/g, ' ').slice(0, 240)}`);
       } else if (sc === 'plannerResponse') {
-        if (sv.thinking) traceLines.push(`[思考 step=${i}] ${String(sv.thinking).slice(0, 160)}`);
-        if (sv.response) traceLines.push(`[模型回复 step=${i}] ${String(sv.response).slice(0, 180)}`);
-      } else if (sc === 'generic') {
-        const tname = s.metadata?.toolCall?.name || '';
-        const args = sv.args || {};
-        const target = args.toolSummary || args.Path || args.TargetFile || args.Role || args.CommandLine || '';
+        if (sv.thinking) traceLines.push(`[思考 step=${stepIdx}] ${String(sv.thinking).slice(0, 280)}`);
+        if (sv.response) traceLines.push(`[模型回复 step=${stepIdx}] ${String(sv.response).slice(0, 200)}`);
+      } else if (sc === 'generic' || sc === 'runCommand' || sc === 'invokeSubagent') {
+        const tname = s.metadata?.toolCall?.name || sc || '';
+        const args = (sc === 'generic' && sv.args && typeof sv.args === 'object') ? sv.args : sv;
+        const target =
+          args.toolSummary || args.Path || args.TargetFile || args.Role || args.CommandLine || args.commandLine || '';
         if (/probe_fiber_live|probe_ctx_live|hot_inject_live|list_ls_rpcs/i.test(String(target))) continue;
-        traceLines.push(`[步骤 step=${i} status=${st} tool=${tname}] ${String(target).slice(0, 140)}`);
+        traceLines.push(`[步骤 step=${stepIdx} status=${st} tool=${tname}] ${String(target).slice(0, 140)}`);
       }
     }
     return traceLines;
   }
 
-  function triggerLlmMissionSummarization(cid, sig, allSteps, isRunningNow) {
+  function triggerLlmMissionSummarization(
+    cid,
+    sig,
+    allSteps,
+    isRunningNow,
+    ledgerInfo,
+    latestDoneThinkStepIndex,
+    effTotalSteps,
+    turnCompletedQuietly
+  ) {
     if (disposed || !globalPrefs.enabled || !cid || llmSummaryInFlight) return;
     if (typeof window.fetch !== 'function') return;
+
+    const now = Date.now();
+    const lastAttempt = lastBlueprintAttemptTsByConvo.get(cid) || 0;
+    const existing = llmSummaryCacheByConvo.get(cid);
+    if (now - lastAttempt < 3500 || (existing && existing.lastAttemptTs && now - existing.lastAttemptTs < 3500)) {
+      return;
+    }
 
     const csrf =
       window.__APP_CONFIG__?.csrfToken ||
@@ -3520,30 +4344,41 @@
       '';
     if (!csrf) return;
 
-    const traceLines = buildTraceTextForLlm(allSteps);
+    const traceLines = buildTraceTextForLlm(allSteps, ledgerInfo, existing);
     if (traceLines.length === 0) return;
 
-    const existing = llmSummaryCacheByConvo.get(cid);
-    const now = Date.now();
-    if (existing && existing.lastAttemptTs && now - existing.lastAttemptTs < 3500) {
-      return;
-    }
+    lastBlueprintAttemptTsByConvo.set(cid, now);
     if (existing) {
       existing.lastAttemptTs = now;
     }
 
+    // Preempt any in-flight thinking translation so blueprint update has single-flight priority
+    if (activeThinkingTransAbortCtrl) {
+      try {
+        activeThinkingTransAbortCtrl.abort();
+      } catch (e) {}
+      activeThinkingTransAbortCtrl = null;
+      thinkingTransInFlight = false;
+    }
+
     llmSummaryInFlight = true;
+    const reqId = ++llmSummaryReqSeq;
+    const reqLsGen = currentLsGeneration;
     const ctrl = new AbortController();
     activeLlmSummaryAbortCtrl = ctrl;
     const timer = setTimeout(() => ctrl.abort(), 12000);
 
     const prompt = [
-      '你是一个研发与学术工作台的实时态势总结器。请阅读以下当前会话最近的任务执行轨迹，从整体目的、设计与施工进展出发，用简练纯正的中文总结理解当前这一轮任务到底在干什么（严禁照抄会话标题，严禁出现英文单词或半中半英，严禁带【】或[]括号标签）。',
+      '你是一个研发与学术工作台的全局蓝图与方向审校器。请阅读用户的核心指令账本、上一版阶段蓝图以及最近执行轨迹，用简练纯正的中文维护当前任务的全局施工蓝图（严禁照抄会话标题，严禁出现英文单词或半中半英，严禁带【】或[]括号标签）。',
+      '蓝图演进准则：',
+      '1) 若存在【上一版阶段蓝图】且用户未下达推翻原目标的新指令，必须保持已完成的 "done" 阶段标题与整体阶段划分稳定，仅推进阶段状态（"done" / "active" / "todo"）与进展说明（outcome），或在从初步勘察收敛出明确方案时补充后续待办阶段（"todo"）；',
+      '2) 阶段总数控制在 2 到 5 项之间（实事求是，严禁为了凑满5项而编造空洞阶段）；',
       isRunningNow
-        ? '注意：当前任务仍在推进中，请将最后一个正在进行的阶段 status 标为 "active"，已完成的前序阶段标为 "done"。'
-        : '注意：当前各阶段已执行就绪，请将已完成阶段 status 标为 "done"。',
+        ? '3) 当前任务仍在推进中，请将当前正在推进的 1 个阶段 status 标为 "active"，已完成的前序阶段标为 "done"，尚未开始的后续计划阶段标为 "todo"；'
+        : '3) 当前阶段已执行就绪，请将已完成阶段 status 标为 "done"，若有明确待用户确认后继续的后续阶段可标为 "todo"；',
+      '4) 对照用户最新指令核查模型当前动作是否走偏（如用户要求只读排查却修改了代码，或明显偏离用户要求），若正常一致则 driftWarning 填 ""，若确认走偏则用 12-28 字简明指出偏离之处。',
       '请仅输出严格合法的 JSON 对象（不要 markdown 代码块标记），格式如下：',
-      '{"title":"用12-24个纯中文汉字概括当前这一轮任务在干什么","tasks":[{"status":"done或active","title":"宏观阶段名称（纯中文，10-26字，共3到4项）","outcome":"定性结果或进展（纯中文，4-12字）"}]}',
+      '{"title":"用12-24个纯中文汉字概括当前任务总目标","tasks":[{"status":"done或active或todo","title":"宏观阶段名称（纯中文，10-26字，共2到5项）","outcome":"定性结果或当前进展（纯中文，4-14字）"}],"driftWarning":""}',
       '当前会话轨迹：',
       traceLines.join('\n')
     ].join('\n');
@@ -3568,6 +4403,7 @@
         );
         if (!resp.ok) return;
         const data = await resp.json();
+        if (disposed || reqId !== llmSummaryReqSeq || reqLsGen !== currentLsGeneration) return;
         let rawResp = String(data?.response || '').trim();
         rawResp = rawResp.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
         const mJson = rawResp.match(/\{[\s\S]*\}/);
@@ -3575,20 +4411,38 @@
         const parsed = JSON.parse(mJson[0]);
         if (parsed && typeof parsed.title === 'string' && Array.isArray(parsed.tasks) && parsed.tasks.length > 0) {
           const cleanTitle = cleanNaturalSentence(parsed.title).replace(/[【】\[\]]/g, '');
-          const cleanTasks = parsed.tasks
-            .slice(0, 4)
+          const rawCleanTasks = parsed.tasks
+            .slice(0, 5)
             .map((t) => ({
               status: t.status === 'active' ? 'active' : t.status === 'todo' ? 'todo' : 'done',
-              title: cleanNaturalSentence(t.title || '').replace(/[【】\[\]]/g, ''),
+              title: cleanNaturalSentence(t.title || t.text || '').replace(/[【】\[\]]/g, ''),
               outcome: cleanNaturalSentence(t.outcome || '').replace(/[【】\[\]]/g, '')
             }))
             .filter((t) => t.title.length >= 4);
 
-          if (cleanTitle && cleanTasks.length > 0) {
+          if (cleanTitle && rawCleanTasks.length > 0) {
+            const latestUserStepIndex = ledgerInfo?.latestUserStepIndex ?? -1;
+            const reconciledTasks = reconcileBlueprintTasks(
+              existing,
+              rawCleanTasks,
+              latestUserStepIndex,
+              isRunningNow,
+              turnCompletedQuietly
+            );
+            const cleanDrift =
+              typeof parsed.driftWarning === 'string'
+                ? cleanNaturalSentence(parsed.driftWarning).replace(/[【】\[\]]/g, '')
+                : '';
+
             llmSummaryCacheByConvo.set(cid, {
               sig,
               title: cleanTitle,
-              tasks: cleanTasks,
+              tasks: reconciledTasks,
+              driftWarning: cleanDrift,
+              lastUserStepIndex: latestUserStepIndex,
+              lastThinkStepIndex: latestDoneThinkStepIndex,
+              lastTotalSteps: effTotalSteps,
+              wasTurnCompletedQuietly: Boolean(turnCompletedQuietly),
               updatedAt: Date.now(),
               lastAttemptTs: Date.now()
             });
@@ -4093,11 +4947,100 @@
       turnCompletedQuietly
     );
 
-    // 3. Use real LLM mission summarization (via GetModelResponse MODEL_PLACEHOLDER_M18) with instant cache
-    const sig = `${Math.floor((totalStepsCount || allSteps.length) / 3)}:${isRunningNow ? 'run' : 'idle'}`;
+    // 3. Maintain append-only User Instruction Ledger & Stateful Blueprint Evolution
+    const ledgerInfo = updateAndGetUserInputLedger(cid, allSteps);
+    let latestDoneThinkStepIndex = -1;
+    let currentLiveAction = null;
+
+    for (let i = 0; i < allSteps.length; i++) {
+      const s = allSteps[i];
+      if (!s) continue;
+      const stepIdx = s.metadata?.sourceTrajectoryStepInfo?.stepIndex ?? i;
+      const sc = s.step?.case || '';
+      const sv = s.step?.value || {};
+      const st = s.status;
+      if (sc === 'plannerResponse' && sv.thinking) {
+        const isStepRunning =
+          st === 1 ||
+          st === 2 ||
+          st === 9 ||
+          st === 'CORTEX_STEP_STATUS_RUNNING' ||
+          st === 'CORTEX_STEP_STATUS_GENERATING';
+        if (!isStepRunning) {
+          latestDoneThinkStepIndex = Math.max(latestDoneThinkStepIndex, stepIdx);
+        } else if (!sv.response) {
+          const digest = parseThinkingQualitativeDigest(sv.thinking, '');
+          currentLiveAction = {
+            role: (digest && digest.headline) ? `思考推演：${digest.headline}` : '正在思考推演整体方案…',
+            statusText: '思考中'
+          };
+        }
+      }
+    }
+
+    if (!currentLiveAction && isRunningNow && activeRuntimes.length === 0) {
+      for (let i = allSteps.length - 1; i >= 0; i--) {
+        const s = allSteps[i];
+        if (!s) continue;
+        if (s.step?.case === 'plannerResponse' && s.step?.value?.thinking && !s.step?.value?.response) {
+          const digest = parseThinkingQualitativeDigest(s.step.value.thinking, '');
+          currentLiveAction = {
+            role: (digest && digest.headline) ? `思考推演：${digest.headline}` : '正在思考推演整体方案…',
+            statusText: '思考中'
+          };
+          break;
+        }
+        const qDesc = describeStepQualitatively(s);
+        if (qDesc) {
+          currentLiveAction = {
+            role: qDesc,
+            statusText: '推进中'
+          };
+          break;
+        }
+      }
+      if (!currentLiveAction) {
+        currentLiveAction = {
+          role: '正在思考推演…',
+          statusText: '思考中'
+        };
+      }
+    }
+
     const llmCached = cid ? llmSummaryCacheByConvo.get(cid) : null;
-    if (cid && allSteps.length > 0 && (!llmCached || llmCached.sig !== sig)) {
-      triggerLlmMissionSummarization(cid, sig, allSteps, isRunningNow);
+    const hasNewUserTurn =
+      Boolean(llmCached) &&
+      ledgerInfo.latestUserStepIndex > (llmCached.lastUserStepIndex ?? -1);
+    const stepsDelta = llmCached ? effTotalSteps - (llmCached.lastTotalSteps || 0) : effTotalSteps;
+    const hasNewCompletedThink =
+      Boolean(llmCached) &&
+      latestDoneThinkStepIndex > (llmCached.lastThinkStepIndex ?? -1) &&
+      stepsDelta >= 2;
+    const hasSixStepMilestone = Boolean(llmCached) && stepsDelta >= 6;
+    const hasQuietCompletionEdge =
+      Boolean(llmCached) && turnCompletedQuietly && !llmCached.wasTurnCompletedQuietly;
+
+    const shouldUpdateBlueprint =
+      !llmCached ||
+      !Array.isArray(llmCached.tasks) ||
+      llmCached.tasks.length === 0 ||
+      hasNewUserTurn ||
+      hasNewCompletedThink ||
+      hasSixStepMilestone ||
+      hasQuietCompletionEdge;
+
+    const sig = `${ledgerInfo.latestUserStepIndex}:${latestDoneThinkStepIndex}:${Math.floor(effTotalSteps / 6)}:${turnCompletedQuietly ? 'done' : 'work'}`;
+    if (cid && allSteps.length > 0 && shouldUpdateBlueprint && (!llmCached || llmCached.sig !== sig)) {
+      triggerLlmMissionSummarization(
+        cid,
+        sig,
+        allSteps,
+        isRunningNow,
+        ledgerInfo,
+        latestDoneThinkStepIndex,
+        effTotalSteps,
+        turnCompletedQuietly
+      );
     }
 
     let finalTasks = [];
@@ -4113,12 +5056,15 @@
       finalTasks = [];
     }
 
+    const drift = evaluateMissionDrift(allSteps, ledgerInfo, llmCached);
     const hasData = Boolean(cid && (finalTasks.length > 0 || allSteps.length > 0));
     return {
       hasData,
       globalGoal: globalGoal || '正在理解并概括当前任务脉络…',
       tasks: finalTasks,
       activeRuntimes: activeRuntimes.slice(-2),
+      currentLiveAction,
+      drift,
       isRunning: isRunningNow
     };
   }
@@ -4146,7 +5092,7 @@
     missionHudHost.style.display = 'none';
 
     missionHudShadow = missionHudHost.attachShadow({ mode: 'open' });
-      missionHudShadow.innerHTML = `
+    missionHudShadow.innerHTML = `
       <style>
         :host {
           all: initial;
@@ -4230,14 +5176,53 @@
         .mission-box.dark .top-right {
           color: #9ca3af;
         }
+        .align-pill {
+          font-size: 11px;
+          line-height: 16px;
+          padding: 0 6px;
+          border-radius: 999px;
+          background: rgba(16, 185, 129, 0.12);
+          color: #059669;
+          font-weight: 500;
+        }
+        .mission-box.dark .align-pill {
+          background: rgba(16, 185, 129, 0.15);
+          color: #34d399;
+        }
+        .align-pill.warn {
+          background: rgba(245, 158, 11, 0.15);
+          color: #d97706;
+        }
+        .mission-box.dark .align-pill.warn {
+          background: rgba(245, 158, 11, 0.18);
+          color: #fbbf24;
+        }
+        .drift-bar {
+          display: none;
+          align-items: center;
+          gap: 6px;
+          padding: 5px 12px;
+          background: rgba(245, 158, 11, 0.10);
+          border-top: 1px solid rgba(245, 158, 11, 0.22);
+          font-size: 11.5px;
+          color: #b45309;
+          line-height: 1.4;
+        }
+        .mission-box.dark .drift-bar {
+          background: rgba(245, 158, 11, 0.12);
+          border-top-color: rgba(245, 158, 11, 0.25);
+          color: #fbbf24;
+        }
+        .drift-bar.visible {
+          display: flex;
+        }
         .mission-body {
           padding: 5px 12px 6px;
           display: flex;
           flex-direction: column;
           gap: 2px;
         }
-        .mission-box.collapsed .mission-body,
-        .mission-box.collapsed .rt-bar {
+        .mission-box.collapsed .mission-body {
           display: none !important;
         }
         .t-row {
@@ -4255,6 +5240,9 @@
           font-size: 11px;
           flex-shrink: 0;
           color: #9ca3af;
+        }
+        .t-row.done .t-chk {
+          color: #10b981;
         }
         .t-row.active .t-chk {
           color: #2563eb;
@@ -4287,6 +5275,12 @@
         }
         .mission-box.dark .t-row.active .t-title {
           color: #fafafa;
+        }
+        .t-row.todo .t-title {
+          color: #6b7280;
+        }
+        .mission-box.dark .t-row.todo .t-title {
+          color: #a1a1aa;
         }
         .t-out {
           margin-left: auto;
@@ -4358,12 +5352,16 @@
             <span class="goal-text" id="m-goal"></span>
           </div>
           <div class="top-right">
+            <span id="m-align" class="align-pill" hidden></span>
             <span id="m-wd" class="wd-pill" hidden></span>
             <span id="m-phase"></span>
             <span id="m-fold">▾</span>
           </div>
         </div>
         <div class="mission-body" id="m-task-list"></div>
+        <div class="drift-bar" id="m-drift-bar">
+          <span id="m-drift-text"></span>
+        </div>
         <div class="rt-bar" id="m-rt-bar">
           <span class="rt-text" id="m-rt-text"></span>
           <span class="rt-status" id="m-rt-status"></span>
@@ -4376,10 +5374,13 @@
       top: missionHudShadow.getElementById('m-top'),
       dot: missionHudShadow.getElementById('m-dot'),
       goal: missionHudShadow.getElementById('m-goal'),
+      align: missionHudShadow.getElementById('m-align'),
       wd: missionHudShadow.getElementById('m-wd'),
       phase: missionHudShadow.getElementById('m-phase'),
       fold: missionHudShadow.getElementById('m-fold'),
       taskList: missionHudShadow.getElementById('m-task-list'),
+      driftBar: missionHudShadow.getElementById('m-drift-bar'),
+      driftText: missionHudShadow.getElementById('m-drift-text'),
       rtBar: missionHudShadow.getElementById('m-rt-bar'),
       rtText: missionHudShadow.getElementById('m-rt-text'),
       rtStatus: missionHudShadow.getElementById('m-rt-status')
@@ -4418,7 +5419,15 @@
       document.documentElement.setAttribute('data-agy-color-mode', isLight ? 'light' : 'dark');
     }
 
-    if (disposed || !globalPrefs.enabled || globalPrefs.lang === 'en' || globalPrefs.bossMode) {
+    if (disposed || !globalPrefs.enabled) {
+      hideMissionHud();
+      return;
+    }
+
+    // Always collect live mission state so reactive wakeup watchdog continues running even when HUD UI is hidden
+    const state = collectLiveSessionMissionState();
+
+    if (globalPrefs.lang === 'en' || globalPrefs.bossMode || globalPrefs.missionHud === false) {
       hideMissionHud();
       return;
     }
@@ -4444,7 +5453,6 @@
       return;
     }
 
-    const state = collectLiveSessionMissionState();
     if (!state.hasData) {
       hideMissionHud();
       return;
@@ -4469,6 +5477,26 @@
       missionHudRefs.goal.textContent = state.globalGoal;
     }
 
+    if (missionHudRefs.align) {
+      const hasDrift = Boolean(state.drift && state.drift.hasDrift);
+      const showAlign = totalTasks > 0 || hasDrift;
+      missionHudRefs.align.hidden = !showAlign;
+      missionHudRefs.align.classList.toggle('warn', hasDrift);
+      const alignText = hasDrift ? '⚠️ 疑似走偏' : '✓ 方向一致';
+      if (missionHudRefs.align.textContent !== alignText) {
+        missionHudRefs.align.textContent = alignText;
+      }
+    }
+
+    if (missionHudRefs.driftBar && missionHudRefs.driftText) {
+      const hasDrift = Boolean(state.drift && state.drift.hasDrift && state.drift.reason);
+      missionHudRefs.driftBar.classList.toggle('visible', hasDrift);
+      const driftMsg = hasDrift ? `⚠️ 走偏提醒：${state.drift.reason}` : '';
+      if (missionHudRefs.driftText.textContent !== driftMsg) {
+        missionHudRefs.driftText.textContent = driftMsg;
+      }
+    }
+
     if (missionHudRefs.phase) {
       missionHudRefs.phase.textContent = totalTasks > 0 ? `${doneTasks} / ${totalTasks}` : '';
     }
@@ -4491,7 +5519,8 @@
 
     if (missionHudRefs.rtBar) {
       const hasActiveRt = state.activeRuntimes.length > 0;
-      missionHudRefs.rtBar.classList.toggle('visible', hasActiveRt);
+      const hasLiveAct = !hasActiveRt && Boolean(state.currentLiveAction && state.isRunning);
+      missionHudRefs.rtBar.classList.toggle('visible', hasActiveRt || hasLiveAct);
       if (hasActiveRt) {
         const latestRt = state.activeRuntimes[state.activeRuntimes.length - 1];
         if (missionHudRefs.rtText) {
@@ -4499,6 +5528,13 @@
         }
         if (missionHudRefs.rtStatus) {
           missionHudRefs.rtStatus.textContent = latestRt.statusText;
+        }
+      } else if (hasLiveAct) {
+        if (missionHudRefs.rtText) {
+          missionHudRefs.rtText.textContent = `正在执行：${state.currentLiveAction.role}`;
+        }
+        if (missionHudRefs.rtStatus) {
+          missionHudRefs.rtStatus.textContent = state.currentLiveAction.statusText;
         }
       }
     }
@@ -4546,6 +5582,26 @@
       wideSwitch.classList.toggle('bg-secondary', !isWide);
       wideKnob.style.transform = isWide ? 'translateX(24px)' : 'translateX(4px)';
     }
+
+    const thinkSwitch = document.getElementById('agy-settings-think-trans-switch');
+    const thinkKnob = document.getElementById('agy-settings-think-trans-knob');
+    const isThinkTrans = globalPrefs.translateThinking !== false;
+    if (thinkSwitch && thinkKnob) {
+      thinkSwitch.setAttribute('aria-checked', isThinkTrans ? 'true' : 'false');
+      thinkSwitch.classList.toggle('bg-primary', isThinkTrans);
+      thinkSwitch.classList.toggle('bg-secondary', !isThinkTrans);
+      thinkKnob.style.transform = isThinkTrans ? 'translateX(24px)' : 'translateX(4px)';
+    }
+
+    const hudSwitch = document.getElementById('agy-settings-mission-hud-switch');
+    const hudKnob = document.getElementById('agy-settings-mission-hud-knob');
+    const isHudOn = globalPrefs.missionHud !== false;
+    if (hudSwitch && hudKnob) {
+      hudSwitch.setAttribute('aria-checked', isHudOn ? 'true' : 'false');
+      hudSwitch.classList.toggle('bg-primary', isHudOn);
+      hudSwitch.classList.toggle('bg-secondary', !isHudOn);
+      hudKnob.style.transform = isHudOn ? 'translateX(24px)' : 'translateX(4px)';
+    }
   }
 
   function ensureSettingsEnhancementRowsMounted() {
@@ -4560,6 +5616,8 @@
 
     let langRow = document.getElementById('agy-settings-lang-row');
     let wideRow = document.getElementById('agy-settings-wide-row');
+    let thinkRow = document.getElementById('agy-settings-think-trans-row');
+    let hudRow = document.getElementById('agy-settings-mission-hud-row');
 
     if (!langRow || !themeCard.contains(langRow)) {
       if (langRow) langRow.remove();
@@ -4627,6 +5685,66 @@
       }
     }
 
+    if (!thinkRow || !themeCard.contains(thinkRow)) {
+      if (thinkRow) thinkRow.remove();
+      thinkRow = document.createElement('div');
+      thinkRow.id = 'agy-settings-think-trans-row';
+      thinkRow.className = 'py-2 px-3 w-full bg-transparent flex justify-between gap-4 items-center';
+      thinkRow.innerHTML = `
+        <div class="flex-1 flex flex-col gap-0.5">
+          <div class="flex items-center gap-1.5">
+            <span class="text-sm">思考过程实时中文翻译</span>
+          </div>
+          <span class="text-xs text-muted-foreground whitespace-pre-wrap">模型思考推演时自动展开并实时译为中文，思考完成后自动折叠收起（随时可点击重开或切换英文原稿）。</span>
+        </div>
+        <div class="shrink-0">
+          <button type="button" role="switch" id="agy-settings-think-trans-switch" aria-checked="true" class="relative inline-flex items-center rounded-full transition-colors duration-200 ease-in-out shrink-0 h-6 w-11 bg-primary cursor-pointer">
+            <span id="agy-settings-think-trans-knob" class="inline-block rounded-full bg-white transition-transform duration-200 ease-in-out shadow-sm h-4 w-4" style="transform: translateX(24px);"></span>
+          </button>
+        </div>
+      `;
+      themeCard.appendChild(thinkRow);
+
+      const thinkSwitch = thinkRow.querySelector('#agy-settings-think-trans-switch');
+      if (thinkSwitch) {
+        thinkSwitch.setAttribute('role', 'switch');
+        thinkSwitch.addEventListener('click', () => {
+          patchGlobalPrefs({ translateThinking: globalPrefs.translateThinking === false });
+          applyAllStates();
+        });
+      }
+    }
+
+    if (!hudRow || !themeCard.contains(hudRow)) {
+      if (hudRow) hudRow.remove();
+      hudRow = document.createElement('div');
+      hudRow.id = 'agy-settings-mission-hud-row';
+      hudRow.className = 'py-2 px-3 w-full bg-transparent flex justify-between gap-4 items-center';
+      hudRow.innerHTML = `
+        <div class="flex-1 flex flex-col gap-0.5">
+          <div class="flex items-center gap-1.5">
+            <span class="text-sm">底部任务全局蓝图与实时看板</span>
+          </div>
+          <span class="text-xs text-muted-foreground whitespace-pre-wrap">在输入框上方展示总体施工方向、阶段演进蓝图、走偏预警与当前实时动作（关闭后后台看门狗仍常驻运行）。</span>
+        </div>
+        <div class="shrink-0">
+          <button type="button" role="switch" id="agy-settings-mission-hud-switch" aria-checked="true" class="relative inline-flex items-center rounded-full transition-colors duration-200 ease-in-out shrink-0 h-6 w-11 bg-primary cursor-pointer">
+            <span id="agy-settings-mission-hud-knob" class="inline-block rounded-full bg-white transition-transform duration-200 ease-in-out shadow-sm h-4 w-4" style="transform: translateX(24px);"></span>
+          </button>
+        </div>
+      `;
+      themeCard.appendChild(hudRow);
+
+      const hudSwitch = hudRow.querySelector('#agy-settings-mission-hud-switch');
+      if (hudSwitch) {
+        hudSwitch.setAttribute('role', 'switch');
+        hudSwitch.addEventListener('click', () => {
+          patchGlobalPrefs({ missionHud: globalPrefs.missionHud === false });
+          applyAllStates();
+        });
+      }
+    }
+
     syncSettingsEnhancementRowsState();
   }
 
@@ -4656,6 +5774,12 @@
       } catch (e) {}
       activeLlmSummaryAbortCtrl = null;
     }
+    if (activeThinkingTransAbortCtrl) {
+      try {
+        activeThinkingTransAbortCtrl.abort();
+      } catch (e) {}
+      activeThinkingTransAbortCtrl = null;
+    }
     for (const rec of wakeupWatchdogByConvo.values()) {
       if (rec && rec.abortCtrl) {
         try {
@@ -4666,6 +5790,7 @@
       if (rec) rec.rpcInFlight = false;
     }
     llmSummaryInFlight = false;
+    thinkingTransInFlight = false;
     if (ringTimer) {
       clearInterval(ringTimer);
       ringTimer = null;
@@ -4677,6 +5802,14 @@
     if (trailingFetchTimer) {
       clearTimeout(trailingFetchTimer);
       trailingFetchTimer = null;
+    }
+    if (thinkingTailTimer) {
+      clearTimeout(thinkingTailTimer);
+      thinkingTailTimer = null;
+    }
+    if (thinkingTransRetryTimer) {
+      clearTimeout(thinkingTransRetryTimer);
+      thinkingTransRetryTimer = null;
     }
     if (mutObserver) {
       mutObserver.disconnect();
@@ -4694,12 +5827,28 @@
     restoreNativeTitleBarOverlay();
     removeLegacyFloatingHosts();
 
+    if (document.querySelectorAll) {
+      for (const p of document.querySelectorAll('.agy-think-zh-panel, [id^="agy-stream-"]')) {
+        p.remove();
+      }
+      for (const tb of document.querySelectorAll('button[data-testid="thinking-collapsible-trigger"]')) {
+        tb.removeAttribute('data-agy-auto-streaming');
+        tb.removeAttribute('data-agy-user-collapsed');
+        tb.removeAttribute('data-agy-user-expanded');
+        if (tb.nextElementSibling) {
+          tb.nextElementSibling.removeAttribute('data-agy-zh-mode');
+        }
+      }
+    }
+
     for (const id of [
       'agy-enhance-scoped-style',
       'agy-ctx-ring-pill',
       'agy-mission-hud-host',
       'agy-settings-lang-row',
-      'agy-settings-wide-row'
+      'agy-settings-wide-row',
+      'agy-settings-think-trans-row',
+      'agy-settings-mission-hud-row'
     ]) {
       const el = document.getElementById(id);
       if (el) el.remove();
@@ -4926,7 +6075,7 @@
       scheduleTokenMetadataRefresh(true);
     }
 
-    const readyReceipt = { status: 'ready', version: VERSION, instanceId };
+    const readyReceipt = { status: 'ready', version: VERSION, buildStamp: BUILD_STAMP, instanceId };
     if (globalThis.__AGY_V3__) {
       globalThis.__AGY_V3__.status = 'ready';
       globalThis.__AGY_V3__.ready = readyReceipt;
@@ -4939,6 +6088,7 @@
   globalThis.__AGY_V3__ = {
     status: 'initializing',
     version: VERSION,
+    buildStamp: BUILD_STAMP,
     instanceId,
     ready: null,
     readyPromise: initPromise,

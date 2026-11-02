@@ -803,6 +803,24 @@ async function runVerification() {
       const bodyObj = opts?.body ? JSON.parse(opts.body) : null;
       fetchCalls.push({ url, method: opts?.method, headers: opts?.headers, body: bodyObj });
       if (String(url).endsWith('/GetModelResponse')) {
+        if (bodyObj?.prompt && String(bodyObj.prompt).includes('待译段落 JSON：')) {
+          return {
+            ok: true,
+            json: async () => ({
+              response: JSON.stringify({
+                translations: ['第一段关于校验 __AGY_PH_0__ 完整性的中文译文。']
+              })
+            })
+          };
+        }
+        if (win.__customBlueprintResponse) {
+          return {
+            ok: true,
+            json: async () => ({
+              response: JSON.stringify(win.__customBlueprintResponse)
+            })
+          };
+        }
         return {
           ok: true,
           json: async () => ({
@@ -1513,12 +1531,265 @@ async function runVerification() {
     '  [PASS 8] 会话 e93889f8 思考流单句摘要 (含 nextToolDesc 14 行上下文推导)/点击展开修复与 macOS/Windows 标题栏平台守卫核验通过'
   );
 
+  // -------------------------------------------------------------------------
+  // Verification 10: Streaming Chinese Thinking + Auto-Collapse + Settings Switches + Stateful Blueprint & Drift
+  // -------------------------------------------------------------------------
+  // 10a. Verify collapsed HUD does NOT hide .rt-bar or .drift-bar in CSS, and #m-align shows "✓ 方向一致"
+  const hudStyleTxt = hudHost.shadowRoot.querySelector('style')?.textContent || '';
+  assert.ok(
+    !hudStyleTxt.includes('.mission-box.collapsed .rt-bar'),
+    'Collapsed Mission HUD must NOT hide #m-rt-bar'
+  );
+  const hudAlignPill = hudHost.shadowRoot.getElementById('m-align');
+  assert.equal(hudAlignPill?.textContent, '✓ 方向一致', 'Mission HUD #m-align must show "✓ 方向一致" when on track');
+
+  // 10b. Verify Settings -> Appearance mounts #agy-settings-think-trans-row and #agy-settings-mission-hud-row
+  const settingsModal = new MockElement('DIV');
+  settingsModal.className = 'settings-modal-container';
+  const themeCard = new MockElement('DIV');
+  themeCard.className = 'divide-y divide-border';
+  const sysBtn = new MockElement('BUTTON');
+  sysBtn.setAttribute('aria-label', 'System');
+  themeCard.appendChild(sysBtn);
+  settingsModal.appendChild(themeCard);
+  bodyEl.appendChild(settingsModal);
+
+  for (const obs of activeMutationObservers) {
+    obs._notify([{ type: 'childList', target: bodyEl, addedNodes: [settingsModal] }]);
+  }
+  await new Promise((r) => setTimeout(r, 80));
+
+  const thinkTransSwitch = doc.getElementById('agy-settings-think-trans-switch');
+  const missionHudSwitch = doc.getElementById('agy-settings-mission-hud-switch');
+  assert.ok(thinkTransSwitch, '#agy-settings-think-trans-switch must be mounted in Settings -> Appearance');
+  assert.ok(missionHudSwitch, '#agy-settings-mission-hud-switch must be mounted in Settings -> Appearance');
+  assert.equal(thinkTransSwitch.getAttribute('aria-checked'), 'true');
+  assert.equal(missionHudSwitch.getAttribute('aria-checked'), 'true');
+
+  // Toggle missionHud OFF -> HUD hides, but Watchdog still counts background tasks!
+  missionHudSwitch.dispatchEvent({ type: 'click' });
+  assert.equal(missionHudSwitch.getAttribute('aria-checked'), 'false');
+  assert.equal(hudHost.style.display, 'none', 'Toggling missionHud switch off must hide #agy-mission-hud-host');
+  liveAgentState.backgroundTasks = [{ id: 'bg-while-hud-off-1' }, { id: 'bg-while-hud-off-2' }];
+  liveAgentState.fullyIdle = false;
+  currentNowMs += 1000;
+  win.dispatchEvent({ type: 'resize' });
+  assert.equal(
+    win.__AGY_V3__.getWakeupWatchdogState()[TEST_CID].lastNonDaemonBgCount,
+    2,
+    'Watchdog must continue tracking background tasks even when missionHud UI is turned off'
+  );
+  liveAgentState.backgroundTasks = [];
+  liveAgentState.fullyIdle = true;
+  // Toggle missionHud back ON
+  missionHudSwitch.dispatchEvent({ type: 'click' });
+  assert.equal(missionHudSwitch.getAttribute('aria-checked'), 'true');
+  assert.equal(hudHost.style.display, 'block', 'Toggling missionHud switch back on must restore #agy-mission-hud-host');
+
+  // 10c. Verify Streaming Chinese Thinking (auto-expand on "Thinking for 2s", paragraph cache, mid-stream click-to-collapse, auto-collapse on "Thought for 5s")
+  const streamWrap = new MockElement('DIV');
+  const streamBtn = new MockElement('BUTTON');
+  streamBtn.setAttribute('data-testid', 'thinking-collapsible-trigger');
+  streamBtn.setAttribute('aria-expanded', 'true');
+  const streamLabel = new MockElement('SPAN');
+  streamLabel.textContent = 'Thinking for 2s';
+  streamBtn.appendChild(streamLabel);
+  const streamStep = {
+    status: 2, // GENERATING
+    step: {
+      case: 'plannerResponse',
+      value: {
+        thinking:
+          'First completed paragraph checking `build_asar.py` integrity.\n\nSecond tail paragraph still streaming'
+      }
+    },
+    metadata: { sourceTrajectoryStepInfo: { stepIndex: 120 } }
+  };
+  streamBtn.__reactFiber$test = {
+    memoizedProps: {
+      thinking: streamStep.step.value.thinking,
+      step: streamStep
+    },
+    return: null
+  };
+  const streamBodyDiv = new MockElement('DIV');
+  streamWrap.appendChild(streamBtn);
+  streamWrap.appendChild(streamBodyDiv);
+  convView.appendChild(streamWrap);
+
+  const transCallsBefore = fetchCalls.filter(
+    (c) => String(c.url).endsWith('/GetModelResponse') && String(c.body?.prompt || '').includes('待译段落 JSON：')
+  ).length;
+
+  for (const obs of activeMutationObservers) {
+    obs._notify([{ type: 'childList', target: convView, addedNodes: [streamWrap] }]);
+  }
+  await new Promise((r) => setTimeout(r, 80));
+
+  assert.equal(
+    streamBtn.getAttribute('data-agy-auto-streaming'),
+    '1',
+    'Actively streaming thinking button ("Thinking for 2s") must auto-set data-agy-auto-streaming="1"'
+  );
+  const zhPanel = streamBodyDiv.querySelector('.agy-think-zh-panel');
+  assert.ok(zhPanel, '.agy-think-zh-panel must be mounted inside streaming thinking body');
+  assert.match(
+    zhPanel.textContent,
+    /第一段关于校验 `build_asar\.py` 完整性的中文译文/,
+    'Completed English paragraph must be translated to Chinese with backtick code placeholder restored'
+  );
+  const transCallsAfter1 = fetchCalls.filter(
+    (c) => String(c.url).endsWith('/GetModelResponse') && String(c.body?.prompt || '').includes('待译段落 JSON：')
+  ).length;
+  assert.equal(transCallsAfter1, transCallsBefore + 1, 'Completed paragraph must trigger exactly 1 translation RPC');
+
+  // Re-trigger stream enhancement with same completed paragraph -> must hit thinkingParaCache (0 extra RPCs)
+  for (const obs of activeMutationObservers) {
+    obs._notify([{ type: 'characterData', target: streamLabel }]);
+  }
+  await new Promise((r) => setTimeout(r, 80));
+  const transCallsAfter2 = fetchCalls.filter(
+    (c) => String(c.url).endsWith('/GetModelResponse') && String(c.body?.prompt || '').includes('待译段落 JSON：')
+  ).length;
+  assert.equal(transCallsAfter2, transCallsAfter1, 'Cached completed paragraph must NOT send duplicate translation RPC');
+
+  // Click streamBtn mid-stream -> must collapse (set data-agy-user-collapsed="1", remove data-agy-auto-streaming, NOT set data-agy-user-expanded="1")
+  win.dispatchEvent({
+    type: 'click',
+    target: streamBtn,
+    stopImmediatePropagation: () => {},
+    stopPropagation: () => {}
+  });
+  assert.equal(
+    streamBtn.getAttribute('data-agy-user-expanded'),
+    null,
+    'Clicking auto-streaming thinking button mid-stream must collapse it, NOT set data-agy-user-expanded="1"'
+  );
+  assert.equal(
+    streamBtn.getAttribute('data-agy-user-collapsed'),
+    '1',
+    'Clicking auto-streaming thinking button mid-stream must record data-agy-user-collapsed="1"'
+  );
+
+  // Click again mid-stream -> user explicitly expands
+  win.dispatchEvent({
+    type: 'click',
+    target: streamBtn,
+    stopImmediatePropagation: () => {},
+    stopPropagation: () => {}
+  });
+  assert.equal(streamBtn.getAttribute('data-agy-user-expanded'), '1');
+  // Click to collapse again, remove user-collapsed so we can test auto-collapse on completion
+  streamBtn.removeAttribute('data-agy-user-expanded');
+  streamBtn.removeAttribute('data-agy-user-collapsed');
+  streamBtn.setAttribute('data-agy-auto-streaming', '1');
+
+  // Transition streamBtn from "Thinking for 2s" -> "Thought for 5s" (completed!)
+  streamLabel.textContent = 'Thought for 5s';
+  streamStep.status = 3;
+  for (const obs of activeMutationObservers) {
+    obs._notify([{ type: 'characterData', target: streamLabel }]);
+  }
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(
+    streamBtn.getAttribute('data-agy-auto-streaming'),
+    null,
+    'Transitioning to "Thought for 5s" must automatically remove data-agy-auto-streaming (auto-collapse on completion)'
+  );
+
+  // 10d. Verify User Instruction Ledger (retains initial userInput even when slid out of stepsInSlice), Frozen Done Stage & Local Drift Detection
+  win.__customBlueprintResponse = {
+    title: '升级反重力思考同传与稳态任务看板',
+    tasks: [
+      { status: 'done', title: '被模型擅自篡改的第一阶段标题', outcome: '试图改写历史' },
+      { status: 'active', title: '实现快慢双层看板与走偏检测', outcome: '正在施工' },
+      { status: 'todo', title: '执行沙盒全量回归验证', outcome: '待执行' }
+    ]
+  };
+  // Advance 6 steps in the SAME user turn (first task in cache had a subsequent task after it, so it is frozen done!)
+  liveAgentState.trajectorySlice.totalStepsLength += 6;
+  currentNowMs += 5000;
+  win.dispatchEvent({ type: 'resize' });
+  await new Promise((r) => setTimeout(r, 30));
+
+  const taskListHtml = hudHost.shadowRoot.getElementById('m-task-list')?.innerHTML || '';
+  assert.match(
+    taskListHtml,
+    /完成原厂基线解包与七模块补丁构建/,
+    'Frozen done stage title from previous blueprint must be preserved against LLM renaming within the same user turn'
+  );
+  assert.match(
+    taskListHtml,
+    /执行沙盒全量回归验证/,
+    'New todo stage must be rendered in the blueprint task list'
+  );
+
+  // Now simulate sliding window: remove step 0 from stepsInSlice, add a new read-only userInput at stepIndex 50, followed by an unauthorized edit_file at stepIndex 51!
+  liveAgentState.trajectorySlice.stepsInSlice.shift(); // step 0 (initial userInput) slides out of window!
+  liveAgentState.trajectorySlice.stepsInSlice.push(
+    {
+      status: 3,
+      step: {
+        case: 'userInput',
+        value: { items: [{ text: '请先只读排查问题，不要修改代码' }] }
+      },
+      metadata: { sourceTrajectoryStepInfo: { stepIndex: 50 } }
+    },
+    {
+      status: 3,
+      step: {
+        case: 'generic',
+        value: { args: { Path: '/Users/ien/agy治理/02_desktop_enhance/src/main.js' } }
+      },
+      metadata: {
+        toolCall: { name: 'edit_file' },
+        sourceTrajectoryStepInfo: { stepIndex: 51 }
+      }
+    }
+  );
+  liveAgentState.trajectorySlice.totalStepsLength += 2;
+  currentNowMs += 5000;
+  win.dispatchEvent({ type: 'resize' });
+  await new Promise((r) => setTimeout(r, 30));
+
+  const lastBpCall = fetchCalls
+    .filter((c) => String(c.url).endsWith('/GetModelResponse') && String(c.body?.prompt || '').includes('蓝图演进准则'))
+    .pop();
+  assert.match(
+    lastBpCall?.body?.prompt || '',
+    /初始核心指令 step=0.*请完成 macOS 桌面增强套件适配与自验/,
+    'User Instruction Ledger must retain step 0 initial user request even after it slides out of stepsInSlice'
+  );
+  const driftBar = hudHost.shadowRoot.getElementById('m-drift-bar');
+  const driftText = hudHost.shadowRoot.getElementById('m-drift-text');
+  assert.equal(
+    driftBar?.classList.contains('visible'),
+    true,
+    'Modifying a file during a read-only user instruction must trigger #m-drift-bar visibility'
+  );
+  assert.match(
+    driftText?.textContent || '',
+    /走偏提醒.*main\.js/,
+    '#m-drift-text must report the unauthorized file modification'
+  );
+  assert.equal(
+    hudAlignPill?.textContent,
+    '⚠️ 疑似走偏',
+    '#m-align pill must switch to "⚠️ 疑似走偏" when drift is detected'
+  );
+
+  console.log(
+    '  [PASS 10] 流式思考中文同传与自动折叠、设置面板双开关、指令账本保首句、已完成阶段防篡改与走偏检测 100% 通过'
+  );
+
   // Cleanly dispose loader and verify restoration
   win.__AGY_V3__.dispose();
   assert.equal(win.__AGY_V3__.isDisposed(), true, 'Loader must report disposed=true after dispose()');
   assert.equal(uiBtnText.nodeValue, 'New Conversation', 'dispose() must restore original English text');
+  assert.equal(doc.getElementById('agy-settings-think-trans-row'), null, 'dispose() must remove think-trans settings row');
+  assert.equal(doc.getElementById('agy-settings-mission-hud-row'), null, 'dispose() must remove mission-hud settings row');
   console.log('  [PASS 9] Mode C 挂起与无损卸载还原 (dispose) 核验通过');
-  console.log('\n✅ 全部 9 大项（含 Grok 4.7 xhigh 审计新增边界断言）100% 通过！');
+  console.log('\n✅ 全部 10 大项（含 Grok 4.7 xhigh 审计新增边界断言）100% 通过！');
 }
 
 runVerification().catch((err) => {

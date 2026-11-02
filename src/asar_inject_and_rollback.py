@@ -267,6 +267,8 @@ def patch_ipc_handlers_js(code: str) -> str:
             theme: 'native',
             lang: 'zh-std',
             widescreen: true,
+            translateThinking: true,
+            missionHud: true,
         },
         windowDefaults: {},
     };
@@ -283,6 +285,8 @@ def patch_ipc_handlers_js(code: str) -> str:
                         theme: 'native',
                         lang: loaded.global.lang === 'en' ? 'en' : 'zh-std',
                         widescreen: typeof loaded.global.widescreen === 'boolean' ? loaded.global.widescreen : true,
+                        translateThinking: typeof loaded.global.translateThinking === 'boolean' ? loaded.global.translateThinking : true,
+                        missionHud: typeof loaded.global.missionHud === 'boolean' ? loaded.global.missionHud : true,
                     },
                     windowDefaults: (loaded.windowDefaults && typeof loaded.windowDefaults === 'object') ? loaded.windowDefaults : {},
                 };
@@ -299,6 +303,8 @@ def patch_ipc_handlers_js(code: str) -> str:
         if ('theme' in patch && patch.theme === 'native') clean.theme = 'native';
         if ('lang' in patch && ['en', 'zh-std'].includes(patch.lang)) clean.lang = patch.lang;
         if ('widescreen' in patch && typeof patch.widescreen === 'boolean') clean.widescreen = patch.widescreen;
+        if ('translateThinking' in patch && typeof patch.translateThinking === 'boolean') clean.translateThinking = patch.translateThinking;
+        if ('missionHud' in patch && typeof patch.missionHud === 'boolean') clean.missionHud = patch.missionHud;
         return clean;
     }
 

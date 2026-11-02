@@ -4,6 +4,23 @@
 
 ---
 
+## [v3.5.0] - 2026-11-02
+
+### 新增与优化 (Added & Changed)
+- **思考过程实时流式中文翻译与完成自动折叠（`src/agy-enhance-loader.js`）**：
+  - **流式阶段自动展开与逐段增量翻译**：在模型思考流式生成期间（`Thinking for Xs` / `思考中 · Xs`），自动展开思考面板并将英文思考过程按双换行分段实时翻译为中文，挂载于独立兄弟容器 `.agy-think-zh-panel`（零侵入原生 React/Lexical TextNode）；
+  - **代码/路径占位符保护与尾部节流**：自动保护反引号内联代码、多行代码块与文件/URL 路径免遭机器翻译破坏；已完成段落按哈希缓存仅翻译一次，正在生长的末尾段落采用 `700ms` 停顿防抖（Fallback 字典即时兜底）；
+  - **思考完成自动收起与原文对照**：思考结束（转为 `Thought for Xs` / `思考 · Xs`）且未处于用户手动固定态（`data-agy-user-open="1"`）时自动折叠收起；支持随时点击重新展开，并通过顶栏「查看英文原稿 / 返回中文译文」按钮一键切换对照。
+- **底部任务态势托盘（Mission HUD `#agy-mission-hud-host`）快慢双层架构与防走偏对齐**：
+  - **快层（`#m-rt-bar` 实时执行状态条）**：即使阶段列表折叠也常驻显示，以最高优先级实时展示后台运行中命令/子智能体（`activeRuntimes`），无后台任务时实时展示当前思考推演或正在执行的工具动作；
+  - **慢层（`#m-goal` / `#m-task-list` 有状态渐进演化蓝图）**：建立按会话隔离的只追加用户指令账本（`userInputLedgerByConvo`，按 `stepIndex` 去重并过滤看门狗唤醒消息），彻底解决长对话 `stepsInSlice` 滑动窗口截断导致的初始目标遗忘；仅在真正语义边界（新用户指令、思考完成且新增 $\ge 2$ 步、新增 $\ge 6$ 步里程碑或回合静默收尾）演化 2–5 个阶段（`✓ 已完成` / `● 进行中` / `○ 待推进`），并在同一用户轮次内冻结已确认 `done` 的历史阶段（`reconcileBlueprintTasks`），消除蓝图频繁跳变；
+  - **方向偏离检测（`evaluateMissionDrift` -> `#m-align` / `#m-drift-bar`）**：对比用户指令账本路径/文件约束与近期写操作（`edit_file` / `write_file`）及连续工具报错，在顶栏实时呈现 `✓ 方向一致` 或 `⚠️ 疑似走偏` 胶囊及原因提示条。
+- **原生 `设置 -> 外观`（`Settings -> Appearance`）双开关与全链路持久化**：
+  - 新增 `translateThinking`（**思考过程实时中文翻译**）与 `missionHud`（**底部任务全局蓝图与实时看板**）两项独立开关，同步接入 `src/build_asar.py` 与 `src/asar_inject_and_rollback.py` 的 `DEFAULT_AGY_PREFS`、磁盘加载白名单与 `validateGlobalPatch` IPC 校验，关闭 `missionHud` 视图时后台响应式唤醒看门狗依旧常驻运行；
+  - 新增 `tests/verify_loader_sandbox.mjs` **Gate 10** 沙箱回归测试（覆盖流式思考中译、生命周期自动折叠、用户指令账本防滑窗丢失、阶段冻结、走偏告警与双开关热切换，**10 / 10 全部通过**）。
+
+---
+
 ## [v3.4.0] - 2026-11-01
 
 ### 新增与优化 (Added & Changed)
