@@ -6,6 +6,40 @@
 
 ---
 
+## 分支架构与可选功能拉取索引（Branch & Edition Index）
+
+本仓库采用**「核心稳定主线（`main`） + 独立可选增强分支（`optional/*`）」**双轨维护架构，确保核心底座保持零额外推理请求负担与极简交互体验，同时允许偏好扩展视图组件的使用者按需附加拉取：
+
+| 分支名称 | 定位与适用场景 | 包含核心能力与差异说明 | 对应审核报告 / PR |
+| :--- | :--- | :--- | :--- |
+| **[`main`](https://github.com/superIEN/antigravity-enhance-suite/tree/main)**<br>*(默认推荐)* | **核心稳定主线**<br>追求零额外 RPC 请求负担、零界面布局抖动、极简一行思考摘要的日常主力环境 | Go 服务端 Sites 1–22（`983,040` 上下文真实解锁 + HTTP/2 防断流 + 响应式唤醒死锁双层根治）、Electron 宿主 8 项加固、深度专业汉化、集合差分看门狗、`18 MB` 媒体自适应守护、Harness 工程护栏 | 主线基线（**严禁直接合入高频实验性 UI 组件**） |
+| **[`optional/hud-thinking-stream`](https://github.com/superIEN/antigravity-enhance-suite/tree/optional/hud-thinking-stream)** | **可选增强演进主分支**<br>供贡献者针对「思考流同传与快慢双层 Mission HUD」提交后续修订 PR 并经维护者审阅合入 | 作为实验性 UI 增强组件的独立演进靶标分支（PR 基底分支） | [PR #4](https://github.com/superIEN/antigravity-enhance-suite/pull/4) · [《PR #4 综合技术审核报告》](./docs/reviews/PR4_v3.5.0_Review_Report.md) |
+| **[`optional/pr4-v3.5.0-hud-thinking`](https://github.com/superIEN/antigravity-enhance-suite/tree/optional/pr4-v3.5.0-hud-thinking)** | **PR #4 (`v3.5.0`) 完整代码快照分支**<br>供希望立即体验「思考过程流式实时中译 + 自动展开/折叠 + 快慢双层防走偏看板」的使用者直接拉取或附加合并 | 在 `main` (`v3.4.0`) 基础上完整附加 `@sorry-makerT-T` 提交的 `v3.5.0` 思考流实时中文同传、快慢双层 Mission HUD 与设置面板双开关（ Commit `fd84bc1`） | [《PR #4 (`v3.5.0`) 综合技术审核报告》](./docs/reviews/PR4_v3.5.0_Review_Report.md) |
+
+### 拉取与选装方式
+
+#### 方式 A：仅拉取 `main` 核心稳定主线（默认推荐，零额外负担）
+```bash
+git clone -b main https://github.com/superIEN/antigravity-enhance-suite.git
+cd antigravity-enhance-suite
+python3 agy_suite.py install --hot-inject
+```
+
+#### 方式 B：在 `main` 基础上附加拉取「思考流实时中译与快慢双层 HUD」可选分支
+```bash
+# 1) 直接克隆可选快照分支：
+git clone -b optional/pr4-v3.5.0-hud-thinking https://github.com/superIEN/antigravity-enhance-suite.git
+
+# 2) 或者在已有 main 分支工作区上按需附加 Cherry-Pick / Merge 这一段功能：
+git fetch origin optional/pr4-v3.5.0-hud-thinking
+git cherry-pick fd84bc17fb6ea0085d5981955d691f124c0886f5
+python3 agy_suite.py install --hot-inject
+```
+
+> **贡献者提示**：针对「思考流实时中译」与「快慢双层 Mission HUD」的后续优化与缺陷修复（详见 [《PR #4 综合技术审核报告》](./docs/reviews/PR4_v3.5.0_Review_Report.md) 第四节整改清单），请统一将 Pull Request 的 Base 分支指向 **`optional/hud-thinking-stream`**，勿直接向 `main` 提 PR。
+
+---
+
 ## 核心特性概览
 
 1. **Go 语言服务端（macOS `language_server` / Windows `language_server*.exe`）22 项（29 处位点）二进制级增强**
@@ -68,6 +102,9 @@ antigravity-enhance-suite/
 │   ├── verify_loader_sandbox.mjs         # 桌面增强 Loader 9 大项 + Grok 10 项极限并发探针沙箱自验套件
 │   └── fixtures/
 │       └── real_transcript_headers_fixture.jsonl
+├── docs/
+│   └── reviews/
+│       └── PR4_v3.5.0_Review_Report.md   # PR #4 (v3.5.0) 思考流中译与快慢双层 HUD 综合技术审核报告
 ├── CHANGELOG.md
 ├── LICENSE
 └── README.md
