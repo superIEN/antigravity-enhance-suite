@@ -9,10 +9,12 @@
  */
 (function () {
   const VERSION = '3.6.0-macos-merged';
+  const BUILD_STAMP = '20261102-v3.5.0-hud-think';
 
   if (
     globalThis.__AGY_V3__ &&
     globalThis.__AGY_V3__.version === VERSION &&
+    globalThis.__AGY_V3__.buildStamp === BUILD_STAMP &&
     typeof globalThis.__AGY_V3__.isDisposed === 'function' &&
     !globalThis.__AGY_V3__.isDisposed() &&
     globalThis.__AGY_V3__.readyPromise
@@ -40,7 +42,9 @@
     enabled: true,
     theme: 'native',
     lang: 'zh-std',
-    widescreen: true
+    widescreen: true,
+    translateThinking: true,
+    missionHud: true
   };
 
   let localRevision = 0;
@@ -257,8 +261,49 @@
 
   let prefUpdateChain = Promise.resolve();
 
+  function abortInactiveEnhancementRpcs() {
+    const hudDisabled =
+      disposed ||
+      !globalPrefs.enabled ||
+      globalPrefs.missionHud === false ||
+      globalPrefs.lang === 'en' ||
+      Boolean(globalPrefs.bossMode);
+    if (hudDisabled) {
+      if (activeLlmSummaryAbortCtrl) {
+        try {
+          activeLlmSummaryAbortCtrl.abort();
+        } catch (e) {}
+        activeLlmSummaryAbortCtrl = null;
+      }
+      llmSummaryInFlight = false;
+      llmSummaryReqSeq++;
+    }
+
+    const thinkTransDisabled =
+      disposed ||
+      !globalPrefs.enabled ||
+      globalPrefs.translateThinking === false ||
+      globalPrefs.lang === 'en' ||
+      Boolean(globalPrefs.bossMode);
+    if (thinkTransDisabled) {
+      if (activeThinkingTransAbortCtrl) {
+        try {
+          activeThinkingTransAbortCtrl.abort();
+        } catch (e) {}
+        activeThinkingTransAbortCtrl = null;
+      }
+      thinkingTransInFlight = false;
+      thinkingTransReqSeq++;
+      if (thinkingTransRetryTimer) {
+        clearTimeout(thinkingTransRetryTimer);
+        thinkingTransRetryTimer = null;
+      }
+    }
+  }
+
   function patchGlobalPrefs(patch) {
     Object.assign(globalPrefs, patch);
+    abortInactiveEnhancementRpcs();
     try {
       window.localStorage.setItem('agy.v3.globalPrefs', JSON.stringify(globalPrefs));
     } catch (e) {}
@@ -1639,8 +1684,8 @@
         flex-shrink: 0;
       }
 
-      /* Stream Qualitative UX Inline Enhancements (Minimalist Codex-like Style) */
-      button[data-testid="thinking-collapsible-trigger"] + div,
+      /* Stream Qualitative UX Inline Enhancements (Minimalist Codex-like Style + On-Demand Zh Thinking) */
+      button[data-testid="thinking-collapsible-trigger"]:not([data-agy-user-expanded="1"]) + div,
       button[data-testid="tool-group-collapsible"] + div {
         display: none !important;
       }
@@ -1656,6 +1701,76 @@
       button[data-testid="thinking-collapsible-trigger"][data-agy-user-expanded="1"][aria-expanded="true"] svg:last-child,
       button[data-testid="tool-group-collapsible"][data-agy-user-expanded="1"][aria-expanded="true"] svg:last-child {
         transform: rotate(90deg) !important;
+      }
+      button[data-testid="thinking-collapsible-trigger"] + div[data-agy-zh-mode="zh"] > :not(.agy-think-zh-panel) {
+        display: none !important;
+      }
+      button[data-testid="thinking-collapsible-trigger"] + div[data-agy-zh-mode="raw"] > .agy-think-zh-panel {
+        display: block !important;
+      }
+      button[data-testid="thinking-collapsible-trigger"] + div[data-agy-zh-mode="raw"] > .agy-think-zh-panel .agy-think-zh-body {
+        display: none !important;
+      }
+      .agy-think-zh-panel {
+        margin: 4px 0 8px 0;
+        padding: 8px 12px;
+        border-radius: 8px;
+        border: 1px solid rgba(128, 128, 128, 0.16);
+        background: rgba(128, 128, 128, 0.04);
+        font-size: 13px;
+        line-height: 1.65;
+        color: var(--foreground, inherit);
+      }
+      .agy-think-zh-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 4px;
+        font-size: 11.5px;
+        color: var(--muted-foreground, #6b7280);
+      }
+      .agy-think-zh-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-weight: 500;
+      }
+      .agy-think-zh-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #10b981;
+        display: inline-block;
+      }
+      .agy-think-zh-dot.streaming {
+        background: #2563eb;
+      }
+      .agy-think-raw-toggle {
+        background: transparent;
+        border: 1px solid rgba(128, 128, 128, 0.22);
+        border-radius: 5px;
+        padding: 1px 7px;
+        font-size: 11px;
+        color: var(--muted-foreground, #6b7280);
+        cursor: pointer;
+      }
+      .agy-think-raw-toggle:hover {
+        color: var(--foreground, inherit);
+        border-color: rgba(128, 128, 128, 0.4);
+      }
+      .agy-think-zh-body {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .agy-think-zh-para {
+        margin: 0;
+      }
+      .agy-think-zh-para.tail-raw {
+        opacity: 0.82;
       }
       .agy-think-inline-summary {
         display: inline-flex;
@@ -2922,18 +3037,487 @@
     return '';
   }
 
+  // Thinking translation cache & on-demand single-flight state (Option A: default collapsed, translate on user expand)
+  const thinkingParaCache = new Map();
+  let activeThinkingTransAbortCtrl = null;
+  let thinkingTransInFlight = false;
+  let thinkingTransReqSeq = 0;
+  let thinkingTransRetryTimer = null;
+  let lastThinkingTransFailTs = 0;
+
+  const PATH_AND_URL_MASK_REGEX =
+    /https?:\/\/(?:[^\s`"'<>()]+|\((?:[^\s`"'<>()]+|\((?:[^\s`"'<>()]+|\((?:[^\s`"'<>()]+|\([^\s`"'<>()]*\))*\))*\))*\))+(?<![.,;:!?，。；：！？])|(?:[A-Za-z]:[\\\/]|\.{1,2}[\\\/])[^\s`"'<>()，。；：！？]+(?<![.,;:!?])|(?:^|(?<=[\s([{"'，。：；]))\/(?:(?:[A-Za-z0-9._\-\u4e00-\u9fff]+(?:\/[A-Za-z0-9._\-\u4e00-\u9fff]+)+)|(?:etc|tmp|var|opt|usr|bin|sbin|dev|proc|sys|root|home|mnt|srv|data|media|run|boot|lib|lib64|snap|docker|workspace|work|repo|code|src|dist|build|out|logs|config|cache|app|Users|Applications|Volumes|System|Library|private)\b(?:\/[^\s`"'<>()，。；：！？]*)?)(?<![.,;:!?])/g;
+
+  function normalizeThinkingParagraph(p) {
+    const raw = String(p || '').replace(/\r\n/g, '\n');
+    const codeBlocks = [];
+    const withProtectedCode = raw.replace(/```[\s\S]*?(?:```|$)|`[^`\n]+`/g, (m) => {
+      const tok = `__AGY_NORM_CODE_${codeBlocks.length}__`;
+      codeBlocks.push(m);
+      return tok;
+    });
+    const collapsed = stripBackendTags(withProtectedCode);
+    if (!collapsed) return '';
+    return collapsed.replace(/__AGY_NORM_CODE_(\d+)__/g, (_, idx) => codeBlocks[Number(idx)] ?? '');
+  }
+
+  function isAlreadyChineseParagraph(p) {
+    const stripped = String(p || '')
+      .replace(/```[\s\S]*?(?:```|$)/g, '')
+      .replace(/`[^`]*`/g, '')
+      .replace(PATH_AND_URL_MASK_REGEX, '');
+    const hanziMatches = stripped.match(/[\u4e00-\u9fff]/g) || [];
+    const hanziCount = hanziMatches.length;
+    const englishWords = stripped.match(/\b[A-Za-z]{3,}\b/g) || [];
+    if (hanziCount >= 4 && englishWords.length <= 2) return true;
+    const nonSpaceLen = stripped.replace(/\s+/g, '').length;
+    if (nonSpaceLen === 0) return true;
+    return hanziCount >= 8 && hanziCount / nonSpaceLen >= 0.45;
+  }
+
+  function maskCodeAndPathsForTranslation(text) {
+    const placeholders = [];
+    const put = (raw) => {
+      const token = `__AGY_PH_${placeholders.length}__`;
+      placeholders.push(raw);
+      return token;
+    };
+    let masked = String(text || '');
+    masked = masked.replace(/```[\s\S]*?(?:```|$)/g, (m) => put(m));
+    masked = masked.replace(/`[^`\n]+`/g, (m) => put(m));
+    masked = masked.replace(PATH_AND_URL_MASK_REGEX, (m) => put(m));
+    return { masked, placeholders };
+  }
+
+  function unmaskCodeAndPaths(translated, placeholders) {
+    let out = String(translated || '');
+    for (let i = 0; i < placeholders.length; i++) {
+      out = out.replace(new RegExp(`__AGY_PH_${i}__`, 'g'), () => placeholders[i]);
+    }
+    return out;
+  }
+
+  function splitThinkingIntoParagraphs(rawThinking, isStreaming) {
+    const normalized = String(rawThinking || '').replace(/\r\n/g, '\n');
+    const fences = [];
+    const fenceProtected = normalized.replace(/```[\s\S]*?(?:```|$)/g, (m) => {
+      const tok = `__AGY_SPLIT_FENCE_${fences.length}__`;
+      fences.push(m);
+      return tok;
+    });
+    const endsWithBlankLine = /\n\s*\n\s*$/.test(fenceProtected);
+    const parts = fenceProtected
+      .split(/\n\s*\n/)
+      .map((s) =>
+        stripBackendTags(s)
+          .replace(/__AGY_SPLIT_FENCE_(\d+)__/g, (_, idx) => fences[Number(idx)] ?? '')
+          .trim()
+      )
+      .filter((s) => s.length > 0);
+    if (parts.length === 0) {
+      return { completed: [], tail: '' };
+    }
+    if (!isStreaming || endsWithBlankLine) {
+      return { completed: parts, tail: '' };
+    }
+    return {
+      completed: parts.slice(0, -1),
+      tail: parts[parts.length - 1]
+    };
+  }
+
+  function getThinkingButtonLabelTextExcludingSummary(tb) {
+    if (!tb) return '';
+    let label = '';
+    const w = document.createTreeWalker(tb, NodeFilter.SHOW_TEXT, null);
+    while (w.nextNode()) {
+      const tn = w.currentNode;
+      if (
+        tn.parentElement &&
+        tn.parentElement.classList &&
+        tn.parentElement.classList.contains('agy-think-inline-summary')
+      ) {
+        continue;
+      }
+      label += tn.nodeValue || '';
+    }
+    return label.trim();
+  }
+
+  function isThinkingTriggerActivelyStreaming(tb, stepObj) {
+    const label = getThinkingButtonLabelTextExcludingSummary(tb);
+    const isCompletedLabel = /\bThought\b/i.test(label) || /^思考\s*·/.test(label);
+    if (isCompletedLabel) return false;
+    if (/\bThinking\b/i.test(label) || /思考中/.test(label)) return true;
+    if (stepObj) {
+      const st = stepObj.status;
+      const isStepRunning =
+        st === 1 ||
+        st === 2 ||
+        st === 9 ||
+        st === 'CORTEX_STEP_STATUS_RUNNING' ||
+        st === 'CORTEX_STEP_STATUS_GENERATING';
+      const hasResponse = Boolean(stepObj.step?.value?.response);
+      if (isStepRunning && !hasResponse) return true;
+    }
+    return false;
+  }
+
+  function triggerThinkingParagraphsTranslation(paragraphsToTranslate, targetLocalMap) {
+    if (
+      disposed ||
+      !globalPrefs.enabled ||
+      globalPrefs.lang === 'en' ||
+      globalPrefs.bossMode ||
+      globalPrefs.translateThinking === false ||
+      !Array.isArray(paragraphsToTranslate) ||
+      paragraphsToTranslate.length === 0
+    ) {
+      return;
+    }
+    if (typeof window.fetch !== 'function') return;
+
+    const now = Date.now();
+    if (lastThinkingTransFailTs > 0 && now - lastThinkingTransFailTs < 3500) {
+      return;
+    }
+
+    if (thinkingTransInFlight) {
+      if (!thinkingTransRetryTimer) {
+        thinkingTransRetryTimer = setTimeout(() => {
+          thinkingTransRetryTimer = null;
+          if (!disposed && globalPrefs.enabled && globalPrefs.translateThinking !== false) {
+            enhanceConversationStreamDOM();
+          }
+        }, 450);
+      }
+      return;
+    }
+
+    const csrf =
+      window.__APP_CONFIG__?.csrfToken ||
+      (document.cookie ? document.cookie.split('; ').find((a) => a.startsWith('csrfToken='))?.split('=')[1] : '') ||
+      '';
+    if (!csrf) return;
+
+    const inFlightSet =
+      targetLocalMap instanceof Map
+        ? targetLocalMap._inFlightSet instanceof Set
+          ? targetLocalMap._inFlightSet
+          : (targetLocalMap._inFlightSet = new Set())
+        : null;
+    const filteredToTranslate = [];
+    for (const normText of paragraphsToTranslate) {
+      if (filteredToTranslate.length >= 8) break;
+      if (targetLocalMap instanceof Map) {
+        if (targetLocalMap.has(normText) || inFlightSet.has(normText)) continue;
+        if (targetLocalMap.size + inFlightSet.size + filteredToTranslate.length >= 2048) break;
+      }
+      filteredToTranslate.push(normText);
+    }
+    if (filteredToTranslate.length === 0) return;
+
+    const maskedBatch = filteredToTranslate.map((normText) => {
+      if (inFlightSet) inFlightSet.add(normText);
+      const { masked, placeholders } = maskCodeAndPathsForTranslation(normText);
+      return { normText, masked, placeholders };
+    });
+
+    thinkingTransInFlight = true;
+    const reqId = ++thinkingTransReqSeq;
+    const reqLsGen = currentLsGeneration;
+    const ctrl = new AbortController();
+    activeThinkingTransAbortCtrl = ctrl;
+    const timer = setTimeout(() => ctrl.abort(), 10000);
+
+    const prompt = [
+      '你是一个专业精准的计算机与学术双语翻译器。请将以下 JSON 数组中的英文思考推理段落逐段忠实流畅地翻译为简体中文。',
+      '硬性规则：1) 严禁修改任何形如 __AGY_PH_0__ 的占位符，必须原样保留在译文对应位置；2) 保持原意，不要添加总结套话；3) 仅输出严格合法的 JSON 对象，格式为 {"translations":["第一段中文译文","第二段中文译文"]}，数组长度必须与输入完全一致。',
+      '待译段落 JSON：',
+      JSON.stringify(maskedBatch.map((b) => b.masked))
+    ].join('\n');
+
+    (async () => {
+      try {
+        const resp = await window.fetch(
+          `${window.location.origin}/exa.language_server_pb.LanguageServerService/GetModelResponse`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Connect-Protocol-Version': '1',
+              'x-codeium-csrf-token': csrf
+            },
+            body: JSON.stringify({
+              prompt,
+              model: 'MODEL_PLACEHOLDER_M18'
+            }),
+            signal: ctrl.signal
+          }
+        );
+        if (!resp.ok) {
+          lastThinkingTransFailTs = Date.now();
+          return;
+        }
+        const data = await resp.json();
+        if (disposed || reqId !== thinkingTransReqSeq || reqLsGen !== currentLsGeneration) return;
+        let rawResp = String(data?.response || '').trim();
+        rawResp = rawResp.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+        const mJson = rawResp.match(/\{[\s\S]*\}/);
+        let transArr = null;
+        if (mJson) {
+          try {
+            const parsed = JSON.parse(mJson[0]);
+            if (Array.isArray(parsed?.translations)) {
+              transArr = parsed.translations;
+            }
+          } catch (e) {}
+        }
+        if (!transArr && maskedBatch.length === 1 && rawResp && !rawResp.startsWith('{')) {
+          transArr = [rawResp];
+        }
+        if (Array.isArray(transArr) && transArr.length > 0) {
+          lastThinkingTransFailTs = 0;
+          for (let i = 0; i < maskedBatch.length; i++) {
+            const item = maskedBatch[i];
+            if (inFlightSet) inFlightSet.delete(item.normText);
+            const rawTr = typeof transArr[i] === 'string' ? transArr[i].trim() : '';
+            if (rawTr && item.normText.length <= 2400) {
+              const restored = unmaskCodeAndPaths(rawTr, item.placeholders);
+              if (
+                targetLocalMap instanceof Map &&
+                (targetLocalMap.has(item.normText) ||
+                  targetLocalMap.size + ( inFlightSet ? inFlightSet.size : 0 ) < 2048)
+              ) {
+                targetLocalMap.set(item.normText, restored);
+              }
+              if (thinkingParaCache.size >= 400 && !thinkingParaCache.has(item.normText)) {
+                const firstKey = thinkingParaCache.keys().next().value;
+                if (firstKey !== undefined) thinkingParaCache.delete(firstKey);
+              }
+              thinkingParaCache.set(item.normText, restored);
+            }
+          }
+          if (activeThinkingTransAbortCtrl === ctrl) {
+            activeThinkingTransAbortCtrl = null;
+            thinkingTransInFlight = false;
+          }
+          if (!disposed && globalPrefs.enabled && globalPrefs.translateThinking !== false) {
+            enhanceConversationStreamDOM();
+          }
+        } else {
+          lastThinkingTransFailTs = Date.now();
+        }
+      } catch (e) {
+        if (!ctrl.signal.aborted) {
+          lastThinkingTransFailTs = Date.now();
+        }
+      } finally {
+        clearTimeout(timer);
+        if (inFlightSet) {
+          for (const item of maskedBatch) {
+            inFlightSet.delete(item.normText);
+          }
+        }
+        if (activeThinkingTransAbortCtrl === ctrl) {
+          activeThinkingTransAbortCtrl = null;
+          thinkingTransInFlight = false;
+        }
+      }
+    })();
+  }
+
+  function renderThinkingChinesePanel(tb, rawThinking, isStreaming) {
+    const bodyDiv = tb.nextElementSibling;
+    if (!bodyDiv) return;
+
+    const uid = getStableDomUid(tb);
+    const panelId = `agy-stream-think-zh-${uid}`;
+    let panel = bodyDiv.querySelector(`#${panelId}`) || bodyDiv.querySelector('.agy-think-zh-panel');
+
+    if (globalPrefs.translateThinking === false || globalPrefs.lang === 'en' || globalPrefs.bossMode) {
+      tb._agyLocalTransMap = null;
+      bodyDiv.removeAttribute('data-agy-zh-mode');
+      if (panel) panel.remove();
+      return;
+    }
+
+    const isVisibleNow =
+      tb.getAttribute('data-agy-user-expanded') === '1' &&
+      tb.getAttribute('aria-expanded') === 'true';
+
+    // Option A: Only mount panel & trigger translation when the user has explicitly expanded this thinking block
+    if (!isVisibleNow) {
+      tb._agyLocalTransMap = null;
+      bodyDiv.removeAttribute('data-agy-zh-mode');
+      if (panel) panel.remove();
+      return;
+    }
+
+    if (!(tb._agyLocalTransMap instanceof Map)) {
+      tb._agyLocalTransMap = new Map();
+    }
+    const localTransMap = tb._agyLocalTransMap;
+    if (!(localTransMap._inFlightSet instanceof Set)) {
+      localTransMap._inFlightSet = new Set();
+    }
+    const inFlightSet = localTransMap._inFlightSet;
+
+    const { completed, tail } = splitThinkingIntoParagraphs(rawThinking, isStreaming);
+    if (completed.length === 0 && !tail) return;
+
+    const pendingToTranslate = [];
+    const pendingSet = new Set();
+    const renderedParagraphs = [];
+    const hasPanelBudget = () => localTransMap.size + inFlightSet.size + pendingSet.size < 2048;
+
+    for (const p of completed) {
+      const norm = normalizeThinkingParagraph(p);
+      if (!norm) continue;
+      if (isAlreadyChineseParagraph(norm)) {
+        renderedParagraphs.push({ text: norm, isZh: true, isTail: false });
+      } else if (localTransMap.has(norm)) {
+        renderedParagraphs.push({ text: localTransMap.get(norm), isZh: true, isTail: false });
+      } else if (!inFlightSet.has(norm) && hasPanelBudget() && thinkingParaCache.has(norm)) {
+        const cachedTr = thinkingParaCache.get(norm);
+        localTransMap.set(norm, cachedTr);
+        renderedParagraphs.push({ text: cachedTr, isZh: true, isTail: false });
+      } else {
+        if (norm.length <= 2400 && !inFlightSet.has(norm) && !pendingSet.has(norm) && hasPanelBudget()) {
+          pendingSet.add(norm);
+          pendingToTranslate.push(norm);
+        }
+        renderedParagraphs.push({ text: norm, isZh: false, isTail: false });
+      }
+    }
+
+    if (tail) {
+      const normTail = normalizeThinkingParagraph(tail);
+      if (normTail) {
+        if (isAlreadyChineseParagraph(normTail)) {
+          renderedParagraphs.push({ text: normTail, isZh: true, isTail: true });
+        } else if (localTransMap.has(normTail)) {
+          renderedParagraphs.push({ text: localTransMap.get(normTail), isZh: true, isTail: true });
+        } else if (thinkingParaCache.has(normTail)) {
+          const cachedTailTr = thinkingParaCache.get(normTail);
+          if (!inFlightSet.has(normTail) && !pendingSet.has(normTail) && hasPanelBudget()) {
+            localTransMap.set(normTail, cachedTailTr);
+          }
+          renderedParagraphs.push({ text: cachedTailTr, isZh: true, isTail: true });
+        } else {
+          renderedParagraphs.push({ text: normTail, isZh: false, isTail: true });
+        }
+      }
+    }
+
+    if (pendingToTranslate.length > 0) {
+      triggerThinkingParagraphsTranslation(pendingToTranslate, localTransMap);
+    }
+
+    if (!bodyDiv.getAttribute('data-agy-zh-mode')) {
+      bodyDiv.setAttribute('data-agy-zh-mode', 'zh');
+    }
+    const curMode = bodyDiv.getAttribute('data-agy-zh-mode') || 'zh';
+
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.id = panelId;
+      panel.className = 'agy-think-zh-panel';
+
+      const header = document.createElement('div');
+      header.className = 'agy-think-zh-header';
+
+      const badge = document.createElement('span');
+      badge.className = 'agy-think-zh-badge';
+      const dot = document.createElement('span');
+      dot.className = 'agy-think-zh-dot';
+      const statusSpan = document.createElement('span');
+      statusSpan.className = 'agy-think-zh-status';
+      badge.appendChild(dot);
+      badge.appendChild(statusSpan);
+
+      const toggleBtn = document.createElement('button');
+      toggleBtn.type = 'button';
+      toggleBtn.className = 'agy-think-raw-toggle';
+      toggleBtn.textContent = curMode === 'raw' ? '返回中文译文' : '查看英文原稿';
+      toggleBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const nextMode = bodyDiv.getAttribute('data-agy-zh-mode') === 'raw' ? 'zh' : 'raw';
+        bodyDiv.setAttribute('data-agy-zh-mode', nextMode);
+        toggleBtn.textContent = nextMode === 'raw' ? '返回中文译文' : '查看英文原稿';
+      });
+
+      header.appendChild(badge);
+      header.appendChild(toggleBtn);
+
+      const contentBox = document.createElement('div');
+      contentBox.className = 'agy-think-zh-body';
+
+      panel.appendChild(header);
+      panel.appendChild(contentBox);
+      bodyDiv.appendChild(panel);
+    }
+
+    const dotEl = panel.querySelector('.agy-think-zh-dot');
+    if (dotEl) {
+      dotEl.classList.toggle('streaming', isStreaming);
+    }
+    const statusEl = panel.querySelector('.agy-think-zh-status');
+    if (statusEl) {
+      const desiredStatus = pendingToTranslate.length > 0 ? '正在翻译思考段落…' : '思考过程中文译文';
+      if (statusEl.textContent !== desiredStatus) {
+        statusEl.textContent = desiredStatus;
+      }
+    }
+    const toggleBtnEl = panel.querySelector('.agy-think-raw-toggle');
+    if (toggleBtnEl) {
+      const desiredBtnTxt = curMode === 'raw' ? '返回中文译文' : '查看英文原稿';
+      if (toggleBtnEl.textContent !== desiredBtnTxt) {
+        toggleBtnEl.textContent = desiredBtnTxt;
+      }
+    }
+
+    const contentBox = panel.querySelector('.agy-think-zh-body');
+    if (contentBox) {
+      const sig = renderedParagraphs.map((rp) => `${rp.isZh ? '1' : '0'}:${rp.text}`).join('\n---\n');
+      if (contentBox.getAttribute('data-sig') !== sig) {
+        contentBox.setAttribute('data-sig', sig);
+        const existingPs = contentBox.children
+          ? Array.from(contentBox.children)
+          : Array.from(contentBox.childNodes || []);
+        while (existingPs.length > renderedParagraphs.length) {
+          const rem = existingPs.pop();
+          if (rem && typeof rem.remove === 'function') rem.remove();
+        }
+        for (let i = 0; i < renderedParagraphs.length; i++) {
+          const rp = renderedParagraphs[i];
+          const wantClass = rp.isTail && !rp.isZh ? 'agy-think-zh-para tail-raw' : 'agy-think-zh-para';
+          let pEl = existingPs[i];
+          if (!pEl) {
+            pEl = document.createElement('p');
+            pEl.className = wantClass;
+            pEl.textContent = rp.text;
+            contentBox.appendChild(pEl);
+          } else {
+            if (pEl.className !== wantClass) pEl.className = wantClass;
+            if (pEl.textContent !== rp.text) pEl.textContent = rp.text;
+          }
+        }
+      }
+    }
+  }
+
   function onCollapsibleClickCapture(e) {
     if (disposed || !globalPrefs.enabled || !e || !e.target || !e.target.closest) return;
+    if (e.target.closest('.agy-think-raw-toggle')) return;
     const btn = e.target.closest(
       'button[data-testid="thinking-collapsible-trigger"], button[data-testid="tool-group-collapsible"]'
     );
     if (!btn) return;
 
     const reactExpanded = btn.getAttribute('aria-expanded') === 'true';
-    const isCurrentlyVisible =
-      btn.getAttribute('data-agy-user-expanded') === '1' &&
-      reactExpanded &&
-      Boolean(btn.nextElementSibling);
+    const isUserExpanded = btn.getAttribute('data-agy-user-expanded') === '1';
+    const isCurrentlyVisible = isUserExpanded && reactExpanded && Boolean(btn.nextElementSibling);
     const wantExpand = !isCurrentlyVisible;
 
     if (wantExpand) {
@@ -2942,10 +3526,10 @@
         btn.nextElementSibling.style.removeProperty('display');
       }
       if (reactExpanded) {
-        // React already mounted the body div (e.g. while actively streaming/running);
-        // stop propagation so neither legacy element listeners nor React unmount it.
+        // React already mounted the body div; stop propagation so neither legacy element listeners nor React unmount it.
         e.stopImmediatePropagation();
         e.stopPropagation();
+        enhanceConversationStreamDOM();
       } else {
         // Let the event reach React's root listener to mount the body div, and ensure
         // data-agy-user-expanded="1" remains set even if a legacy element listener ran.
@@ -2954,16 +3538,29 @@
           if (btn.nextElementSibling) {
             btn.nextElementSibling.style.removeProperty('display');
           }
+          enhanceConversationStreamDOM();
         });
       }
     } else {
       btn.removeAttribute('data-agy-user-expanded');
+      btn._agyLocalTransMap = null;
       if (btn.nextElementSibling) {
         btn.nextElementSibling.style.removeProperty('display');
+        btn.nextElementSibling.removeAttribute('data-agy-zh-mode');
+        const oldPanel = btn.nextElementSibling.querySelector('.agy-think-zh-panel');
+        if (oldPanel) oldPanel.remove();
       }
-      if (reactExpanded) {
+      if (!reactExpanded) {
+        // React is already collapsed; stop propagation so React does not toggle it back to expanded.
         e.stopImmediatePropagation();
         e.stopPropagation();
+      } else {
+        // React is currently expanded (aria-expanded="true"); allow the click to reach React so
+        // React flips aria-expanded="false" and unmounts the body div naturally.
+        queueMicrotask(() => {
+          btn.removeAttribute('data-agy-user-expanded');
+          enhanceConversationStreamDOM();
+        });
       }
     }
   }
@@ -3010,7 +3607,7 @@
       }
     }
 
-    // Codex-style thinking headers: default-collapsed, 1-click expandable anytime, with single-sentence Chinese summary
+    // Codex-style thinking headers: default single-line qualitative summary (collapsed), on-demand Chinese translation when expanded
     const thinkBtns = document.querySelectorAll('button[data-testid="thinking-collapsible-trigger"]');
     let thinkIdx = 0;
     for (const tb of thinkBtns) {
@@ -3034,9 +3631,15 @@
       }
 
       const thinkProps = findAncestorFiberProps(tb, (p) => typeof p.thinking === 'string' && p.thinking.length > 0);
-      if (thinkProps && thinkProps.thinking) {
+      const stepHolder = findAncestorFiberProps(tb, (p) => Boolean(p.step && p.step.step?.case === 'plannerResponse'));
+      const rawThinkingText =
+        (thinkProps && typeof thinkProps.thinking === 'string' && thinkProps.thinking) ||
+        stepHolder?.step?.step?.value?.thinking ||
+        '';
+      const isStreamingNow = isThinkingTriggerActivelyStreaming(tb, stepHolder?.step);
+
+      if (rawThinkingText) {
         let nextToolDesc = '';
-        const stepHolder = findAncestorFiberProps(tb, (p) => Boolean(p.step && p.step.step?.case === 'plannerResponse'));
         const grpHolder = findAncestorFiberProps(tb, (p) => Array.isArray(p.steps) || Array.isArray(p.segment?.steps));
         const grpSteps = grpHolder?.steps || grpHolder?.segment?.steps || [];
         if (stepHolder?.step && grpSteps.length > 0) {
@@ -3049,7 +3652,7 @@
             nextToolDesc = describeStepQualitatively(grpSteps[sIdx + 1]);
           }
         }
-        const digest = parseThinkingQualitativeDigest(thinkProps.thinking, nextToolDesc);
+        const digest = parseThinkingQualitativeDigest(rawThinkingText, nextToolDesc);
         const headline = digest && digest.headline ? digest.headline : '';
         if (headline) {
           let inlineSpan = tb.querySelector('.agy-think-inline-summary');
@@ -3068,6 +3671,8 @@
             inlineSpan.textContent = headline;
           }
         }
+
+        renderThinkingChinesePanel(tb, rawThinkingText, isStreamingNow);
       }
     }
 
@@ -3465,6 +4070,347 @@
     } catch (e) {}
   }
 
+  const userInputLedgerByConvo = new Map();
+  const lastBlueprintAttemptTsByConvo = new Map();
+  let llmSummaryReqSeq = 0;
+
+  function extractUserInputPlainText(step) {
+    if (!step || step.step?.case !== 'userInput') return '';
+    const sv = step.step?.value || {};
+    let txt = '';
+    if (Array.isArray(sv.items)) {
+      txt = sv.items
+        .map((it) => (typeof it?.text === 'string' ? it.text : ''))
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+    }
+    if (!txt && typeof sv.text === 'string') txt = sv.text.trim();
+    if (!txt && typeof sv.content === 'string') txt = sv.content.trim();
+    if (!txt && typeof sv.prompt === 'string') txt = sv.prompt.trim();
+    if (!txt) {
+      try {
+        txt = JSON.stringify(sv, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
+      } catch (e) {}
+    }
+    if (!txt) return '';
+    if (txt.includes('[System Reactive Wakeup') || txt.includes('<SYSTEM_MESSAGE>')) {
+      return '';
+    }
+    return txt;
+  }
+
+  function updateAndGetUserInputLedger(cid, allSteps) {
+    if (!cid) return { entries: [], latestUserStepIndex: -1, latestUserText: '' };
+    let ledger = userInputLedgerByConvo.get(cid);
+    if (!ledger) {
+      ledger = new Map();
+      userInputLedgerByConvo.set(cid, ledger);
+      if (userInputLedgerByConvo.size > 24) {
+        const oldestKey = userInputLedgerByConvo.keys().next().value;
+        if (oldestKey) userInputLedgerByConvo.delete(oldestKey);
+      }
+    }
+    for (let i = 0; i < allSteps.length; i++) {
+      const s = allSteps[i];
+      if (!s || s.step?.case !== 'userInput') continue;
+      const uTxt = extractUserInputPlainText(s);
+      if (!uTxt) continue;
+      const stepIdx = s.metadata?.sourceTrajectoryStepInfo?.stepIndex ?? i;
+      if (!ledger.has(stepIdx)) {
+        ledger.set(stepIdx, {
+          stepIndex: stepIdx,
+          text: uTxt.replace(/\s+/g, ' ').trim().slice(0, 400)
+        });
+      }
+    }
+    let entries = Array.from(ledger.values()).sort((a, b) => a.stepIndex - b.stepIndex);
+    // Bound per-conversation ledger to at most 32 entries (always preserving the initial instruction at entries[0] + latest 31)
+    if (entries.length > 32) {
+      const kept = [entries[0], ...entries.slice(-31)];
+      ledger.clear();
+      for (const item of kept) {
+        ledger.set(item.stepIndex, item);
+      }
+      entries = kept;
+    }
+    const latest = entries.length > 0 ? entries[entries.length - 1] : null;
+    return {
+      entries,
+      latestUserStepIndex: latest ? latest.stepIndex : -1,
+      latestUserText: latest ? latest.text : ''
+    };
+  }
+
+  function formatUserLedgerForPrompt(entries) {
+    if (!Array.isArray(entries) || entries.length === 0) return [];
+    const lines = [];
+    const first = entries[0];
+    lines.push(`[初始核心指令 step=${first.stepIndex}] ${first.text}`);
+    const tailEntries = entries.slice(1).slice(-4);
+    let budget = 1600;
+    for (const item of tailEntries) {
+      if (budget <= 0) break;
+      const chunk = item.text.slice(0, budget);
+      budget -= chunk.length;
+      lines.push(`[后续追加指令 step=${item.stepIndex}] ${chunk}`);
+    }
+    return lines;
+  }
+
+  const ACTION_POLARITY_BUCKETS = [
+    { bucket: 'explore', re: /(?:排查|检索|调研|勘察|阅读|读取|分析|检查|审计|定位|梳理|盘点|查看)/ },
+    { bucket: 'design', re: /(?:设计|规划|起草|构思|拟定|讨论方案|制定)/ },
+    {
+      bucket: 'implement',
+      re: /(?:修复|修改|实现|编写|重构|升级|新增|写入|替换|优化|装配|注入|创建|添加|开启|启用|挂载)/
+    },
+    { bucket: 'remove', re: /(?:移除|删除|清理|清除|卸载|回滚|撤销|禁用|停用|关闭|剥离|废弃|隐藏)/ },
+    { bucket: 'verify', re: /(?:验证|测试|复核|回归|验收|核查|打包|部署|提交|存档|推送|发布)/ }
+  ];
+
+  function extractNegationSignature(str) {
+    const cleaned = String(str || '')
+      .replace(
+        /(?<!^)(?<!^[，,；;、\s])未完成(?!$)(?![，,；;、])(?!\s*(?:修复|修改|实现|编写|重构|升级|验证|测试|部署|清理|删除|移除|排查|分析|检查))/g,
+        ''
+      )
+      .replace(/未知|未定义|未决|未初始化|不同|不一致|不变量|不可或缺|不间断/g, '');
+    const matches = cleaned.match(/禁止|不要|不得|切勿|无需|不用|跳过|取消|不予|勿|不|未/g) || [];
+    return matches.join('|');
+  }
+
+  function classifyStageActionBucket(title) {
+    const s = String(title || '');
+    const buckets = [];
+    for (const item of ACTION_POLARITY_BUCKETS) {
+      if (item.re.test(s)) buckets.push(item.bucket);
+    }
+    return buckets.join('|');
+  }
+
+  function extractClausePolaritySequence(title) {
+    const clauses = String(title || '')
+      .split(/[，,；;、]|(?:以及|并且|同时|并|及|且|与|和|再|后|然后)/)
+      .map((c) => c.trim())
+      .filter(Boolean);
+    const seq = [];
+    for (const cl of clauses) {
+      const negSig = extractNegationSignature(cl);
+      const b = classifyStageActionBucket(cl);
+      const coreLead = cl
+        .replace(/^(?:已|正|在|待|先|再|禁止|不要|不得|切勿|无需|不用|跳过|取消|不予|勿|不|未)+/, '')
+        .slice(0, 2);
+      seq.push(`${negSig ? '!' + negSig : '+'}:${b || coreLead}`);
+    }
+    return seq.join('>');
+  }
+
+  function computeTitleOverlapRatio(a, b) {
+    const s1 = String(a || '').replace(/^\d+\.\s*/, '').trim();
+    const s2 = String(b || '').replace(/^\d+\.\s*/, '').trim();
+    if (!s1 || !s2) return 0;
+    if (s1 === s2) return 1;
+    const set1 = new Set(s1.split(''));
+    const set2 = new Set(s2.split(''));
+    let common = 0;
+    for (const ch of set1) {
+      if (set2.has(ch)) common++;
+    }
+    return common / Math.max(1, Math.min(set1.size, set2.size));
+  }
+
+  function isSameStageTask(titleA, titleB, threshold = 0.68) {
+    const s1 = String(titleA || '').replace(/^\d+\.\s*/, '').trim();
+    const s2 = String(titleB || '').replace(/^\d+\.\s*/, '').trim();
+    if (!s1 || !s2) return false;
+    if (s1 === s2) return true;
+    // Never merge a folded summary row with normal stage rows
+    const isFolded1 = /^(?:已完成前序|后续待推进)\s*\d+\s*个阶段/.test(s1);
+    const isFolded2 = /^(?:已完成前序|后续待推进)\s*\d+\s*个阶段/.test(s2);
+    if (isFolded1 || isFolded2) {
+      return isFolded1 && isFolded2 && s1.slice(0, 5) === s2.slice(0, 5);
+    }
+    // Negation signature guard (ignores mid-clause noun modifiers like "未完成接口" while preserving predicate & clause-scoped negations)
+    if (extractNegationSignature(s1) !== extractNegationSignature(s2)) {
+      return false;
+    }
+    if (extractClausePolaritySequence(s1) !== extractClausePolaritySequence(s2)) {
+      return false;
+    }
+    // Action polarity guard: require identical non-empty action bucket whenever leading 2-char verb differs
+    const b1 = classifyStageActionBucket(s1);
+    const b2 = classifyStageActionBucket(s2);
+    if (b1 !== b2) {
+      return false;
+    }
+    if (!b1 && s1.slice(0, 2) !== s2.slice(0, 2)) {
+      return false;
+    }
+    return computeTitleOverlapRatio(s1, s2) >= threshold;
+  }
+
+  function reconcileBlueprintTasks(prevCache, nextTasks, latestUserStepIndex, isRunningNow) {
+    const isSameUserTurn =
+      Boolean(prevCache) &&
+      Array.isArray(prevCache.tasks) &&
+      prevCache.tasks.length > 0 &&
+      (prevCache.lastUserStepIndex === undefined || prevCache.lastUserStepIndex === latestUserStepIndex);
+
+    let merged = [];
+    if (isSameUserTurn) {
+      const prevTasks = prevCache.tasks;
+      const frozenDone = [];
+      for (let i = 0; i < prevTasks.length; i++) {
+        const pt = prevTasks[i];
+        if (pt.status === 'done' && ((pt.doneCount || 1) >= 2 || i < prevTasks.length - 1)) {
+          frozenDone.push({
+            status: 'done',
+            title: pt.title,
+            outcome: pt.outcome || '已完成',
+            doneCount: (pt.doneCount || 1) + 1,
+            foldedCount: pt.foldedCount || 1
+          });
+        } else {
+          break;
+        }
+      }
+
+      const prevActive = prevTasks.find((t) => t.status === 'active');
+      merged = [...frozenDone];
+
+      for (const nt of nextTasks) {
+        if (
+          /^已完成前序\s*\d+\s*个阶段/.test(nt.title) &&
+          frozenDone.some((fd) => /^已完成前序\s*\d+\s*个阶段/.test(fd.title))
+        ) {
+          continue;
+        }
+        const dupFrozen = frozenDone.some((fd) => isSameStageTask(fd.title, nt.title, 0.68));
+        if (dupFrozen) continue;
+
+        let finalTitle = nt.title;
+        if (nt.status === 'active' && prevActive && isSameStageTask(prevActive.title, nt.title, 0.82)) {
+          finalTitle = prevActive.title;
+        }
+
+        const prevMatch = prevTasks.find((pt) => isSameStageTask(pt.title, finalTitle, 0.68));
+        const nextStatus = nt.status === 'active' ? 'active' : nt.status === 'todo' ? 'todo' : 'done';
+        const doneCount =
+          nextStatus === 'done'
+            ? (prevMatch && prevMatch.status === 'done' ? (prevMatch.doneCount || 1) + 1 : 1)
+            : 0;
+
+        merged.push({
+          status: nextStatus,
+          title: finalTitle,
+          outcome: nt.outcome,
+          doneCount,
+          foldedCount: 1
+        });
+      }
+
+      if (merged.length === 0) {
+        merged = nextTasks.map((t) => ({
+          status: t.status,
+          title: t.title,
+          outcome: t.outcome,
+          doneCount: t.status === 'done' ? 1 : 0,
+          foldedCount: 1
+        }));
+      }
+    } else {
+      merged = nextTasks.map((t) => ({
+        status: t.status,
+        title: t.title,
+        outcome: t.outcome,
+        doneCount: t.status === 'done' ? 1 : 0,
+        foldedCount: 1
+      }));
+    }
+
+    // Enforce at most one 'active' task before sliding-window folding
+    let seenActive = false;
+    for (const t of merged) {
+      if (t.status === 'active') {
+        if (!seenActive) {
+          seenActive = true;
+        } else {
+          t.status = 'todo';
+        }
+      }
+    }
+    if (isRunningNow && !seenActive && merged.length > 0) {
+      const firstTodo = merged.find((t) => t.status === 'todo');
+      if (firstTodo) {
+        firstTodo.status = 'active';
+      }
+    }
+
+    // Sliding window fold: when stages exceed 5, always preserve concrete 'active' row(s) intact,
+    // folding earliest 'done' stages into 1 summary row and trailing excess 'todo' stages into 1 summary row.
+    if (merged.length > 5) {
+      let doneItems = merged.filter((t) => t.status === 'done');
+      const activeItems = merged.filter((t) => t.status === 'active');
+      let todoItems = merged.filter((t) => t.status === 'todo');
+
+      const budget = Math.max(1, 5 - activeItems.length);
+      let doneBudget = budget;
+      if (todoItems.length > 0) {
+        doneBudget =
+          doneItems.length === 0
+            ? 0
+            : Math.max(1, Math.min(doneItems.length, budget - Math.min(todoItems.length, 2)));
+      }
+
+      if (doneItems.length > doneBudget && doneBudget >= 1) {
+        const keepDone = Math.max(0, doneBudget - 1);
+        const foldCount = doneItems.length - keepDone;
+        if (foldCount >= 2) {
+          const toFold = doneItems.slice(0, foldCount);
+          const totalFolded = toFold.reduce((acc, item) => acc + (item.foldedCount || 1), 0);
+          const lastFolded = toFold[toFold.length - 1];
+          const shortLastTitle = String(lastFolded.title || '')
+            .replace(/^已完成前序\s*\d+\s*个阶段[（(]?|[）)]$/g, '')
+            .slice(0, 10);
+          const foldedDoneRow = {
+            status: 'done',
+            title: `已完成前序 ${totalFolded} 个阶段（含${shortLastTitle}等）`,
+            outcome: '均已完成',
+            doneCount: 3,
+            foldedCount: totalFolded
+          };
+          doneItems = [foldedDoneRow, ...doneItems.slice(foldCount)];
+        }
+      }
+
+      const todoBudget = Math.max(0, budget - doneItems.length);
+      if (todoItems.length > todoBudget && todoBudget >= 1) {
+        const keepTodo = Math.max(0, todoBudget - 1);
+        const tailToFold = todoItems.slice(keepTodo);
+        const totalTailFolded = tailToFold.reduce((acc, item) => acc + (item.foldedCount || 1), 0);
+        const firstTail = tailToFold[0];
+        const shortTailTitle = String(firstTail.title || '')
+          .replace(/^后续待推进\s*\d+\s*个阶段[（(]?|[）)]$/g, '')
+          .slice(0, 10);
+        todoItems = [
+          ...todoItems.slice(0, keepTodo),
+          {
+            status: 'todo',
+            title: `后续待推进 ${totalTailFolded} 个阶段（含${shortTailTitle}等）`,
+            outcome: '待推进',
+            doneCount: 0,
+            foldedCount: totalTailFolded
+          }
+        ];
+      }
+
+      merged = [...doneItems, ...activeItems, ...todoItems];
+    }
+
+    return merged;
+  }
+
   function savePersistedLlmSummaryCache() {
     try {
       const obj = {};
@@ -3474,6 +4420,10 @@
           sig: v.sig,
           title: v.title,
           tasks: v.tasks,
+          lastUserStepIndex: v.lastUserStepIndex,
+          lastThinkStepIndex: v.lastThinkStepIndex,
+          lastTotalSteps: v.lastTotalSteps,
+          wasTurnCompletedQuietly: v.wasTurnCompletedQuietly,
           updatedAt: v.updatedAt
         };
       }
@@ -3481,38 +4431,85 @@
     } catch (e) {}
   }
 
-  function buildTraceTextForLlm(allSteps) {
+  function buildTraceTextForLlm(allSteps, ledgerInfo, existingCache) {
     const traceLines = [];
-    const startIdx = Math.max(0, allSteps.length - 26);
+    if (ledgerInfo && Array.isArray(ledgerInfo.entries) && ledgerInfo.entries.length > 0) {
+      traceLines.push(...formatUserLedgerForPrompt(ledgerInfo.entries));
+    }
+    if (
+      existingCache &&
+      typeof existingCache.title === 'string' &&
+      Array.isArray(existingCache.tasks) &&
+      existingCache.tasks.length > 0 &&
+      (existingCache.lastUserStepIndex === undefined ||
+        existingCache.lastUserStepIndex === ledgerInfo?.latestUserStepIndex)
+    ) {
+      const prevJson = JSON.stringify({
+        title: existingCache.title,
+        tasks: existingCache.tasks.map((t) => ({
+          status: t.status,
+          title: t.title,
+          outcome: t.outcome
+        }))
+      });
+      traceLines.push(`[上一版阶段蓝图（同一轮指令内请保持已完成阶段与总体结构稳定）] ${prevJson}`);
+    }
+
+    const startIdx = Math.max(0, allSteps.length - 22);
     for (let i = startIdx; i < allSteps.length; i++) {
       const s = allSteps[i];
       if (!s) continue;
+      const stepIdx = s.metadata?.sourceTrajectoryStepInfo?.stepIndex ?? i;
       const sc = s.step?.case || '';
       const sv = s.step?.value || {};
       const st = s.status;
       if (sc === 'userInput') {
-        let uTxt = '';
-        try {
-          uTxt = JSON.stringify(sv, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
-        } catch (e) {}
-        if (uTxt) traceLines.push(`[用户请求 step=${i}] ${uTxt.slice(0, 180)}`);
+        const uTxt = extractUserInputPlainText(s);
+        if (uTxt) traceLines.push(`[用户请求 step=${stepIdx}] ${uTxt.replace(/\s+/g, ' ').slice(0, 240)}`);
       } else if (sc === 'plannerResponse') {
-        if (sv.thinking) traceLines.push(`[思考 step=${i}] ${String(sv.thinking).slice(0, 160)}`);
-        if (sv.response) traceLines.push(`[模型回复 step=${i}] ${String(sv.response).slice(0, 180)}`);
-      } else if (sc === 'generic') {
-        const tname = s.metadata?.toolCall?.name || '';
-        const args = sv.args || {};
-        const target = args.toolSummary || args.Path || args.TargetFile || args.Role || args.CommandLine || '';
+        if (sv.thinking) traceLines.push(`[思考 step=${stepIdx}] ${String(sv.thinking).slice(0, 280)}`);
+        if (sv.response) traceLines.push(`[模型回复 step=${stepIdx}] ${String(sv.response).slice(0, 200)}`);
+      } else if (sc === 'generic' || sc === 'runCommand' || sc === 'invokeSubagent') {
+        const tname = s.metadata?.toolCall?.name || sc || '';
+        const args = (sc === 'generic' && sv.args && typeof sv.args === 'object') ? sv.args : sv;
+        const target =
+          args.toolSummary || args.Path || args.TargetFile || args.Role || args.CommandLine || args.commandLine || '';
         if (/probe_fiber_live|probe_ctx_live|hot_inject_live|list_ls_rpcs/i.test(String(target))) continue;
-        traceLines.push(`[步骤 step=${i} status=${st} tool=${tname}] ${String(target).slice(0, 140)}`);
+        traceLines.push(`[步骤 step=${stepIdx} status=${st} tool=${tname}] ${String(target).slice(0, 140)}`);
       }
     }
     return traceLines;
   }
 
-  function triggerLlmMissionSummarization(cid, sig, allSteps, isRunningNow) {
-    if (disposed || !globalPrefs.enabled || !cid || llmSummaryInFlight) return;
+  function triggerLlmMissionSummarization(
+    cid,
+    sig,
+    allSteps,
+    isRunningNow,
+    ledgerInfo,
+    latestDoneThinkStepIndex,
+    effTotalSteps,
+    turnCompletedQuietly
+  ) {
+    if (
+      disposed ||
+      !globalPrefs.enabled ||
+      globalPrefs.missionHud === false ||
+      globalPrefs.lang === 'en' ||
+      globalPrefs.bossMode ||
+      !cid ||
+      llmSummaryInFlight
+    ) {
+      return;
+    }
     if (typeof window.fetch !== 'function') return;
+
+    const now = Date.now();
+    const lastAttempt = lastBlueprintAttemptTsByConvo.get(cid) || 0;
+    const existing = llmSummaryCacheByConvo.get(cid);
+    if (now - lastAttempt < 3500 || (existing && existing.lastAttemptTs && now - existing.lastAttemptTs < 3500)) {
+      return;
+    }
 
     const csrf =
       window.__APP_CONFIG__?.csrfToken ||
@@ -3520,30 +4517,35 @@
       '';
     if (!csrf) return;
 
-    const traceLines = buildTraceTextForLlm(allSteps);
+    const traceLines = buildTraceTextForLlm(allSteps, ledgerInfo, existing);
     if (traceLines.length === 0) return;
 
-    const existing = llmSummaryCacheByConvo.get(cid);
-    const now = Date.now();
-    if (existing && existing.lastAttemptTs && now - existing.lastAttemptTs < 3500) {
-      return;
+    lastBlueprintAttemptTsByConvo.set(cid, now);
+    if (lastBlueprintAttemptTsByConvo.size > 32) {
+      const oldestKey = lastBlueprintAttemptTsByConvo.keys().next().value;
+      if (oldestKey) lastBlueprintAttemptTsByConvo.delete(oldestKey);
     }
     if (existing) {
       existing.lastAttemptTs = now;
     }
 
     llmSummaryInFlight = true;
+    const reqId = ++llmSummaryReqSeq;
+    const reqLsGen = currentLsGeneration;
     const ctrl = new AbortController();
     activeLlmSummaryAbortCtrl = ctrl;
     const timer = setTimeout(() => ctrl.abort(), 12000);
 
     const prompt = [
-      '你是一个研发与学术工作台的实时态势总结器。请阅读以下当前会话最近的任务执行轨迹，从整体目的、设计与施工进展出发，用简练纯正的中文总结理解当前这一轮任务到底在干什么（严禁照抄会话标题，严禁出现英文单词或半中半英，严禁带【】或[]括号标签）。',
+      '你是一个研发与学术工作台的全局蓝图归纳器。请阅读用户的核心指令账本、上一版阶段蓝图以及最近执行轨迹，用简练纯正的中文维护当前任务的全局施工蓝图（严禁照抄会话标题，严禁出现英文单词或半中半英，严禁带【】或[]括号标签）。',
+      '蓝图演进准则：',
+      '1) 若存在【上一版阶段蓝图】且用户未下达推翻原目标的新指令，必须保持已完成的 "done" 阶段标题与整体阶段划分稳定，仅推进阶段状态（"done" / "active" / "todo"）与进展说明（outcome），或在从初步勘察收敛出明确方案时补充后续待办阶段（"todo"）；',
+      '2) 阶段总数控制在 2 到 5 项之间（实事求是，严禁为了凑满5项而编造空洞阶段）；',
       isRunningNow
-        ? '注意：当前任务仍在推进中，请将最后一个正在进行的阶段 status 标为 "active"，已完成的前序阶段标为 "done"。'
-        : '注意：当前各阶段已执行就绪，请将已完成阶段 status 标为 "done"。',
+        ? '3) 当前任务仍在推进中，请将当前正在推进的 1 个阶段 status 标为 "active"，已完成的前序阶段标为 "done"，尚未开始的后续计划阶段标为 "todo"；'
+        : '3) 当前轮次操作已告一段落，请按实际完成度标注各阶段 status（已确认完成的标为 "done"，仍待继续推进或待用户确认的保持 "active" 或 "todo"）。',
       '请仅输出严格合法的 JSON 对象（不要 markdown 代码块标记），格式如下：',
-      '{"title":"用12-24个纯中文汉字概括当前这一轮任务在干什么","tasks":[{"status":"done或active","title":"宏观阶段名称（纯中文，10-26字，共3到4项）","outcome":"定性结果或进展（纯中文，4-12字）"}]}',
+      '{"title":"用12-24个纯中文汉字概括当前任务总目标","tasks":[{"status":"done或active或todo","title":"宏观阶段名称（纯中文，10-26字，共2到5项）","outcome":"定性结果或当前进展（纯中文，4-14字）"}]}',
       '当前会话轨迹：',
       traceLines.join('\n')
     ].join('\n');
@@ -3568,6 +4570,7 @@
         );
         if (!resp.ok) return;
         const data = await resp.json();
+        if (disposed || reqId !== llmSummaryReqSeq || reqLsGen !== currentLsGeneration) return;
         let rawResp = String(data?.response || '').trim();
         rawResp = rawResp.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
         const mJson = rawResp.match(/\{[\s\S]*\}/);
@@ -3575,20 +4578,35 @@
         const parsed = JSON.parse(mJson[0]);
         if (parsed && typeof parsed.title === 'string' && Array.isArray(parsed.tasks) && parsed.tasks.length > 0) {
           const cleanTitle = cleanNaturalSentence(parsed.title).replace(/[【】\[\]]/g, '');
-          const cleanTasks = parsed.tasks
-            .slice(0, 4)
+          const rawCleanTasks = parsed.tasks
             .map((t) => ({
               status: t.status === 'active' ? 'active' : t.status === 'todo' ? 'todo' : 'done',
-              title: cleanNaturalSentence(t.title || '').replace(/[【】\[\]]/g, ''),
+              title: cleanNaturalSentence(t.title || t.text || '').replace(/[【】\[\]]/g, ''),
               outcome: cleanNaturalSentence(t.outcome || '').replace(/[【】\[\]]/g, '')
             }))
             .filter((t) => t.title.length >= 4);
 
-          if (cleanTitle && cleanTasks.length > 0) {
+          if (cleanTitle && rawCleanTasks.length > 0) {
+            const latestUserStepIndex = ledgerInfo?.latestUserStepIndex ?? -1;
+            const reconciledTasks = reconcileBlueprintTasks(
+              existing,
+              rawCleanTasks,
+              latestUserStepIndex,
+              isRunningNow
+            );
+
+            if (!llmSummaryCacheByConvo.has(cid) && llmSummaryCacheByConvo.size >= 24) {
+              const oldestCid = llmSummaryCacheByConvo.keys().next().value;
+              if (oldestCid) llmSummaryCacheByConvo.delete(oldestCid);
+            }
             llmSummaryCacheByConvo.set(cid, {
               sig,
               title: cleanTitle,
-              tasks: cleanTasks,
+              tasks: reconciledTasks,
+              lastUserStepIndex: latestUserStepIndex,
+              lastThinkStepIndex: latestDoneThinkStepIndex,
+              lastTotalSteps: effTotalSteps,
+              wasTurnCompletedQuietly: Boolean(turnCompletedQuietly),
               updatedAt: Date.now(),
               lastAttemptTs: Date.now()
             });
@@ -3603,8 +4621,8 @@
         clearTimeout(timer);
         if (activeLlmSummaryAbortCtrl === ctrl) {
           activeLlmSummaryAbortCtrl = null;
+          llmSummaryInFlight = false;
         }
-        llmSummaryInFlight = false;
       }
     })();
   }
@@ -4093,11 +5111,108 @@
       turnCompletedQuietly
     );
 
-    // 3. Use real LLM mission summarization (via GetModelResponse MODEL_PLACEHOLDER_M18) with instant cache
-    const sig = `${Math.floor((totalStepsCount || allSteps.length) / 3)}:${isRunningNow ? 'run' : 'idle'}`;
+    // 3. Maintain append-only User Instruction Ledger & Stateful Blueprint Evolution
+    const ledgerInfo = updateAndGetUserInputLedger(cid, allSteps);
+    let latestDoneThinkStepIndex = -1;
+    let currentLiveAction = null;
+
+    for (let i = 0; i < allSteps.length; i++) {
+      const s = allSteps[i];
+      if (!s) continue;
+      const stepIdx = s.metadata?.sourceTrajectoryStepInfo?.stepIndex ?? i;
+      const sc = s.step?.case || '';
+      const sv = s.step?.value || {};
+      const st = s.status;
+      if (sc === 'plannerResponse' && sv.thinking) {
+        const isStepRunning =
+          st === 1 ||
+          st === 2 ||
+          st === 9 ||
+          st === 'CORTEX_STEP_STATUS_RUNNING' ||
+          st === 'CORTEX_STEP_STATUS_GENERATING';
+        if (!isStepRunning) {
+          latestDoneThinkStepIndex = Math.max(latestDoneThinkStepIndex, stepIdx);
+        } else if (!sv.response) {
+          const digest = parseThinkingQualitativeDigest(sv.thinking, '');
+          currentLiveAction = {
+            role: (digest && digest.headline) ? `思考推演：${digest.headline}` : '正在思考推演整体方案…',
+            statusText: '思考中'
+          };
+        }
+      }
+    }
+
+    if (!currentLiveAction && isRunningNow && activeRuntimes.length === 0) {
+      for (let i = allSteps.length - 1; i >= 0; i--) {
+        const s = allSteps[i];
+        if (!s) continue;
+        if (s.step?.case === 'plannerResponse' && s.step?.value?.thinking && !s.step?.value?.response) {
+          const digest = parseThinkingQualitativeDigest(s.step.value.thinking, '');
+          currentLiveAction = {
+            role: (digest && digest.headline) ? `思考推演：${digest.headline}` : '正在思考推演整体方案…',
+            statusText: '思考中'
+          };
+          break;
+        }
+        const qDesc = describeStepQualitatively(s);
+        if (qDesc) {
+          currentLiveAction = {
+            role: qDesc,
+            statusText: '推进中'
+          };
+          break;
+        }
+      }
+      if (!currentLiveAction) {
+        currentLiveAction = {
+          role: '正在思考推演…',
+          statusText: '思考中'
+        };
+      }
+    }
+
     const llmCached = cid ? llmSummaryCacheByConvo.get(cid) : null;
-    if (cid && allSteps.length > 0 && (!llmCached || llmCached.sig !== sig)) {
-      triggerLlmMissionSummarization(cid, sig, allSteps, isRunningNow);
+    const hasNewUserTurn =
+      Boolean(llmCached) &&
+      ledgerInfo.latestUserStepIndex > (llmCached.lastUserStepIndex ?? -1);
+    const stepsDelta = llmCached ? effTotalSteps - (llmCached.lastTotalSteps || 0) : effTotalSteps;
+    const hasNewCompletedThink =
+      Boolean(llmCached) &&
+      latestDoneThinkStepIndex > (llmCached.lastThinkStepIndex ?? -1) &&
+      stepsDelta >= 2;
+    const hasSixStepMilestone = Boolean(llmCached) && stepsDelta >= 6;
+    const hasQuietCompletionEdge =
+      Boolean(llmCached) && turnCompletedQuietly && !llmCached.wasTurnCompletedQuietly;
+
+    const shouldUpdateBlueprint =
+      !llmCached ||
+      !Array.isArray(llmCached.tasks) ||
+      llmCached.tasks.length === 0 ||
+      hasNewUserTurn ||
+      hasNewCompletedThink ||
+      hasSixStepMilestone ||
+      hasQuietCompletionEdge;
+
+    const sig = `${ledgerInfo.latestUserStepIndex}:${latestDoneThinkStepIndex}:${Math.floor(effTotalSteps / 6)}:${turnCompletedQuietly ? 'done' : 'work'}`;
+    if (
+      globalPrefs.missionHud !== false &&
+      globalPrefs.lang !== 'en' &&
+      !globalPrefs.bossMode &&
+      cid &&
+      allSteps.length > 0 &&
+      shouldUpdateBlueprint &&
+      (!llmCached || llmCached.sig !== sig)
+    ) {
+      triggerLlmMissionSummarization(
+        cid,
+        sig,
+        allSteps,
+        isRunningNow,
+        ledgerInfo,
+        latestDoneThinkStepIndex,
+        effTotalSteps,
+        turnCompletedQuietly
+      );
     }
 
     let finalTasks = [];
@@ -4119,6 +5234,7 @@
       globalGoal: globalGoal || '正在理解并概括当前任务脉络…',
       tasks: finalTasks,
       activeRuntimes: activeRuntimes.slice(-2),
+      currentLiveAction,
       isRunning: isRunningNow
     };
   }
@@ -4146,7 +5262,7 @@
     missionHudHost.style.display = 'none';
 
     missionHudShadow = missionHudHost.attachShadow({ mode: 'open' });
-      missionHudShadow.innerHTML = `
+    missionHudShadow.innerHTML = `
       <style>
         :host {
           all: initial;
@@ -4236,8 +5352,7 @@
           flex-direction: column;
           gap: 2px;
         }
-        .mission-box.collapsed .mission-body,
-        .mission-box.collapsed .rt-bar {
+        .mission-box.collapsed .mission-body {
           display: none !important;
         }
         .t-row {
@@ -4255,6 +5370,9 @@
           font-size: 11px;
           flex-shrink: 0;
           color: #9ca3af;
+        }
+        .t-row.done .t-chk {
+          color: #10b981;
         }
         .t-row.active .t-chk {
           color: #2563eb;
@@ -4287,6 +5405,12 @@
         }
         .mission-box.dark .t-row.active .t-title {
           color: #fafafa;
+        }
+        .t-row.todo .t-title {
+          color: #6b7280;
+        }
+        .mission-box.dark .t-row.todo .t-title {
+          color: #a1a1aa;
         }
         .t-out {
           margin-left: auto;
@@ -4418,7 +5542,15 @@
       document.documentElement.setAttribute('data-agy-color-mode', isLight ? 'light' : 'dark');
     }
 
-    if (disposed || !globalPrefs.enabled || globalPrefs.lang === 'en' || globalPrefs.bossMode) {
+    if (disposed || !globalPrefs.enabled) {
+      hideMissionHud();
+      return;
+    }
+
+    // Always collect live mission state so reactive wakeup watchdog continues running even when HUD UI is hidden
+    const state = collectLiveSessionMissionState();
+
+    if (globalPrefs.lang === 'en' || globalPrefs.bossMode || globalPrefs.missionHud === false) {
       hideMissionHud();
       return;
     }
@@ -4444,7 +5576,6 @@
       return;
     }
 
-    const state = collectLiveSessionMissionState();
     if (!state.hasData) {
       hideMissionHud();
       return;
@@ -4479,7 +5610,7 @@
         .map((t, idx) => {
           const chk = t.status === 'done' ? '✓' : t.status === 'active' ? '●' : '○';
           const outSpan = t.outcome ? `<span class="t-out">${escapeHtml(t.outcome)}</span>` : '';
-          const numPrefix = /^\d+\./.test(t.title) ? '' : `${idx + 1}. `;
+          const numPrefix = /^\d+\.|^(?:已完成前序|后续待推进)/.test(t.title) ? '' : `${idx + 1}. `;
           return `<div class="t-row ${t.status}"><span class="t-chk">${chk}</span><span class="t-title">${escapeHtml(numPrefix + t.title)}</span>${outSpan}</div>`;
         })
         .join('');
@@ -4491,7 +5622,8 @@
 
     if (missionHudRefs.rtBar) {
       const hasActiveRt = state.activeRuntimes.length > 0;
-      missionHudRefs.rtBar.classList.toggle('visible', hasActiveRt);
+      const hasLiveAct = !hasActiveRt && Boolean(state.currentLiveAction && state.isRunning);
+      missionHudRefs.rtBar.classList.toggle('visible', hasActiveRt || hasLiveAct);
       if (hasActiveRt) {
         const latestRt = state.activeRuntimes[state.activeRuntimes.length - 1];
         if (missionHudRefs.rtText) {
@@ -4499,6 +5631,13 @@
         }
         if (missionHudRefs.rtStatus) {
           missionHudRefs.rtStatus.textContent = latestRt.statusText;
+        }
+      } else if (hasLiveAct) {
+        if (missionHudRefs.rtText) {
+          missionHudRefs.rtText.textContent = `正在执行：${state.currentLiveAction.role}`;
+        }
+        if (missionHudRefs.rtStatus) {
+          missionHudRefs.rtStatus.textContent = state.currentLiveAction.statusText;
         }
       }
     }
@@ -4546,6 +5685,26 @@
       wideSwitch.classList.toggle('bg-secondary', !isWide);
       wideKnob.style.transform = isWide ? 'translateX(24px)' : 'translateX(4px)';
     }
+
+    const thinkSwitch = document.getElementById('agy-settings-think-trans-switch');
+    const thinkKnob = document.getElementById('agy-settings-think-trans-knob');
+    const isThinkTrans = globalPrefs.translateThinking !== false;
+    if (thinkSwitch && thinkKnob) {
+      thinkSwitch.setAttribute('aria-checked', isThinkTrans ? 'true' : 'false');
+      thinkSwitch.classList.toggle('bg-primary', isThinkTrans);
+      thinkSwitch.classList.toggle('bg-secondary', !isThinkTrans);
+      thinkKnob.style.transform = isThinkTrans ? 'translateX(24px)' : 'translateX(4px)';
+    }
+
+    const hudSwitch = document.getElementById('agy-settings-mission-hud-switch');
+    const hudKnob = document.getElementById('agy-settings-mission-hud-knob');
+    const isHudOn = globalPrefs.missionHud !== false;
+    if (hudSwitch && hudKnob) {
+      hudSwitch.setAttribute('aria-checked', isHudOn ? 'true' : 'false');
+      hudSwitch.classList.toggle('bg-primary', isHudOn);
+      hudSwitch.classList.toggle('bg-secondary', !isHudOn);
+      hudKnob.style.transform = isHudOn ? 'translateX(24px)' : 'translateX(4px)';
+    }
   }
 
   function ensureSettingsEnhancementRowsMounted() {
@@ -4560,6 +5719,8 @@
 
     let langRow = document.getElementById('agy-settings-lang-row');
     let wideRow = document.getElementById('agy-settings-wide-row');
+    let thinkRow = document.getElementById('agy-settings-think-trans-row');
+    let hudRow = document.getElementById('agy-settings-mission-hud-row');
 
     if (!langRow || !themeCard.contains(langRow)) {
       if (langRow) langRow.remove();
@@ -4627,6 +5788,66 @@
       }
     }
 
+    if (!thinkRow || !themeCard.contains(thinkRow)) {
+      if (thinkRow) thinkRow.remove();
+      thinkRow = document.createElement('div');
+      thinkRow.id = 'agy-settings-think-trans-row';
+      thinkRow.className = 'py-2 px-3 w-full bg-transparent flex justify-between gap-4 items-center';
+      thinkRow.innerHTML = `
+        <div class="flex-1 flex flex-col gap-0.5">
+          <div class="flex items-center gap-1.5">
+            <span class="text-sm">思考过程按需中文翻译</span>
+          </div>
+          <span class="text-xs text-muted-foreground whitespace-pre-wrap">默认以单行中文摘要静默展示思考状态（零排版跳动），点击展开时自动将思考段落译为中文（支持一键切换英文原稿）。</span>
+        </div>
+        <div class="shrink-0">
+          <button type="button" role="switch" id="agy-settings-think-trans-switch" aria-checked="true" class="relative inline-flex items-center rounded-full transition-colors duration-200 ease-in-out shrink-0 h-6 w-11 bg-primary cursor-pointer">
+            <span id="agy-settings-think-trans-knob" class="inline-block rounded-full bg-white transition-transform duration-200 ease-in-out shadow-sm h-4 w-4" style="transform: translateX(24px);"></span>
+          </button>
+        </div>
+      `;
+      themeCard.appendChild(thinkRow);
+
+      const thinkSwitch = thinkRow.querySelector('#agy-settings-think-trans-switch');
+      if (thinkSwitch) {
+        thinkSwitch.setAttribute('role', 'switch');
+        thinkSwitch.addEventListener('click', () => {
+          patchGlobalPrefs({ translateThinking: globalPrefs.translateThinking === false });
+          applyAllStates();
+        });
+      }
+    }
+
+    if (!hudRow || !themeCard.contains(hudRow)) {
+      if (hudRow) hudRow.remove();
+      hudRow = document.createElement('div');
+      hudRow.id = 'agy-settings-mission-hud-row';
+      hudRow.className = 'py-2 px-3 w-full bg-transparent flex justify-between gap-4 items-center';
+      hudRow.innerHTML = `
+        <div class="flex-1 flex flex-col gap-0.5">
+          <div class="flex items-center gap-1.5">
+            <span class="text-sm">底部任务全局蓝图与实时看板</span>
+          </div>
+          <span class="text-xs text-muted-foreground whitespace-pre-wrap">在输入框上方展示总体施工方向、阶段演进蓝图与当前实时动作（关闭后同时停用后台蓝图归纳请求，看门狗仍常驻运行）。</span>
+        </div>
+        <div class="shrink-0">
+          <button type="button" role="switch" id="agy-settings-mission-hud-switch" aria-checked="true" class="relative inline-flex items-center rounded-full transition-colors duration-200 ease-in-out shrink-0 h-6 w-11 bg-primary cursor-pointer">
+            <span id="agy-settings-mission-hud-knob" class="inline-block rounded-full bg-white transition-transform duration-200 ease-in-out shadow-sm h-4 w-4" style="transform: translateX(24px);"></span>
+          </button>
+        </div>
+      `;
+      themeCard.appendChild(hudRow);
+
+      const hudSwitch = hudRow.querySelector('#agy-settings-mission-hud-switch');
+      if (hudSwitch) {
+        hudSwitch.setAttribute('role', 'switch');
+        hudSwitch.addEventListener('click', () => {
+          patchGlobalPrefs({ missionHud: globalPrefs.missionHud === false });
+          applyAllStates();
+        });
+      }
+    }
+
     syncSettingsEnhancementRowsState();
   }
 
@@ -4656,6 +5877,12 @@
       } catch (e) {}
       activeLlmSummaryAbortCtrl = null;
     }
+    if (activeThinkingTransAbortCtrl) {
+      try {
+        activeThinkingTransAbortCtrl.abort();
+      } catch (e) {}
+      activeThinkingTransAbortCtrl = null;
+    }
     for (const rec of wakeupWatchdogByConvo.values()) {
       if (rec && rec.abortCtrl) {
         try {
@@ -4666,6 +5893,12 @@
       if (rec) rec.rpcInFlight = false;
     }
     llmSummaryInFlight = false;
+    thinkingTransInFlight = false;
+    llmSummaryReqSeq++;
+    thinkingTransReqSeq++;
+    thinkingParaCache.clear();
+    userInputLedgerByConvo.clear();
+    lastBlueprintAttemptTsByConvo.clear();
     if (ringTimer) {
       clearInterval(ringTimer);
       ringTimer = null;
@@ -4677,6 +5910,10 @@
     if (trailingFetchTimer) {
       clearTimeout(trailingFetchTimer);
       trailingFetchTimer = null;
+    }
+    if (thinkingTransRetryTimer) {
+      clearTimeout(thinkingTransRetryTimer);
+      thinkingTransRetryTimer = null;
     }
     if (mutObserver) {
       mutObserver.disconnect();
@@ -4694,12 +5931,28 @@
     restoreNativeTitleBarOverlay();
     removeLegacyFloatingHosts();
 
+    if (document.querySelectorAll) {
+      for (const p of document.querySelectorAll('.agy-think-zh-panel, [id^="agy-stream-"]')) {
+        p.remove();
+      }
+      for (const tb of document.querySelectorAll('button[data-testid="thinking-collapsible-trigger"]')) {
+        tb._agyLocalTransMap = null;
+        tb.removeAttribute('data-agy-user-collapsed');
+        tb.removeAttribute('data-agy-user-expanded');
+        if (tb.nextElementSibling) {
+          tb.nextElementSibling.removeAttribute('data-agy-zh-mode');
+        }
+      }
+    }
+
     for (const id of [
       'agy-enhance-scoped-style',
       'agy-ctx-ring-pill',
       'agy-mission-hud-host',
       'agy-settings-lang-row',
-      'agy-settings-wide-row'
+      'agy-settings-wide-row',
+      'agy-settings-think-trans-row',
+      'agy-settings-mission-hud-row'
     ]) {
       const el = document.getElementById(id);
       if (el) el.remove();
@@ -4794,6 +6047,8 @@
       globalPrefs.lang = 'zh-std';
     }
 
+    abortInactiveEnhancementRpcs();
+
     if (!globalPrefs.enabled) {
       suspendAllActiveConsumers();
       return;
@@ -4814,8 +6069,14 @@
     ensureSettingsEnhancementRowsMounted();
     if (globalPrefs.lang === 'en') {
       if (document.querySelectorAll) {
-        const injected = document.querySelectorAll('[id^="agy-stream-"]');
+        const injected = document.querySelectorAll('.agy-think-zh-panel, [id^="agy-stream-"]');
         for (const el of injected) el.remove();
+        for (const tb of document.querySelectorAll('button[data-testid="thinking-collapsible-trigger"]')) {
+          tb._agyLocalTransMap = null;
+          if (tb.nextElementSibling) {
+            tb.nextElementSibling.removeAttribute('data-agy-zh-mode');
+          }
+        }
       }
       hideMissionHud();
     } else {
@@ -4926,7 +6187,7 @@
       scheduleTokenMetadataRefresh(true);
     }
 
-    const readyReceipt = { status: 'ready', version: VERSION, instanceId };
+    const readyReceipt = { status: 'ready', version: VERSION, buildStamp: BUILD_STAMP, instanceId };
     if (globalThis.__AGY_V3__) {
       globalThis.__AGY_V3__.status = 'ready';
       globalThis.__AGY_V3__.ready = readyReceipt;
@@ -4939,6 +6200,7 @@
   globalThis.__AGY_V3__ = {
     status: 'initializing',
     version: VERSION,
+    buildStamp: BUILD_STAMP,
     instanceId,
     ready: null,
     readyPromise: initPromise,

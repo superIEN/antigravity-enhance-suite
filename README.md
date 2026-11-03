@@ -1,6 +1,6 @@
-# Antigravity Enhance Suite `v3.4.0`
+# Antigravity Enhance Suite `v3.5.0`
 
-一套面向 Google **Antigravity Desktop IDE**（支持 **macOS Apple Silicon `arm64`** 与 **Windows `x86_64`**，`v2.24.0` / `v2.25.0` / `v2.26.0` / `v2.27.0` / `v2.28.0+`）的全栈稳定性增强、桌面端 1M（`983,040` Tokens）上下文窗口真实解锁、后台任务/子智能体响应式唤醒死锁双层根治、会话媒体 `18 MB` 自适应预算守护、防退化 Harness 四大工程护栏与深度专业中文汉化套件。
+一套面向 Google **Antigravity Desktop IDE**（支持 **macOS Apple Silicon `arm64`** 与 **Windows `x86_64`**，`v2.24.0` / `v2.25.0` / `v2.26.0` / `v2.27.0` / `v2.28.0+`）的全栈稳定性增强、桌面端 1M（`983,040` Tokens）上下文窗口真实解锁、后台任务/子智能体响应式唤醒死锁双层根治、思考过程单行摘要与按需展开中文翻译、快慢双层有状态 Mission HUD、会话媒体 `18 MB` 自适应预算守护、防退化 Harness 四大工程护栏与深度专业中文汉化套件。
 
 > 版本演进与更新详情请参阅 [CHANGELOG.md](./CHANGELOG.md) 或仓库 [Releases](https://github.com/superIEN/antigravity-enhance-suite/releases) 页面。
 
