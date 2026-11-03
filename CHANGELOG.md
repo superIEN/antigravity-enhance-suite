@@ -7,17 +7,18 @@
 ## [v3.5.0] - 2026-11-02
 
 ### 新增与优化 (Added & Changed)
-- **思考过程实时流式中文翻译与完成自动折叠（`src/agy-enhance-loader.js`）**：
-  - **流式阶段自动展开与逐段增量翻译**：在模型思考流式生成期间（`Thinking for Xs` / `思考中 · Xs`），自动展开思考面板并将英文思考过程按双换行分段实时翻译为中文，挂载于独立兄弟容器 `.agy-think-zh-panel`（零侵入原生 React/Lexical TextNode）；
-  - **代码/路径占位符保护与尾部节流**：自动保护反引号内联代码、多行代码块与文件/URL 路径免遭机器翻译破坏；已完成段落按哈希缓存仅翻译一次，正在生长的末尾段落采用 `700ms` 停顿防抖（Fallback 字典即时兜底）；
-  - **思考完成自动收起与原文对照**：思考结束（转为 `Thought for Xs` / `思考 · Xs`）且未处于用户手动固定态（`data-agy-user-open="1"`）时自动折叠收起；支持随时点击重新展开，并通过顶栏「查看英文原稿 / 返回中文译文」按钮一键切换对照。
-- **底部任务态势托盘（Mission HUD `#agy-mission-hud-host`）快慢双层架构与防走偏对齐**：
+- **思考过程单行中文摘要默认静默折叠与按需展开中文翻译（`src/agy-enhance-loader.js`，`BUILD_STAMP = 20261102-v3.5.0-hud-think`）**：
+  - **默认单行摘要静默折叠（零自动撑开、零折叠态翻译 RPC）**：思考期间与思考完成后默认保持单行中文定性摘要折叠态（`思考中 · Xs · ...` / `思考 · Xs · ...`），不自动强制撑开思考面板，折叠态下绝不发起后台段落翻译 RPC；
+  - **点击按需展开、React 状态同步与 `<p>` 节点复用**：仅当用户主动点击展开思考块（`data-agy-user-expanded="1"`）时，在原生折叠面板内挂载独立兄弟容器 `.agy-think-zh-panel`（零侵入原生 React/Lexical TextNode），将已完成段落分批译为中文并按 `<p>` 索引原地复用与增量更新 DOM 节点（避免每次全量清空重建已有 `<p>` 节点）；分离当前展开面板译文表（`_agyLocalTransMap`，单面板上限 2,048 段，达上限后超出段落直接展示原文、不再入队请求翻译以杜绝大面板循环淘汰重译）与跨面板 400 条全局缓存（`thinkingParaCache`），并在点击收起时移除译文面板、清理局部缓存及放行原生 `aria-expanded` 收起事件；支持顶栏「查看英文原稿 / 返回中文译文」一键切换对照；
+  - **代码块保排、路径/URL 掩码与防 `$` 替换腐蚀**：在分段与空白归一化前预先保护三反引号多行代码块与单反引号内联代码的原始换行与缩进；`maskCodeAndPathsForTranslation` 同时保护代码块、内联代码、`https?://` URL（支持最多 4 层平衡嵌套括号）、Windows 盘符路径（`C:\...` / `C:/...`）、相对路径（`./` / `../`）及多段（含中英文路径段）/系统根 Unix 路径；`unmaskCodeAndPaths` 采用函数式替换回调 `() => placeholders[i]`，彻底杜绝代码块内含 `$&`、`$` `、`\'`、`$$` 时触发 `String.prototype.replace` 特殊替换模式导致的文本损坏。
+- **底部任务态势托盘（Mission HUD `#agy-mission-hud-host`）快慢双层架构**：
   - **快层（`#m-rt-bar` 实时执行状态条）**：即使阶段列表折叠也常驻显示，以最高优先级实时展示后台运行中命令/子智能体（`activeRuntimes`），无后台任务时实时展示当前思考推演或正在执行的工具动作；
-  - **慢层（`#m-goal` / `#m-task-list` 有状态渐进演化蓝图）**：建立按会话隔离的只追加用户指令账本（`userInputLedgerByConvo`，按 `stepIndex` 去重并过滤看门狗唤醒消息），彻底解决长对话 `stepsInSlice` 滑动窗口截断导致的初始目标遗忘；仅在真正语义边界（新用户指令、思考完成且新增 $\ge 2$ 步、新增 $\ge 6$ 步里程碑或回合静默收尾）演化 2–5 个阶段（`✓ 已完成` / `● 进行中` / `○ 待推进`），并在同一用户轮次内冻结已确认 `done` 的历史阶段（`reconcileBlueprintTasks`），消除蓝图频繁跳变；
-  - **方向偏离检测（`evaluateMissionDrift` -> `#m-align` / `#m-drift-bar`）**：对比用户指令账本路径/文件约束与近期写操作（`edit_file` / `write_file`）及连续工具报错，在顶栏实时呈现 `✓ 方向一致` 或 `⚠️ 疑似走偏` 胶囊及原因提示条。
-- **原生 `设置 -> 外观`（`Settings -> Appearance`）双开关与全链路持久化**：
-  - 新增 `translateThinking`（**思考过程实时中文翻译**）与 `missionHud`（**底部任务全局蓝图与实时看板**）两项独立开关，同步接入 `src/build_asar.py` 与 `src/asar_inject_and_rollback.py` 的 `DEFAULT_AGY_PREFS`、磁盘加载白名单与 `validateGlobalPatch` IPC 校验，关闭 `missionHud` 视图时后台响应式唤醒看门狗依旧常驻运行；
-  - 新增 `tests/verify_loader_sandbox.mjs` **Gate 10** 沙箱回归测试（覆盖流式思考中译、生命周期自动折叠、用户指令账本防滑窗丢失、阶段冻结、走偏告警与双开关热切换，**10 / 10 全部通过**）。
+  - **慢层（`#m-goal` / `#m-task-list` 有状态渐进演化蓝图）**：建立按会话隔离且带双层容量上限（最多 24 会话、单会话保留初始指令 + 最近 31 条共 32 条）的只追加用户指令账本（`userInputLedgerByConvo`），同时为 `llmSummaryCacheByConvo` 施加 24 会话容量淘汰，彻底解决长对话 `stepsInSlice` 滑动窗口截断导致的初始目标遗忘；
+  - **动作极性防误吞与滑窗折叠保具体 `active`（`reconcileBlueprintTasks`）**：引入五类动作极性（`explore` 排查调研 / `design` 设计规划 / `implement` 修改实现 / `remove` 移除清理 / `verify` 验证部署）、区分句中定语（如“未完成接口”）与句首谓语否定（如“未完成修复”）的否定签名守卫及分句级极性序列（`extractClausePolaritySequence`），拒绝按单字重合度盲目合并反向或复合动作；移除单次返回前置截断，当单次或累积阶段超过 5 项时，始终独立保留具体 `active` 阶段行（绝不将 `active` 折入汇总行），仅将最早已完成的 `done` 阶段折叠为首行汇总项（`已完成前序 N 个阶段（含...等）`）及尾部多余 `todo` 阶段折叠为 `后续待推进 N 个阶段（含...等）`，且不在回合静默收尾时强行将 `active` 改写为 `done`。
+- **原生 `设置 -> 外观`（`Settings -> Appearance`）双开关与全链路门控**：
+  - 新增 `translateThinking`（**思考过程按需中文翻译**）与 `missionHud`（**底部任务全局蓝图与实时看板**）两项独立开关，同步接入 `src/build_asar.py` 与 `src/asar_inject_and_rollback.py` 的 `DEFAULT_AGY_PREFS`、磁盘加载白名单与 `validateGlobalPatch` IPC 校验；
+  - 统一通过 `abortInactiveEnhancementRpcs()` 在本地切换开关、切换英文（`lang === 'en'`）、开启 Boss Mode 或跨窗口偏好广播时立即中止在途 `activeLlmSummaryAbortCtrl` / `activeThinkingTransAbortCtrl` 请求并严格校验单飞锁释放归属，同时保持后台响应式唤醒看门狗常驻运行；
+  - 新增 `tests/verify_loader_sandbox.mjs` **Gate 10** 沙箱回归测试（全面覆盖默认折叠零 RPC、点击展开/收起与 `aria-expanded` 同步、多行代码块换行缩进保留、`$ ` 替换防腐蚀、URL/Windows/Unix 路径掩码、401 段超长思考无循环重译、全路径在途请求取消与单飞锁防竞态、动作/否定极性防误吞及单次/多轮超 5 项滑窗折叠，**10 / 10 全部通过**）。
 
 ---
 

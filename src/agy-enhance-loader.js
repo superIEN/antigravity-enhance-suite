@@ -9,7 +9,7 @@
  */
 (function () {
   const VERSION = '3.6.0-macos-merged';
-  const BUILD_STAMP = '20261102-v3.7-hud-think';
+  const BUILD_STAMP = '20261102-v3.5.0-hud-think';
 
   if (
     globalThis.__AGY_V3__ &&
@@ -261,8 +261,49 @@
 
   let prefUpdateChain = Promise.resolve();
 
+  function abortInactiveEnhancementRpcs() {
+    const hudDisabled =
+      disposed ||
+      !globalPrefs.enabled ||
+      globalPrefs.missionHud === false ||
+      globalPrefs.lang === 'en' ||
+      Boolean(globalPrefs.bossMode);
+    if (hudDisabled) {
+      if (activeLlmSummaryAbortCtrl) {
+        try {
+          activeLlmSummaryAbortCtrl.abort();
+        } catch (e) {}
+        activeLlmSummaryAbortCtrl = null;
+      }
+      llmSummaryInFlight = false;
+      llmSummaryReqSeq++;
+    }
+
+    const thinkTransDisabled =
+      disposed ||
+      !globalPrefs.enabled ||
+      globalPrefs.translateThinking === false ||
+      globalPrefs.lang === 'en' ||
+      Boolean(globalPrefs.bossMode);
+    if (thinkTransDisabled) {
+      if (activeThinkingTransAbortCtrl) {
+        try {
+          activeThinkingTransAbortCtrl.abort();
+        } catch (e) {}
+        activeThinkingTransAbortCtrl = null;
+      }
+      thinkingTransInFlight = false;
+      thinkingTransReqSeq++;
+      if (thinkingTransRetryTimer) {
+        clearTimeout(thinkingTransRetryTimer);
+        thinkingTransRetryTimer = null;
+      }
+    }
+  }
+
   function patchGlobalPrefs(patch) {
     Object.assign(globalPrefs, patch);
+    abortInactiveEnhancementRpcs();
     try {
       window.localStorage.setItem('agy.v3.globalPrefs', JSON.stringify(globalPrefs));
     } catch (e) {}
@@ -1643,13 +1684,12 @@
         flex-shrink: 0;
       }
 
-      /* Stream Qualitative UX Inline Enhancements (Minimalist Codex-like Style + Streaming Zh Thinking) */
-      button[data-testid="thinking-collapsible-trigger"]:not([data-agy-user-expanded="1"]):not([data-agy-auto-streaming="1"]) + div,
+      /* Stream Qualitative UX Inline Enhancements (Minimalist Codex-like Style + On-Demand Zh Thinking) */
+      button[data-testid="thinking-collapsible-trigger"]:not([data-agy-user-expanded="1"]) + div,
       button[data-testid="tool-group-collapsible"] + div {
         display: none !important;
       }
       button[data-testid="thinking-collapsible-trigger"][data-agy-user-expanded="1"][aria-expanded="true"] + div,
-      button[data-testid="thinking-collapsible-trigger"][data-agy-auto-streaming="1"][aria-expanded="true"] + div,
       button[data-testid="tool-group-collapsible"][data-agy-user-expanded="1"][aria-expanded="true"] + div {
         display: block !important;
       }
@@ -1659,7 +1699,6 @@
         transition: transform 0.15s ease !important;
       }
       button[data-testid="thinking-collapsible-trigger"][data-agy-user-expanded="1"][aria-expanded="true"] svg:last-child,
-      button[data-testid="thinking-collapsible-trigger"][data-agy-auto-streaming="1"][aria-expanded="true"] svg:last-child,
       button[data-testid="tool-group-collapsible"][data-agy-user-expanded="1"][aria-expanded="true"] svg:last-child {
         transform: rotate(90deg) !important;
       }
@@ -2998,26 +3037,35 @@
     return '';
   }
 
-  // Thinking translation cache & single-flight state
+  // Thinking translation cache & on-demand single-flight state (Option A: default collapsed, translate on user expand)
   const thinkingParaCache = new Map();
-  const thinkingTailStateByUid = new Map();
   let activeThinkingTransAbortCtrl = null;
   let thinkingTransInFlight = false;
   let thinkingTransReqSeq = 0;
-  let thinkingTailTimer = null;
   let thinkingTransRetryTimer = null;
   let lastThinkingTransFailTs = 0;
 
+  const PATH_AND_URL_MASK_REGEX =
+    /https?:\/\/(?:[^\s`"'<>()]+|\((?:[^\s`"'<>()]+|\((?:[^\s`"'<>()]+|\((?:[^\s`"'<>()]+|\([^\s`"'<>()]*\))*\))*\))*\))+(?<![.,;:!?，。；：！？])|(?:[A-Za-z]:[\\\/]|\.{1,2}[\\\/])[^\s`"'<>()，。；：！？]+(?<![.,;:!?])|(?:^|(?<=[\s([{"'，。：；]))\/(?:(?:[A-Za-z0-9._\-\u4e00-\u9fff]+(?:\/[A-Za-z0-9._\-\u4e00-\u9fff]+)+)|(?:etc|tmp|var|opt|usr|bin|sbin|dev|proc|sys|root|home|mnt|srv|data|media|run|boot|lib|lib64|snap|docker|workspace|work|repo|code|src|dist|build|out|logs|config|cache|app|Users|Applications|Volumes|System|Library|private)\b(?:\/[^\s`"'<>()，。；：！？]*)?)(?<![.,;:!?])/g;
+
   function normalizeThinkingParagraph(p) {
-    return stripBackendTags(String(p || '')).replace(/\s+/g, ' ').trim();
+    const raw = String(p || '').replace(/\r\n/g, '\n');
+    const codeBlocks = [];
+    const withProtectedCode = raw.replace(/```[\s\S]*?(?:```|$)|`[^`\n]+`/g, (m) => {
+      const tok = `__AGY_NORM_CODE_${codeBlocks.length}__`;
+      codeBlocks.push(m);
+      return tok;
+    });
+    const collapsed = stripBackendTags(withProtectedCode);
+    if (!collapsed) return '';
+    return collapsed.replace(/__AGY_NORM_CODE_(\d+)__/g, (_, idx) => codeBlocks[Number(idx)] ?? '');
   }
 
   function isAlreadyChineseParagraph(p) {
     const stripped = String(p || '')
       .replace(/```[\s\S]*?(?:```|$)/g, '')
       .replace(/`[^`]*`/g, '')
-      .replace(/https?:\/\/\S+/g, '')
-      .replace(/[A-Za-z]:\\[^\s`"'<>]+|\/(?:Users|var|tmp|etc|home|opt|src|dist|tests)\/[^\s`"'<>]+/g, '');
+      .replace(PATH_AND_URL_MASK_REGEX, '');
     const hanziMatches = stripped.match(/[\u4e00-\u9fff]/g) || [];
     const hanziCount = hanziMatches.length;
     const englishWords = stripped.match(/\b[A-Za-z]{3,}\b/g) || [];
@@ -3037,27 +3085,34 @@
     let masked = String(text || '');
     masked = masked.replace(/```[\s\S]*?(?:```|$)/g, (m) => put(m));
     masked = masked.replace(/`[^`\n]+`/g, (m) => put(m));
-    masked = masked.replace(
-      /[A-Za-z]:\\[^\s`"'<>()]+|\/(?:Users|var|tmp|etc|home|opt|src|dist|tests)\/[^\s`"'<>()]+/g,
-      (m) => put(m)
-    );
+    masked = masked.replace(PATH_AND_URL_MASK_REGEX, (m) => put(m));
     return { masked, placeholders };
   }
 
   function unmaskCodeAndPaths(translated, placeholders) {
     let out = String(translated || '');
     for (let i = 0; i < placeholders.length; i++) {
-      out = out.replace(new RegExp(`__AGY_PH_${i}__`, 'g'), placeholders[i]);
+      out = out.replace(new RegExp(`__AGY_PH_${i}__`, 'g'), () => placeholders[i]);
     }
     return out;
   }
 
   function splitThinkingIntoParagraphs(rawThinking, isStreaming) {
     const normalized = String(rawThinking || '').replace(/\r\n/g, '\n');
-    const endsWithBlankLine = /\n\s*\n\s*$/.test(normalized);
-    const parts = normalized
+    const fences = [];
+    const fenceProtected = normalized.replace(/```[\s\S]*?(?:```|$)/g, (m) => {
+      const tok = `__AGY_SPLIT_FENCE_${fences.length}__`;
+      fences.push(m);
+      return tok;
+    });
+    const endsWithBlankLine = /\n\s*\n\s*$/.test(fenceProtected);
+    const parts = fenceProtected
       .split(/\n\s*\n/)
-      .map((s) => stripBackendTags(s).trim())
+      .map((s) =>
+        stripBackendTags(s)
+          .replace(/__AGY_SPLIT_FENCE_(\d+)__/g, (_, idx) => fences[Number(idx)] ?? '')
+          .trim()
+      )
       .filter((s) => s.length > 0);
     if (parts.length === 0) {
       return { completed: [], tail: '' };
@@ -3108,11 +3163,12 @@
     return false;
   }
 
-  function triggerThinkingParagraphsTranslation(paragraphsToTranslate) {
+  function triggerThinkingParagraphsTranslation(paragraphsToTranslate, targetLocalMap) {
     if (
       disposed ||
       !globalPrefs.enabled ||
       globalPrefs.lang === 'en' ||
+      globalPrefs.bossMode ||
       globalPrefs.translateThinking === false ||
       !Array.isArray(paragraphsToTranslate) ||
       paragraphsToTranslate.length === 0
@@ -3126,8 +3182,7 @@
       return;
     }
 
-    // Blueprint summarization has priority over thinking translation; retry shortly if blueprint is in flight
-    if (llmSummaryInFlight || thinkingTransInFlight) {
+    if (thinkingTransInFlight) {
       if (!thinkingTransRetryTimer) {
         thinkingTransRetryTimer = setTimeout(() => {
           thinkingTransRetryTimer = null;
@@ -3145,8 +3200,25 @@
       '';
     if (!csrf) return;
 
-    const batch = paragraphsToTranslate.slice(0, 3);
-    const maskedBatch = batch.map((normText) => {
+    const inFlightSet =
+      targetLocalMap instanceof Map
+        ? targetLocalMap._inFlightSet instanceof Set
+          ? targetLocalMap._inFlightSet
+          : (targetLocalMap._inFlightSet = new Set())
+        : null;
+    const filteredToTranslate = [];
+    for (const normText of paragraphsToTranslate) {
+      if (filteredToTranslate.length >= 8) break;
+      if (targetLocalMap instanceof Map) {
+        if (targetLocalMap.has(normText) || inFlightSet.has(normText)) continue;
+        if (targetLocalMap.size + inFlightSet.size + filteredToTranslate.length >= 2048) break;
+      }
+      filteredToTranslate.push(normText);
+    }
+    if (filteredToTranslate.length === 0) return;
+
+    const maskedBatch = filteredToTranslate.map((normText) => {
+      if (inFlightSet) inFlightSet.add(normText);
       const { masked, placeholders } = maskCodeAndPathsForTranslation(normText);
       return { normText, masked, placeholders };
     });
@@ -3159,7 +3231,7 @@
     const timer = setTimeout(() => ctrl.abort(), 10000);
 
     const prompt = [
-      '你是一个专业精准的计算机与学术双语实时翻译器。请将以下 JSON 数组中的英文思考推理段落逐段忠实流畅地翻译为简体中文。',
+      '你是一个专业精准的计算机与学术双语翻译器。请将以下 JSON 数组中的英文思考推理段落逐段忠实流畅地翻译为简体中文。',
       '硬性规则：1) 严禁修改任何形如 __AGY_PH_0__ 的占位符，必须原样保留在译文对应位置；2) 保持原意，不要添加总结套话；3) 仅输出严格合法的 JSON 对象，格式为 {"translations":["第一段中文译文","第二段中文译文"]}，数组长度必须与输入完全一致。',
       '待译段落 JSON：',
       JSON.stringify(maskedBatch.map((b) => b.masked))
@@ -3208,15 +3280,27 @@
           lastThinkingTransFailTs = 0;
           for (let i = 0; i < maskedBatch.length; i++) {
             const item = maskedBatch[i];
+            if (inFlightSet) inFlightSet.delete(item.normText);
             const rawTr = typeof transArr[i] === 'string' ? transArr[i].trim() : '';
-            if (rawTr) {
+            if (rawTr && item.normText.length <= 2400) {
               const restored = unmaskCodeAndPaths(rawTr, item.placeholders);
-              if (thinkingParaCache.size > 600) {
+              if (
+                targetLocalMap instanceof Map &&
+                (targetLocalMap.has(item.normText) ||
+                  targetLocalMap.size + ( inFlightSet ? inFlightSet.size : 0 ) < 2048)
+              ) {
+                targetLocalMap.set(item.normText, restored);
+              }
+              if (thinkingParaCache.size >= 400 && !thinkingParaCache.has(item.normText)) {
                 const firstKey = thinkingParaCache.keys().next().value;
                 if (firstKey !== undefined) thinkingParaCache.delete(firstKey);
               }
               thinkingParaCache.set(item.normText, restored);
             }
+          }
+          if (activeThinkingTransAbortCtrl === ctrl) {
+            activeThinkingTransAbortCtrl = null;
+            thinkingTransInFlight = false;
           }
           if (!disposed && globalPrefs.enabled && globalPrefs.translateThinking !== false) {
             enhanceConversationStreamDOM();
@@ -3230,10 +3314,15 @@
         }
       } finally {
         clearTimeout(timer);
+        if (inFlightSet) {
+          for (const item of maskedBatch) {
+            inFlightSet.delete(item.normText);
+          }
+        }
         if (activeThinkingTransAbortCtrl === ctrl) {
           activeThinkingTransAbortCtrl = null;
+          thinkingTransInFlight = false;
         }
-        thinkingTransInFlight = false;
       }
     })();
   }
@@ -3247,71 +3336,82 @@
     let panel = bodyDiv.querySelector(`#${panelId}`) || bodyDiv.querySelector('.agy-think-zh-panel');
 
     if (globalPrefs.translateThinking === false || globalPrefs.lang === 'en' || globalPrefs.bossMode) {
+      tb._agyLocalTransMap = null;
       bodyDiv.removeAttribute('data-agy-zh-mode');
       if (panel) panel.remove();
       return;
     }
 
+    const isVisibleNow =
+      tb.getAttribute('data-agy-user-expanded') === '1' &&
+      tb.getAttribute('aria-expanded') === 'true';
+
+    // Option A: Only mount panel & trigger translation when the user has explicitly expanded this thinking block
+    if (!isVisibleNow) {
+      tb._agyLocalTransMap = null;
+      bodyDiv.removeAttribute('data-agy-zh-mode');
+      if (panel) panel.remove();
+      return;
+    }
+
+    if (!(tb._agyLocalTransMap instanceof Map)) {
+      tb._agyLocalTransMap = new Map();
+    }
+    const localTransMap = tb._agyLocalTransMap;
+    if (!(localTransMap._inFlightSet instanceof Set)) {
+      localTransMap._inFlightSet = new Set();
+    }
+    const inFlightSet = localTransMap._inFlightSet;
+
     const { completed, tail } = splitThinkingIntoParagraphs(rawThinking, isStreaming);
     if (completed.length === 0 && !tail) return;
 
     const pendingToTranslate = [];
+    const pendingSet = new Set();
     const renderedParagraphs = [];
+    const hasPanelBudget = () => localTransMap.size + inFlightSet.size + pendingSet.size < 2048;
 
     for (const p of completed) {
       const norm = normalizeThinkingParagraph(p);
       if (!norm) continue;
       if (isAlreadyChineseParagraph(norm)) {
         renderedParagraphs.push({ text: norm, isZh: true, isTail: false });
-      } else if (thinkingParaCache.has(norm)) {
-        renderedParagraphs.push({ text: thinkingParaCache.get(norm), isZh: true, isTail: false });
+      } else if (localTransMap.has(norm)) {
+        renderedParagraphs.push({ text: localTransMap.get(norm), isZh: true, isTail: false });
+      } else if (!inFlightSet.has(norm) && hasPanelBudget() && thinkingParaCache.has(norm)) {
+        const cachedTr = thinkingParaCache.get(norm);
+        localTransMap.set(norm, cachedTr);
+        renderedParagraphs.push({ text: cachedTr, isZh: true, isTail: false });
       } else {
-        pendingToTranslate.push(norm);
+        if (norm.length <= 2400 && !inFlightSet.has(norm) && !pendingSet.has(norm) && hasPanelBudget()) {
+          pendingSet.add(norm);
+          pendingToTranslate.push(norm);
+        }
         renderedParagraphs.push({ text: norm, isZh: false, isTail: false });
       }
     }
 
-    let tailReadyForTrans = false;
     if (tail) {
       const normTail = normalizeThinkingParagraph(tail);
       if (normTail) {
         if (isAlreadyChineseParagraph(normTail)) {
           renderedParagraphs.push({ text: normTail, isZh: true, isTail: true });
+        } else if (localTransMap.has(normTail)) {
+          renderedParagraphs.push({ text: localTransMap.get(normTail), isZh: true, isTail: true });
         } else if (thinkingParaCache.has(normTail)) {
-          renderedParagraphs.push({ text: thinkingParaCache.get(normTail), isZh: true, isTail: true });
-        } else {
-          const now = Date.now();
-          let tailSt = thinkingTailStateByUid.get(uid);
-          if (!tailSt || tailSt.text !== normTail) {
-            tailSt = { text: normTail, changedAt: now };
-            thinkingTailStateByUid.set(uid, tailSt);
-            if (thinkingTailTimer) {
-              clearTimeout(thinkingTailTimer);
-            }
-            thinkingTailTimer = setTimeout(() => {
-              thinkingTailTimer = null;
-              if (!disposed && globalPrefs.enabled && globalPrefs.translateThinking !== false) {
-                enhanceConversationStreamDOM();
-              }
-            }, 720);
-          } else if (normTail.length >= 40 && now - tailSt.changedAt >= 700) {
-            tailReadyForTrans = true;
-            pendingToTranslate.push(normTail);
+          const cachedTailTr = thinkingParaCache.get(normTail);
+          if (!inFlightSet.has(normTail) && !pendingSet.has(normTail) && hasPanelBudget()) {
+            localTransMap.set(normTail, cachedTailTr);
           }
+          renderedParagraphs.push({ text: cachedTailTr, isZh: true, isTail: true });
+        } else {
           renderedParagraphs.push({ text: normTail, isZh: false, isTail: true });
         }
       }
-    } else {
-      thinkingTailStateByUid.delete(uid);
     }
 
-    const isVisibleNow =
-      (tb.getAttribute('data-agy-user-expanded') === '1' ||
-        (tb.getAttribute('data-agy-auto-streaming') === '1' && tb.getAttribute('data-agy-user-collapsed') !== '1')) &&
-      tb.getAttribute('aria-expanded') === 'true';
-
-    if (isVisibleNow && pendingToTranslate.length > 0 && (completed.length > 0 || tailReadyForTrans)) {
-      triggerThinkingParagraphsTranslation(pendingToTranslate);
+    if (pendingToTranslate.length > 0) {
+      triggerThinkingParagraphsTranslation(pendingToTranslate, localTransMap);
     }
 
     if (!bodyDiv.getAttribute('data-agy-zh-mode')) {
@@ -3364,11 +3464,7 @@
     }
     const statusEl = panel.querySelector('.agy-think-zh-status');
     if (statusEl) {
-      const desiredStatus = isStreaming
-        ? pendingToTranslate.length > 0
-          ? '思考过程实时中文同传中…'
-          : '思考过程实时中文展示中'
-        : '思考过程中文译文';
+      const desiredStatus = pendingToTranslate.length > 0 ? '正在翻译思考段落…' : '思考过程中文译文';
       if (statusEl.textContent !== desiredStatus) {
         statusEl.textContent = desiredStatus;
       }
@@ -3386,12 +3482,26 @@
       const sig = renderedParagraphs.map((rp) => `${rp.isZh ? '1' : '0'}:${rp.text}`).join('\n---\n');
       if (contentBox.getAttribute('data-sig') !== sig) {
         contentBox.setAttribute('data-sig', sig);
-        contentBox.textContent = '';
-        for (const rp of renderedParagraphs) {
-          const pEl = document.createElement('p');
-          pEl.className = rp.isTail && !rp.isZh ? 'agy-think-zh-para tail-raw' : 'agy-think-zh-para';
-          pEl.textContent = rp.text;
-          contentBox.appendChild(pEl);
+        const existingPs = contentBox.children
+          ? Array.from(contentBox.children)
+          : Array.from(contentBox.childNodes || []);
+        while (existingPs.length > renderedParagraphs.length) {
+          const rem = existingPs.pop();
+          if (rem && typeof rem.remove === 'function') rem.remove();
+        }
+        for (let i = 0; i < renderedParagraphs.length; i++) {
+          const rp = renderedParagraphs[i];
+          const wantClass = rp.isTail && !rp.isZh ? 'agy-think-zh-para tail-raw' : 'agy-think-zh-para';
+          let pEl = existingPs[i];
+          if (!pEl) {
+            pEl = document.createElement('p');
+            pEl.className = wantClass;
+            pEl.textContent = rp.text;
+            contentBox.appendChild(pEl);
+          } else {
+            if (pEl.className !== wantClass) pEl.className = wantClass;
+            if (pEl.textContent !== rp.text) pEl.textContent = rp.text;
+          }
         }
       }
     }
@@ -3407,24 +3517,16 @@
 
     const reactExpanded = btn.getAttribute('aria-expanded') === 'true';
     const isUserExpanded = btn.getAttribute('data-agy-user-expanded') === '1';
-    const isAutoStreaming =
-      btn.getAttribute('data-agy-auto-streaming') === '1' &&
-      btn.getAttribute('data-agy-user-collapsed') !== '1';
-    const isCurrentlyVisible =
-      (isUserExpanded || isAutoStreaming) &&
-      reactExpanded &&
-      Boolean(btn.nextElementSibling);
+    const isCurrentlyVisible = isUserExpanded && reactExpanded && Boolean(btn.nextElementSibling);
     const wantExpand = !isCurrentlyVisible;
 
     if (wantExpand) {
-      btn.removeAttribute('data-agy-user-collapsed');
       btn.setAttribute('data-agy-user-expanded', '1');
       if (btn.nextElementSibling) {
         btn.nextElementSibling.style.removeProperty('display');
       }
       if (reactExpanded) {
-        // React already mounted the body div (e.g. while actively streaming/running);
-        // stop propagation so neither legacy element listeners nor React unmount it.
+        // React already mounted the body div; stop propagation so neither legacy element listeners nor React unmount it.
         e.stopImmediatePropagation();
         e.stopPropagation();
         enhanceConversationStreamDOM();
@@ -3441,16 +3543,24 @@
       }
     } else {
       btn.removeAttribute('data-agy-user-expanded');
-      if (btn.getAttribute('data-agy-auto-streaming') === '1') {
-        btn.setAttribute('data-agy-user-collapsed', '1');
-        btn.removeAttribute('data-agy-auto-streaming');
-      }
+      btn._agyLocalTransMap = null;
       if (btn.nextElementSibling) {
         btn.nextElementSibling.style.removeProperty('display');
+        btn.nextElementSibling.removeAttribute('data-agy-zh-mode');
+        const oldPanel = btn.nextElementSibling.querySelector('.agy-think-zh-panel');
+        if (oldPanel) oldPanel.remove();
       }
-      if (reactExpanded) {
+      if (!reactExpanded) {
+        // React is already collapsed; stop propagation so React does not toggle it back to expanded.
         e.stopImmediatePropagation();
         e.stopPropagation();
+      } else {
+        // React is currently expanded (aria-expanded="true"); allow the click to reach React so
+        // React flips aria-expanded="false" and unmounts the body div naturally.
+        queueMicrotask(() => {
+          btn.removeAttribute('data-agy-user-expanded');
+          enhanceConversationStreamDOM();
+        });
       }
     }
   }
@@ -3497,7 +3607,7 @@
       }
     }
 
-    // Codex-style thinking headers: auto-expanded with live Chinese translation while streaming, auto-collapsed on completion, 1-click expandable anytime
+    // Codex-style thinking headers: default single-line qualitative summary (collapsed), on-demand Chinese translation when expanded
     const thinkBtns = document.querySelectorAll('button[data-testid="thinking-collapsible-trigger"]');
     let thinkIdx = 0;
     for (const tb of thinkBtns) {
@@ -3527,19 +3637,6 @@
         stepHolder?.step?.step?.value?.thinking ||
         '';
       const isStreamingNow = isThinkingTriggerActivelyStreaming(tb, stepHolder?.step);
-
-      if (globalPrefs.translateThinking === false || globalPrefs.lang === 'en' || globalPrefs.bossMode) {
-        tb.removeAttribute('data-agy-auto-streaming');
-      } else if (isStreamingNow) {
-        if (tb.getAttribute('data-agy-user-collapsed') !== '1') {
-          tb.setAttribute('data-agy-auto-streaming', '1');
-        }
-      } else {
-        if (tb.getAttribute('data-agy-auto-streaming') !== null) {
-          tb.removeAttribute('data-agy-auto-streaming');
-        }
-        tb.removeAttribute('data-agy-user-collapsed');
-      }
 
       if (rawThinkingText) {
         let nextToolDesc = '';
@@ -4009,6 +4106,10 @@
     if (!ledger) {
       ledger = new Map();
       userInputLedgerByConvo.set(cid, ledger);
+      if (userInputLedgerByConvo.size > 24) {
+        const oldestKey = userInputLedgerByConvo.keys().next().value;
+        if (oldestKey) userInputLedgerByConvo.delete(oldestKey);
+      }
     }
     for (let i = 0; i < allSteps.length; i++) {
       const s = allSteps[i];
@@ -4023,7 +4124,16 @@
         });
       }
     }
-    const entries = Array.from(ledger.values()).sort((a, b) => a.stepIndex - b.stepIndex);
+    let entries = Array.from(ledger.values()).sort((a, b) => a.stepIndex - b.stepIndex);
+    // Bound per-conversation ledger to at most 32 entries (always preserving the initial instruction at entries[0] + latest 31)
+    if (entries.length > 32) {
+      const kept = [entries[0], ...entries.slice(-31)];
+      ledger.clear();
+      for (const item of kept) {
+        ledger.set(item.stepIndex, item);
+      }
+      entries = kept;
+    }
     const latest = entries.length > 0 ? entries[entries.length - 1] : null;
     return {
       entries,
@@ -4048,6 +4158,54 @@
     return lines;
   }
 
+  const ACTION_POLARITY_BUCKETS = [
+    { bucket: 'explore', re: /(?:排查|检索|调研|勘察|阅读|读取|分析|检查|审计|定位|梳理|盘点|查看)/ },
+    { bucket: 'design', re: /(?:设计|规划|起草|构思|拟定|讨论方案|制定)/ },
+    {
+      bucket: 'implement',
+      re: /(?:修复|修改|实现|编写|重构|升级|新增|写入|替换|优化|装配|注入|创建|添加|开启|启用|挂载)/
+    },
+    { bucket: 'remove', re: /(?:移除|删除|清理|清除|卸载|回滚|撤销|禁用|停用|关闭|剥离|废弃|隐藏)/ },
+    { bucket: 'verify', re: /(?:验证|测试|复核|回归|验收|核查|打包|部署|提交|存档|推送|发布)/ }
+  ];
+
+  function extractNegationSignature(str) {
+    const cleaned = String(str || '')
+      .replace(
+        /(?<!^)(?<!^[，,；;、\s])未完成(?!$)(?![，,；;、])(?!\s*(?:修复|修改|实现|编写|重构|升级|验证|测试|部署|清理|删除|移除|排查|分析|检查))/g,
+        ''
+      )
+      .replace(/未知|未定义|未决|未初始化|不同|不一致|不变量|不可或缺|不间断/g, '');
+    const matches = cleaned.match(/禁止|不要|不得|切勿|无需|不用|跳过|取消|不予|勿|不|未/g) || [];
+    return matches.join('|');
+  }
+
+  function classifyStageActionBucket(title) {
+    const s = String(title || '');
+    const buckets = [];
+    for (const item of ACTION_POLARITY_BUCKETS) {
+      if (item.re.test(s)) buckets.push(item.bucket);
+    }
+    return buckets.join('|');
+  }
+
+  function extractClausePolaritySequence(title) {
+    const clauses = String(title || '')
+      .split(/[，,；;、]|(?:以及|并且|同时|并|及|且|与|和|再|后|然后)/)
+      .map((c) => c.trim())
+      .filter(Boolean);
+    const seq = [];
+    for (const cl of clauses) {
+      const negSig = extractNegationSignature(cl);
+      const b = classifyStageActionBucket(cl);
+      const coreLead = cl
+        .replace(/^(?:已|正|在|待|先|再|禁止|不要|不得|切勿|无需|不用|跳过|取消|不予|勿|不|未)+/, '')
+        .slice(0, 2);
+      seq.push(`${negSig ? '!' + negSig : '+'}:${b || coreLead}`);
+    }
+    return seq.join('>');
+  }
+
   function computeTitleOverlapRatio(a, b) {
     const s1 = String(a || '').replace(/^\d+\.\s*/, '').trim();
     const s2 = String(b || '').replace(/^\d+\.\s*/, '').trim();
@@ -4062,7 +4220,37 @@
     return common / Math.max(1, Math.min(set1.size, set2.size));
   }
 
-  function reconcileBlueprintTasks(prevCache, nextTasks, latestUserStepIndex, isRunningNow, turnCompletedQuietly) {
+  function isSameStageTask(titleA, titleB, threshold = 0.68) {
+    const s1 = String(titleA || '').replace(/^\d+\.\s*/, '').trim();
+    const s2 = String(titleB || '').replace(/^\d+\.\s*/, '').trim();
+    if (!s1 || !s2) return false;
+    if (s1 === s2) return true;
+    // Never merge a folded summary row with normal stage rows
+    const isFolded1 = /^(?:已完成前序|后续待推进)\s*\d+\s*个阶段/.test(s1);
+    const isFolded2 = /^(?:已完成前序|后续待推进)\s*\d+\s*个阶段/.test(s2);
+    if (isFolded1 || isFolded2) {
+      return isFolded1 && isFolded2 && s1.slice(0, 5) === s2.slice(0, 5);
+    }
+    // Negation signature guard (ignores mid-clause noun modifiers like "未完成接口" while preserving predicate & clause-scoped negations)
+    if (extractNegationSignature(s1) !== extractNegationSignature(s2)) {
+      return false;
+    }
+    if (extractClausePolaritySequence(s1) !== extractClausePolaritySequence(s2)) {
+      return false;
+    }
+    // Action polarity guard: require identical non-empty action bucket whenever leading 2-char verb differs
+    const b1 = classifyStageActionBucket(s1);
+    const b2 = classifyStageActionBucket(s2);
+    if (b1 !== b2) {
+      return false;
+    }
+    if (!b1 && s1.slice(0, 2) !== s2.slice(0, 2)) {
+      return false;
+    }
+    return computeTitleOverlapRatio(s1, s2) >= threshold;
+  }
+
+  function reconcileBlueprintTasks(prevCache, nextTasks, latestUserStepIndex, isRunningNow) {
     const isSameUserTurn =
       Boolean(prevCache) &&
       Array.isArray(prevCache.tasks) &&
@@ -4080,7 +4268,8 @@
             status: 'done',
             title: pt.title,
             outcome: pt.outcome || '已完成',
-            doneCount: (pt.doneCount || 1) + 1
+            doneCount: (pt.doneCount || 1) + 1,
+            foldedCount: pt.foldedCount || 1
           });
         } else {
           break;
@@ -4091,15 +4280,21 @@
       merged = [...frozenDone];
 
       for (const nt of nextTasks) {
-        const dupFrozen = frozenDone.some((fd) => computeTitleOverlapRatio(fd.title, nt.title) >= 0.65);
+        if (
+          /^已完成前序\s*\d+\s*个阶段/.test(nt.title) &&
+          frozenDone.some((fd) => /^已完成前序\s*\d+\s*个阶段/.test(fd.title))
+        ) {
+          continue;
+        }
+        const dupFrozen = frozenDone.some((fd) => isSameStageTask(fd.title, nt.title, 0.68));
         if (dupFrozen) continue;
 
         let finalTitle = nt.title;
-        if (prevActive && computeTitleOverlapRatio(prevActive.title, nt.title) >= 0.58) {
+        if (nt.status === 'active' && prevActive && isSameStageTask(prevActive.title, nt.title, 0.82)) {
           finalTitle = prevActive.title;
         }
 
-        const prevMatch = prevTasks.find((pt) => computeTitleOverlapRatio(pt.title, finalTitle) >= 0.65);
+        const prevMatch = prevTasks.find((pt) => isSameStageTask(pt.title, finalTitle, 0.68));
         const nextStatus = nt.status === 'active' ? 'active' : nt.status === 'todo' ? 'todo' : 'done';
         const doneCount =
           nextStatus === 'done'
@@ -4110,7 +4305,8 @@
           status: nextStatus,
           title: finalTitle,
           outcome: nt.outcome,
-          doneCount
+          doneCount,
+          foldedCount: 1
         });
       }
 
@@ -4119,7 +4315,8 @@
           status: t.status,
           title: t.title,
           outcome: t.outcome,
-          doneCount: t.status === 'done' ? 1 : 0
+          doneCount: t.status === 'done' ? 1 : 0,
+          foldedCount: 1
         }));
       }
     } else {
@@ -4127,13 +4324,12 @@
         status: t.status,
         title: t.title,
         outcome: t.outcome,
-        doneCount: t.status === 'done' ? 1 : 0
+        doneCount: t.status === 'done' ? 1 : 0,
+        foldedCount: 1
       }));
     }
 
-    merged = merged.slice(0, 5);
-
-    // Enforce at most one 'active' task, and ensure coherent status with isRunningNow / turnCompletedQuietly
+    // Enforce at most one 'active' task before sliding-window folding
     let seenActive = false;
     for (const t of merged) {
       if (t.status === 'active') {
@@ -4149,102 +4345,70 @@
       if (firstTodo) {
         firstTodo.status = 'active';
       }
-    } else if (!isRunningNow && turnCompletedQuietly && seenActive) {
-      const hasTodo = merged.some((t) => t.status === 'todo');
-      if (!hasTodo) {
-        for (const t of merged) {
-          if (t.status === 'active') {
-            t.status = 'done';
-            t.doneCount = Math.max(1, t.doneCount || 1);
-          }
+    }
+
+    // Sliding window fold: when stages exceed 5, always preserve concrete 'active' row(s) intact,
+    // folding earliest 'done' stages into 1 summary row and trailing excess 'todo' stages into 1 summary row.
+    if (merged.length > 5) {
+      let doneItems = merged.filter((t) => t.status === 'done');
+      const activeItems = merged.filter((t) => t.status === 'active');
+      let todoItems = merged.filter((t) => t.status === 'todo');
+
+      const budget = Math.max(1, 5 - activeItems.length);
+      let doneBudget = budget;
+      if (todoItems.length > 0) {
+        doneBudget =
+          doneItems.length === 0
+            ? 0
+            : Math.max(1, Math.min(doneItems.length, budget - Math.min(todoItems.length, 2)));
+      }
+
+      if (doneItems.length > doneBudget && doneBudget >= 1) {
+        const keepDone = Math.max(0, doneBudget - 1);
+        const foldCount = doneItems.length - keepDone;
+        if (foldCount >= 2) {
+          const toFold = doneItems.slice(0, foldCount);
+          const totalFolded = toFold.reduce((acc, item) => acc + (item.foldedCount || 1), 0);
+          const lastFolded = toFold[toFold.length - 1];
+          const shortLastTitle = String(lastFolded.title || '')
+            .replace(/^已完成前序\s*\d+\s*个阶段[（(]?|[）)]$/g, '')
+            .slice(0, 10);
+          const foldedDoneRow = {
+            status: 'done',
+            title: `已完成前序 ${totalFolded} 个阶段（含${shortLastTitle}等）`,
+            outcome: '均已完成',
+            doneCount: 3,
+            foldedCount: totalFolded
+          };
+          doneItems = [foldedDoneRow, ...doneItems.slice(foldCount)];
         }
       }
+
+      const todoBudget = Math.max(0, budget - doneItems.length);
+      if (todoItems.length > todoBudget && todoBudget >= 1) {
+        const keepTodo = Math.max(0, todoBudget - 1);
+        const tailToFold = todoItems.slice(keepTodo);
+        const totalTailFolded = tailToFold.reduce((acc, item) => acc + (item.foldedCount || 1), 0);
+        const firstTail = tailToFold[0];
+        const shortTailTitle = String(firstTail.title || '')
+          .replace(/^后续待推进\s*\d+\s*个阶段[（(]?|[）)]$/g, '')
+          .slice(0, 10);
+        todoItems = [
+          ...todoItems.slice(0, keepTodo),
+          {
+            status: 'todo',
+            title: `后续待推进 ${totalTailFolded} 个阶段（含${shortTailTitle}等）`,
+            outcome: '待推进',
+            doneCount: 0,
+            foldedCount: totalTailFolded
+          }
+        ];
+      }
+
+      merged = [...doneItems, ...activeItems, ...todoItems];
     }
 
     return merged;
-  }
-
-  function evaluateMissionDrift(allSteps, ledgerInfo, llmCached) {
-    const latestUserStepIndex = ledgerInfo?.latestUserStepIndex ?? -1;
-    const latestUserText = ledgerInfo?.latestUserText || '';
-
-    // 1. Read-only / Audit-first instruction boundary check against write tools in the current user turn
-    const isReadOnlyInstruction =
-      /(?:只读|仅排查|只排查|不要改代码|不要修改|不修改任何文件|先不要改|先调起.*审核|只分析|只讨论)/.test(
-        latestUserText
-      ) && !/^(?:可以|认可|同意|开始施工|正式开工)/.test(latestUserText.trim());
-
-    let consecutiveCmdErrors = 0;
-    let lastFailedTarget = '';
-
-    for (let i = 0; i < allSteps.length; i++) {
-      const s = allSteps[i];
-      if (!s) continue;
-      const stepIdx = s.metadata?.sourceTrajectoryStepInfo?.stepIndex ?? i;
-      if (latestUserStepIndex >= 0 && stepIdx <= latestUserStepIndex) continue;
-
-      const sc = s.step?.case || '';
-      const sv = s.step?.value || {};
-      const args = (sc === 'generic' && sv.args && typeof sv.args === 'object') ? sv.args : sv;
-      const tname = String(s.metadata?.toolCall?.name || sc || '');
-      const targetStr = String(
-        args.Path || args.TargetFile || args.filePath || args.CommandLine || args.commandLine || args.toolSummary || ''
-      );
-      if (/probe_fiber_live|probe_ctx_live|hot_inject_live|list_ls_rpcs/i.test(targetStr)) continue;
-
-      if (isReadOnlyInstruction) {
-        const isWriteTool =
-          /(?:^|:)(?:edit_file|write_file|replace_file_content|multi_replace_file_content|writeToFile|codeAction)$/i.test(
-            tname
-          ) ||
-          sc === 'writeToFile' ||
-          sc === 'codeAction';
-        const isScratchFile = /[\\/]scratch[\\/]|grok_audit_brief/i.test(targetStr);
-        if (isWriteTool && !isScratchFile) {
-          const fname = basenameFromUriOrPath(targetStr) || '工程文件';
-          return {
-            hasDrift: true,
-            reason: `当前指令要求先审核或只读排查，但检测到模型已修改 ${fname}`
-          };
-        }
-      }
-
-      const st = s.status;
-      const isErr =
-        st === 4 ||
-        st === 7 ||
-        st === 'CORTEX_STEP_STATUS_ERROR' ||
-        st === 'CORTEX_STEP_STATUS_INVALID';
-      const isDone = st === 3 || st === 'CORTEX_STEP_STATUS_DONE';
-      if (sc === 'generic' || sc === 'runCommand' || tname) {
-        if (isErr) {
-          consecutiveCmdErrors += 1;
-          lastFailedTarget = basenameFromUriOrPath(targetStr) || targetStr.slice(0, 28) || tname;
-          if (consecutiveCmdErrors >= 3) {
-            return {
-              hasDrift: true,
-              reason: `连续 ${consecutiveCmdErrors} 步操作报错失败（${lastFailedTarget}），请注意是否陷入原地打转`
-            };
-          }
-        } else if (isDone) {
-          consecutiveCmdErrors = 0;
-        }
-      }
-    }
-
-    if (
-      llmCached &&
-      typeof llmCached.driftWarning === 'string' &&
-      llmCached.driftWarning.trim().length >= 6 &&
-      (llmCached.lastUserStepIndex === undefined || llmCached.lastUserStepIndex === latestUserStepIndex)
-    ) {
-      return {
-        hasDrift: true,
-        reason: llmCached.driftWarning.trim()
-      };
-    }
-
-    return { hasDrift: false, reason: '' };
   }
 
   function savePersistedLlmSummaryCache() {
@@ -4256,7 +4420,6 @@
           sig: v.sig,
           title: v.title,
           tasks: v.tasks,
-          driftWarning: v.driftWarning || '',
           lastUserStepIndex: v.lastUserStepIndex,
           lastThinkStepIndex: v.lastThinkStepIndex,
           lastTotalSteps: v.lastTotalSteps,
@@ -4328,7 +4491,17 @@
     effTotalSteps,
     turnCompletedQuietly
   ) {
-    if (disposed || !globalPrefs.enabled || !cid || llmSummaryInFlight) return;
+    if (
+      disposed ||
+      !globalPrefs.enabled ||
+      globalPrefs.missionHud === false ||
+      globalPrefs.lang === 'en' ||
+      globalPrefs.bossMode ||
+      !cid ||
+      llmSummaryInFlight
+    ) {
+      return;
+    }
     if (typeof window.fetch !== 'function') return;
 
     const now = Date.now();
@@ -4348,17 +4521,12 @@
     if (traceLines.length === 0) return;
 
     lastBlueprintAttemptTsByConvo.set(cid, now);
+    if (lastBlueprintAttemptTsByConvo.size > 32) {
+      const oldestKey = lastBlueprintAttemptTsByConvo.keys().next().value;
+      if (oldestKey) lastBlueprintAttemptTsByConvo.delete(oldestKey);
+    }
     if (existing) {
       existing.lastAttemptTs = now;
-    }
-
-    // Preempt any in-flight thinking translation so blueprint update has single-flight priority
-    if (activeThinkingTransAbortCtrl) {
-      try {
-        activeThinkingTransAbortCtrl.abort();
-      } catch (e) {}
-      activeThinkingTransAbortCtrl = null;
-      thinkingTransInFlight = false;
     }
 
     llmSummaryInFlight = true;
@@ -4369,16 +4537,15 @@
     const timer = setTimeout(() => ctrl.abort(), 12000);
 
     const prompt = [
-      '你是一个研发与学术工作台的全局蓝图与方向审校器。请阅读用户的核心指令账本、上一版阶段蓝图以及最近执行轨迹，用简练纯正的中文维护当前任务的全局施工蓝图（严禁照抄会话标题，严禁出现英文单词或半中半英，严禁带【】或[]括号标签）。',
+      '你是一个研发与学术工作台的全局蓝图归纳器。请阅读用户的核心指令账本、上一版阶段蓝图以及最近执行轨迹，用简练纯正的中文维护当前任务的全局施工蓝图（严禁照抄会话标题，严禁出现英文单词或半中半英，严禁带【】或[]括号标签）。',
       '蓝图演进准则：',
       '1) 若存在【上一版阶段蓝图】且用户未下达推翻原目标的新指令，必须保持已完成的 "done" 阶段标题与整体阶段划分稳定，仅推进阶段状态（"done" / "active" / "todo"）与进展说明（outcome），或在从初步勘察收敛出明确方案时补充后续待办阶段（"todo"）；',
       '2) 阶段总数控制在 2 到 5 项之间（实事求是，严禁为了凑满5项而编造空洞阶段）；',
       isRunningNow
         ? '3) 当前任务仍在推进中，请将当前正在推进的 1 个阶段 status 标为 "active"，已完成的前序阶段标为 "done"，尚未开始的后续计划阶段标为 "todo"；'
-        : '3) 当前阶段已执行就绪，请将已完成阶段 status 标为 "done"，若有明确待用户确认后继续的后续阶段可标为 "todo"；',
-      '4) 对照用户最新指令核查模型当前动作是否走偏（如用户要求只读排查却修改了代码，或明显偏离用户要求），若正常一致则 driftWarning 填 ""，若确认走偏则用 12-28 字简明指出偏离之处。',
+        : '3) 当前轮次操作已告一段落，请按实际完成度标注各阶段 status（已确认完成的标为 "done"，仍待继续推进或待用户确认的保持 "active" 或 "todo"）。',
       '请仅输出严格合法的 JSON 对象（不要 markdown 代码块标记），格式如下：',
-      '{"title":"用12-24个纯中文汉字概括当前任务总目标","tasks":[{"status":"done或active或todo","title":"宏观阶段名称（纯中文，10-26字，共2到5项）","outcome":"定性结果或当前进展（纯中文，4-14字）"}],"driftWarning":""}',
+      '{"title":"用12-24个纯中文汉字概括当前任务总目标","tasks":[{"status":"done或active或todo","title":"宏观阶段名称（纯中文，10-26字，共2到5项）","outcome":"定性结果或当前进展（纯中文，4-14字）"}]}',
       '当前会话轨迹：',
       traceLines.join('\n')
     ].join('\n');
@@ -4412,7 +4579,6 @@
         if (parsed && typeof parsed.title === 'string' && Array.isArray(parsed.tasks) && parsed.tasks.length > 0) {
           const cleanTitle = cleanNaturalSentence(parsed.title).replace(/[【】\[\]]/g, '');
           const rawCleanTasks = parsed.tasks
-            .slice(0, 5)
             .map((t) => ({
               status: t.status === 'active' ? 'active' : t.status === 'todo' ? 'todo' : 'done',
               title: cleanNaturalSentence(t.title || t.text || '').replace(/[【】\[\]]/g, ''),
@@ -4426,19 +4592,17 @@
               existing,
               rawCleanTasks,
               latestUserStepIndex,
-              isRunningNow,
-              turnCompletedQuietly
+              isRunningNow
             );
-            const cleanDrift =
-              typeof parsed.driftWarning === 'string'
-                ? cleanNaturalSentence(parsed.driftWarning).replace(/[【】\[\]]/g, '')
-                : '';
 
+            if (!llmSummaryCacheByConvo.has(cid) && llmSummaryCacheByConvo.size >= 24) {
+              const oldestCid = llmSummaryCacheByConvo.keys().next().value;
+              if (oldestCid) llmSummaryCacheByConvo.delete(oldestCid);
+            }
             llmSummaryCacheByConvo.set(cid, {
               sig,
               title: cleanTitle,
               tasks: reconciledTasks,
-              driftWarning: cleanDrift,
               lastUserStepIndex: latestUserStepIndex,
               lastThinkStepIndex: latestDoneThinkStepIndex,
               lastTotalSteps: effTotalSteps,
@@ -4457,8 +4621,8 @@
         clearTimeout(timer);
         if (activeLlmSummaryAbortCtrl === ctrl) {
           activeLlmSummaryAbortCtrl = null;
+          llmSummaryInFlight = false;
         }
-        llmSummaryInFlight = false;
       }
     })();
   }
@@ -5030,7 +5194,15 @@
       hasQuietCompletionEdge;
 
     const sig = `${ledgerInfo.latestUserStepIndex}:${latestDoneThinkStepIndex}:${Math.floor(effTotalSteps / 6)}:${turnCompletedQuietly ? 'done' : 'work'}`;
-    if (cid && allSteps.length > 0 && shouldUpdateBlueprint && (!llmCached || llmCached.sig !== sig)) {
+    if (
+      globalPrefs.missionHud !== false &&
+      globalPrefs.lang !== 'en' &&
+      !globalPrefs.bossMode &&
+      cid &&
+      allSteps.length > 0 &&
+      shouldUpdateBlueprint &&
+      (!llmCached || llmCached.sig !== sig)
+    ) {
       triggerLlmMissionSummarization(
         cid,
         sig,
@@ -5056,7 +5228,6 @@
       finalTasks = [];
     }
 
-    const drift = evaluateMissionDrift(allSteps, ledgerInfo, llmCached);
     const hasData = Boolean(cid && (finalTasks.length > 0 || allSteps.length > 0));
     return {
       hasData,
@@ -5064,7 +5235,6 @@
       tasks: finalTasks,
       activeRuntimes: activeRuntimes.slice(-2),
       currentLiveAction,
-      drift,
       isRunning: isRunningNow
     };
   }
@@ -5175,46 +5345,6 @@
         }
         .mission-box.dark .top-right {
           color: #9ca3af;
-        }
-        .align-pill {
-          font-size: 11px;
-          line-height: 16px;
-          padding: 0 6px;
-          border-radius: 999px;
-          background: rgba(16, 185, 129, 0.12);
-          color: #059669;
-          font-weight: 500;
-        }
-        .mission-box.dark .align-pill {
-          background: rgba(16, 185, 129, 0.15);
-          color: #34d399;
-        }
-        .align-pill.warn {
-          background: rgba(245, 158, 11, 0.15);
-          color: #d97706;
-        }
-        .mission-box.dark .align-pill.warn {
-          background: rgba(245, 158, 11, 0.18);
-          color: #fbbf24;
-        }
-        .drift-bar {
-          display: none;
-          align-items: center;
-          gap: 6px;
-          padding: 5px 12px;
-          background: rgba(245, 158, 11, 0.10);
-          border-top: 1px solid rgba(245, 158, 11, 0.22);
-          font-size: 11.5px;
-          color: #b45309;
-          line-height: 1.4;
-        }
-        .mission-box.dark .drift-bar {
-          background: rgba(245, 158, 11, 0.12);
-          border-top-color: rgba(245, 158, 11, 0.25);
-          color: #fbbf24;
-        }
-        .drift-bar.visible {
-          display: flex;
         }
         .mission-body {
           padding: 5px 12px 6px;
@@ -5352,16 +5482,12 @@
             <span class="goal-text" id="m-goal"></span>
           </div>
           <div class="top-right">
-            <span id="m-align" class="align-pill" hidden></span>
             <span id="m-wd" class="wd-pill" hidden></span>
             <span id="m-phase"></span>
             <span id="m-fold">▾</span>
           </div>
         </div>
         <div class="mission-body" id="m-task-list"></div>
-        <div class="drift-bar" id="m-drift-bar">
-          <span id="m-drift-text"></span>
-        </div>
         <div class="rt-bar" id="m-rt-bar">
           <span class="rt-text" id="m-rt-text"></span>
           <span class="rt-status" id="m-rt-status"></span>
@@ -5374,13 +5500,10 @@
       top: missionHudShadow.getElementById('m-top'),
       dot: missionHudShadow.getElementById('m-dot'),
       goal: missionHudShadow.getElementById('m-goal'),
-      align: missionHudShadow.getElementById('m-align'),
       wd: missionHudShadow.getElementById('m-wd'),
       phase: missionHudShadow.getElementById('m-phase'),
       fold: missionHudShadow.getElementById('m-fold'),
       taskList: missionHudShadow.getElementById('m-task-list'),
-      driftBar: missionHudShadow.getElementById('m-drift-bar'),
-      driftText: missionHudShadow.getElementById('m-drift-text'),
       rtBar: missionHudShadow.getElementById('m-rt-bar'),
       rtText: missionHudShadow.getElementById('m-rt-text'),
       rtStatus: missionHudShadow.getElementById('m-rt-status')
@@ -5477,26 +5600,6 @@
       missionHudRefs.goal.textContent = state.globalGoal;
     }
 
-    if (missionHudRefs.align) {
-      const hasDrift = Boolean(state.drift && state.drift.hasDrift);
-      const showAlign = totalTasks > 0 || hasDrift;
-      missionHudRefs.align.hidden = !showAlign;
-      missionHudRefs.align.classList.toggle('warn', hasDrift);
-      const alignText = hasDrift ? '⚠️ 疑似走偏' : '✓ 方向一致';
-      if (missionHudRefs.align.textContent !== alignText) {
-        missionHudRefs.align.textContent = alignText;
-      }
-    }
-
-    if (missionHudRefs.driftBar && missionHudRefs.driftText) {
-      const hasDrift = Boolean(state.drift && state.drift.hasDrift && state.drift.reason);
-      missionHudRefs.driftBar.classList.toggle('visible', hasDrift);
-      const driftMsg = hasDrift ? `⚠️ 走偏提醒：${state.drift.reason}` : '';
-      if (missionHudRefs.driftText.textContent !== driftMsg) {
-        missionHudRefs.driftText.textContent = driftMsg;
-      }
-    }
-
     if (missionHudRefs.phase) {
       missionHudRefs.phase.textContent = totalTasks > 0 ? `${doneTasks} / ${totalTasks}` : '';
     }
@@ -5507,7 +5610,7 @@
         .map((t, idx) => {
           const chk = t.status === 'done' ? '✓' : t.status === 'active' ? '●' : '○';
           const outSpan = t.outcome ? `<span class="t-out">${escapeHtml(t.outcome)}</span>` : '';
-          const numPrefix = /^\d+\./.test(t.title) ? '' : `${idx + 1}. `;
+          const numPrefix = /^\d+\.|^(?:已完成前序|后续待推进)/.test(t.title) ? '' : `${idx + 1}. `;
           return `<div class="t-row ${t.status}"><span class="t-chk">${chk}</span><span class="t-title">${escapeHtml(numPrefix + t.title)}</span>${outSpan}</div>`;
         })
         .join('');
@@ -5693,9 +5796,9 @@
       thinkRow.innerHTML = `
         <div class="flex-1 flex flex-col gap-0.5">
           <div class="flex items-center gap-1.5">
-            <span class="text-sm">思考过程实时中文翻译</span>
+            <span class="text-sm">思考过程按需中文翻译</span>
           </div>
-          <span class="text-xs text-muted-foreground whitespace-pre-wrap">模型思考推演时自动展开并实时译为中文，思考完成后自动折叠收起（随时可点击重开或切换英文原稿）。</span>
+          <span class="text-xs text-muted-foreground whitespace-pre-wrap">默认以单行中文摘要静默展示思考状态（零排版跳动），点击展开时自动将思考段落译为中文（支持一键切换英文原稿）。</span>
         </div>
         <div class="shrink-0">
           <button type="button" role="switch" id="agy-settings-think-trans-switch" aria-checked="true" class="relative inline-flex items-center rounded-full transition-colors duration-200 ease-in-out shrink-0 h-6 w-11 bg-primary cursor-pointer">
@@ -5725,7 +5828,7 @@
           <div class="flex items-center gap-1.5">
             <span class="text-sm">底部任务全局蓝图与实时看板</span>
           </div>
-          <span class="text-xs text-muted-foreground whitespace-pre-wrap">在输入框上方展示总体施工方向、阶段演进蓝图、走偏预警与当前实时动作（关闭后后台看门狗仍常驻运行）。</span>
+          <span class="text-xs text-muted-foreground whitespace-pre-wrap">在输入框上方展示总体施工方向、阶段演进蓝图与当前实时动作（关闭后同时停用后台蓝图归纳请求，看门狗仍常驻运行）。</span>
         </div>
         <div class="shrink-0">
           <button type="button" role="switch" id="agy-settings-mission-hud-switch" aria-checked="true" class="relative inline-flex items-center rounded-full transition-colors duration-200 ease-in-out shrink-0 h-6 w-11 bg-primary cursor-pointer">
@@ -5791,6 +5894,11 @@
     }
     llmSummaryInFlight = false;
     thinkingTransInFlight = false;
+    llmSummaryReqSeq++;
+    thinkingTransReqSeq++;
+    thinkingParaCache.clear();
+    userInputLedgerByConvo.clear();
+    lastBlueprintAttemptTsByConvo.clear();
     if (ringTimer) {
       clearInterval(ringTimer);
       ringTimer = null;
@@ -5802,10 +5910,6 @@
     if (trailingFetchTimer) {
       clearTimeout(trailingFetchTimer);
       trailingFetchTimer = null;
-    }
-    if (thinkingTailTimer) {
-      clearTimeout(thinkingTailTimer);
-      thinkingTailTimer = null;
     }
     if (thinkingTransRetryTimer) {
       clearTimeout(thinkingTransRetryTimer);
@@ -5832,7 +5936,7 @@
         p.remove();
       }
       for (const tb of document.querySelectorAll('button[data-testid="thinking-collapsible-trigger"]')) {
-        tb.removeAttribute('data-agy-auto-streaming');
+        tb._agyLocalTransMap = null;
         tb.removeAttribute('data-agy-user-collapsed');
         tb.removeAttribute('data-agy-user-expanded');
         if (tb.nextElementSibling) {
@@ -5943,6 +6047,8 @@
       globalPrefs.lang = 'zh-std';
     }
 
+    abortInactiveEnhancementRpcs();
+
     if (!globalPrefs.enabled) {
       suspendAllActiveConsumers();
       return;
@@ -5963,8 +6069,14 @@
     ensureSettingsEnhancementRowsMounted();
     if (globalPrefs.lang === 'en') {
       if (document.querySelectorAll) {
-        const injected = document.querySelectorAll('[id^="agy-stream-"]');
+        const injected = document.querySelectorAll('.agy-think-zh-panel, [id^="agy-stream-"]');
         for (const el of injected) el.remove();
+        for (const tb of document.querySelectorAll('button[data-testid="thinking-collapsible-trigger"]')) {
+          tb._agyLocalTransMap = null;
+          if (tb.nextElementSibling) {
+            tb.nextElementSibling.removeAttribute('data-agy-zh-mode');
+          }
+        }
       }
       hideMissionHud();
     } else {
