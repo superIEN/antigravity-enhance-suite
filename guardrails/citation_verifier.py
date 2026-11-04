@@ -14,7 +14,7 @@ Prevents long-horizon compaction amnesia and symbol hallucination (`note_compact
 3. Three-dimensional symbol drift diagnostics:
    - Dimension 1 (Line-range actual definition lookup): catches non-neighbor rewrites like `invoke -> pre`
      (`line_range_defines_different_symbol`).
-   - Dimension 2 (Token-reordering & stem Jaccard): catches `TestArchUnit030 -> ArchUnit030Tests`.
+   - Dimension 2 (Token-reordering & stem Jaccard): catches `TestWorkflow030 -> Workflow030Tests`.
    - Dimension 3 (Edit distance & token overlap): catches `evaluate_completion -> cmd_check_completion`.
 4. Static cross-module symbol scanner (`verify_code_external_symbols`):
    - Verifies `from <mod> import <real_name> [as <alias>]` (checking `<real_name>` in `<mod>`'s AST
@@ -570,15 +570,10 @@ def verify_code_external_symbols(
     project_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Scan Python implementation files for `from <mod> import <real_name> [as <alias>]`
-    and `<mod_alias>.<attr>` against local modules (including `archunit_record.py`).
+    and `<mod_alias>.<attr>` against local modules.
     Catches hallucinated symbols written directly into code before citations are even created.
     """
     roots = list(search_roots)
-    archunit_scripts_dir = Path(
-        "/Users/ien/.gemini/config/plugins/biluohuangquan-agy/skills/archunit/scripts"
-    )
-    if archunit_scripts_dir.is_dir() and archunit_scripts_dir not in roots:
-        roots.append(archunit_scripts_dir)
 
     violations: List[Dict[str, Any]] = []
     files_scanned: List[str] = []
@@ -847,25 +842,8 @@ def verify_citations_and_compaction(
 ) -> Dict[str, Any]:
     """Full Guardrail 2 entry combining AST citation verification, code symbol scan, and compaction reread audit."""
     project_root = project_root.resolve()
-    record_json_path = (
-        project_root
-        / ".biluohuangquan"
-        / "archunit"
-        / "session3-harness-guardrails"
-        / "record.json"
-    )
     allowed_roots: List[Path] = [project_root]
     voices_map: Dict[str, Dict[str, Any]] = {}
-
-    if record_json_path.is_file():
-        rec = json.loads(record_json_path.read_text(encoding="utf-8"))
-        for r in rec.get("allowed_read_roots", []):
-            rp = Path(r).resolve()
-            if rp not in allowed_roots:
-                allowed_roots.append(rp)
-        for v in rec.get("voice_ledger", []):
-            if isinstance(v, dict) and v.get("voice_id"):
-                voices_map[str(v["voice_id"])] = v
 
     if extra_allowed_roots:
         for r in extra_allowed_roots:

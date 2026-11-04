@@ -35,6 +35,11 @@ except ImportError:
     fcntl = None  # type: ignore
 
 try:
+    import msvcrt  # type: ignore
+except ImportError:
+    msvcrt = None  # type: ignore
+
+try:
     from PIL import Image, ImageOps  # type: ignore
 
     HAS_PIL = True
@@ -90,20 +95,28 @@ SAFE_B64_BYTES = 18_000_000  # 18MB Base64 safe ceiling (12MB headroom below 30M
 
 @contextmanager
 def _directory_flock(target_dir: str):
-    """Acquire an exclusive per-directory file lock on POSIX to prevent concurrent writer races."""
+    """Acquire an exclusive per-directory file lock on POSIX (fcntl) or Windows (msvcrt) to prevent concurrent writer races."""
     os.makedirs(target_dir, exist_ok=True)
     lock_path = os.path.join(target_dir, ".agy_compress.lock")
     lock_fd = None
+    win_locked = False
     try:
-        lock_fd = open(lock_path, "a+", encoding="utf-8")
+        lock_fd = open(lock_path, "a+b")
         if fcntl is not None:
             fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+        elif msvcrt is not None:
+            lock_fd.seek(0)
+            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_LOCK, 1)
+            win_locked = True
         yield
     finally:
         if lock_fd is not None:
             try:
                 if fcntl is not None:
                     fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+                elif msvcrt is not None and win_locked:
+                    lock_fd.seek(0)
+                    msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
             except Exception:
                 pass
             try:

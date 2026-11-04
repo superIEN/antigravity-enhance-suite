@@ -6,13 +6,16 @@
       "entrypoint_id": "cli_main",
       "path": "guardrails/harness_guardrails.py",
       "language": "python",
-      "entry_symbols": ["main"],
-      "live_dispatch_containers": ["SUBCOMMAND_HANDLERS"],
+      "entry_symbols": [
+        "main"
+      ],
+      "live_dispatch_containers": [
+        "SUBCOMMAND_HANDLERS"
+      ],
       "required_reachable_modules": [
         "guardrails/read_auditor.py",
         "guardrails/citation_verifier.py",
-        "guardrails/substance_verifier.py",
-        "guardrails/archunit_macos_bridge.py"
+        "guardrails/substance_verifier.py"
       ]
     }
   ],

@@ -18,13 +18,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from guardrails.archunit_macos_bridge import (
-    call_archunit_record_script,
-    execute_archunit_op,
-    preflight_declare,
-    verify_completion,
-    verify_macos_environment,
-)
 from guardrails.citation_verifier import (
     detect_compaction_and_rereads,
     verify_citations_and_compaction,
@@ -203,52 +196,30 @@ class TestGuardrail2CitationVerifier(unittest.TestCase):
     """Tests for Guardrail 2 (`guardrails/citation_verifier.py` · A1.3 & A1.4)."""
 
     def test_a1_3_three_compaction_drift_forms_and_no_substring_fallback(self) -> None:
-        roots = [
-            PROJECT_ROOT,
-            Path("/Users/ien/.gemini/config/plugins/biluohuangquan-agy").resolve(),
-            Path("/Users/ien/agy治理/agy历史记录/AGY桌面治理交接_2026-11-01").resolve(),
-        ]
-        # Form 1: cmd_check_completion -> evaluate_completion
-        r1 = verify_single_citation(
-            {
-                "path": "/Users/ien/.gemini/config/plugins/biluohuangquan-agy/skills/archunit/scripts/archunit_record.py",
-                "line_start": 216,
-                "line_end": 263,
-                "symbol": "cmd_check_completion",
-            },
-            roots,
-            {},
-            PROJECT_ROOT,
-        )
-        self.assertFalse(r1["verified"])
-        self.assertIn("symbol_not_found_possible_compaction_drift", r1["failures"])
-        self.assertTrue(
-            any(
-                c["symbol"] == "evaluate_completion"
-                for c in r1["diagnostics"]["closest_real_symbols"]
+        # Self-contained fixtures exercise all drift forms without an installed plugin.
+        with tempfile.TemporaryDirectory(prefix="g2-drift-") as td:
+            root = Path(td).resolve()
+            module = root / "completion.py"
+            module.write_text("def evaluate_completion(record):\n    return bool(record)\n", encoding="utf-8")
+            r1 = verify_single_citation(
+                {"path": str(module), "line_start": 1, "line_end": 2,
+                 "symbol": "cmd_check_completion"}, [root], {}, root,
             )
-        )
+            self.assertFalse(r1["verified"])
+            self.assertIn("symbol_not_found_possible_compaction_drift", r1["failures"])
+            self.assertTrue(any(c["symbol"] == "evaluate_completion"
+                                for c in r1["diagnostics"]["closest_real_symbols"]))
 
-        # Form 2: ArchUnit030Tests -> TestArchUnit030
-        r2 = verify_single_citation(
-            {
-                "path": "/Users/ien/agy治理/agy历史记录/AGY桌面治理交接_2026-11-01/02_产品_ws050_agy_archunit/tests/test_archunit_030.py",
-                "line_start": 48,
-                "line_end": 100,
-                "symbol": "ArchUnit030Tests",
-            },
-            roots,
-            {},
-            PROJECT_ROOT,
-        )
-        self.assertFalse(r2["verified"])
-        self.assertTrue(
-            any(
-                c["symbol"] == "TestArchUnit030"
-                and c["match_kind"] == "token_reordering_exact"
-                for c in r2["diagnostics"]["closest_real_symbols"]
+            test_module = root / "test_workflow.py"
+            test_module.write_text("class TestWorkflow030:\n    def test_basic(self):\n        pass\n", encoding="utf-8")
+            r2 = verify_single_citation(
+                {"path": str(test_module), "line_start": 1, "line_end": 3,
+                 "symbol": "Workflow030Tests"}, [root], {}, root,
             )
-        )
+            self.assertFalse(r2["verified"])
+            self.assertTrue(any(c["symbol"] == "TestWorkflow030"
+                                and c["match_kind"] == "token_reordering_exact"
+                                for c in r2["diagnostics"]["closest_real_symbols"]))
 
         # Form 3: non-neighbor drift `pre` cited at lines defining `invoke` (even when `prepare` substring is in those lines!)
         with tempfile.TemporaryDirectory(prefix="g2-drift3-") as td:
@@ -549,107 +520,6 @@ class TestGuardrail3SubstanceVerifier(unittest.TestCase):
             )
             hyg_ok = verify_declaration_hygiene(prompt_file_path=ok_prompt)
             self.assertTrue(hyg_ok["passed"])
-
-
-class TestGuardrail4ArchUnitMacOSBridge(unittest.TestCase):
-    """Tests for Guardrail 4 (`guardrails/archunit_macos_bridge.py` · A2.4 & A3.1)."""
-
-    def test_a2_4_macos_host_verification(self) -> None:
-        res = verify_macos_environment()
-        self.assertTrue(res["passed"], res)
-        self.assertTrue(res["agy_binary"]["is_macho"])
-        self.assertTrue(res["agy_binary"]["codesign_verified"])
-        self.assertTrue(res["archunit_record_script"]["sha256_matched"])
-
-    def test_a2_4_bridge_blocks_actor_spoofing_and_unread_reviewer_envelope(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="g4-bridge-") as td:
-            root = Path(td).resolve()
-            (root / "TASK_ORDER_SESSION3_HARNESS_GUARDRAILS.md").write_text(
-                "# Task\n## 二、 只读输入原件\n", encoding="utf-8"
-            )
-            (root / "docs").mkdir()
-            p_doc = root / "docs" / "00_PRINCIPLES.md"
-            h_doc = root / "docs" / "02_IMPLEMENTATION_HANDBOOK.md"
-            p_doc.write_text("# Principles\nLine 2\n", encoding="utf-8")
-            h_doc.write_text("# Handbook\nLine 2\n", encoding="utf-8")
-
-            # Initialize ArchUnit 0.3 ledger in temp project
-            call_archunit_record_script(
-                {
-                    "root": str(root),
-                    "task_id": "test-task",
-                    "action": "init",
-                    "actor": "main_agent",
-                    "expected_revision": 0,
-                    "owner": "main_agent",
-                    "owner_context_ref": "main-cid-001",
-                    "scope": "Test scope",
-                    "allowed_read_roots": [str(root)],
-                }
-            )
-            call_archunit_record_script(
-                {
-                    "root": str(root),
-                    "task_id": "test-task",
-                    "action": "bind-instance",
-                    "actor": "main_agent",
-                    "expected_revision": 1,
-                    "instance_id": "inst_test",
-                    "reviewer_role": "archunit",
-                    "context_ref": "reviewer-cid-002",
-                }
-            )
-            call_archunit_record_script(
-                {
-                    "root": str(root),
-                    "task_id": "test-task",
-                    "action": "declare",
-                    "actor": "main_agent",
-                    "expected_revision": 2,
-                    "declaration_id": "decl_test_01",
-                    "category": "plan_settlement",
-                    "route_level": "L3",
-                    "objects": [{"path": "docs/00_PRINCIPLES.md"}],
-                    "citations": [
-                        {
-                            "path": "docs/00_PRINCIPLES.md",
-                            "line_start": 1,
-                            "line_end": 2,
-                            "quote": "# Principles",
-                        }
-                    ],
-                }
-            )
-
-            # Attempt to record review with main_agent actor or un-audited reviewer session -> must fail!
-            spoof_res = execute_archunit_op(
-                project_root=root,
-                task_id="test-task",
-                action="record-declaration-review",
-                payload_data={
-                    "actor": "main_agent",
-                    "context_ref": "main-cid-001",
-                    "declaration_id": "decl_test_01",
-                    "review_id": "rev_1",
-                    "verdict": "acceptable",
-                    "report": {"path": "docs/00_PRINCIPLES.md"},
-                    "citations": [
-                        {
-                            "path": "docs/00_PRINCIPLES.md",
-                            "line_start": 1,
-                            "line_end": 2,
-                            "quote": "# Principles",
-                        }
-                    ],
-                },
-            )
-            self.assertFalse(spoof_res["passed"])
-            self.assertIn("REVIEW_ACTOR_MUST_BE_BOUND_ARCHUNIT_ROLE", spoof_res["failures"])
-            self.assertIn("REVIEW_CONTEXT_REF_MISMATCH_OR_EQUALS_OWNER", spoof_res["failures"])
-            self.assertIn(
-                "ARCHUNIT_REVIEWER_DID_NOT_FULLY_READ_INPUT_OR_OBJECTS",
-                spoof_res["failures"],
-            )
 
 
 if __name__ == "__main__":

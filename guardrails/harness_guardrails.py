@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
 """Unified Normal Entrypoint CLI: `guardrails/harness_guardrails.py` (v1.1).
 
-Provides the single authoritative normal CLI entrypoint for all four AGY anti-degradation
-Harness Guardrails and the `ArchUnit 0.3` macOS Strong-Contract Bridge:
+Provides the single authoritative normal CLI entrypoint for three AGY anti-degradation
+Harness Guardrails:
 - `audit-reads`        (Guardrail 1: Read-Coverage & Truncation Auditor)
 - `verify-citations`   (Guardrail 2: Compaction & AST Citation Verifier)
 - `verify-substance`   (Guardrail 3: Normal-Entry Substance & Call-Graph Verifier)
 - `run-and-attest`     (Guardrail 3: Attested Normal-Entry Runner with Transcript Nonce Anchor)
-- `verify-macos-host`  (Guardrail 4: macOS Mach-O / `codesign` & `sop-master` SHA256 Verifier)
-- `preflight-declare`  (Guardrails 1+2+3+4 Joint Declaration Gate & Readback Verifier)
-- `archunit-op`        (Guardrail 4: Strong-Contract `archunit_record.py` Bridge)
-- `verify-completion`  (Guardrails 1+2+3+4 Completion Gate splitting `technical_gate_passed` vs `triad_complete`)
 """
 
 from __future__ import annotations
@@ -30,14 +26,6 @@ PROJECT_ROOT_DEFAULT = THIS_DIR.parent
 if str(PROJECT_ROOT_DEFAULT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT_DEFAULT))
 
-from guardrails.archunit_macos_bridge import (
-    DEFAULT_AGY_BIN,
-    DEFAULT_SOP_ROOT,
-    execute_archunit_op,
-    preflight_declare,
-    verify_completion,
-    verify_macos_environment,
-)
 from guardrails.citation_verifier import (
     extract_citations_from_markdown,
     verify_citations_and_compaction,
@@ -213,66 +201,18 @@ def cmd_run_and_attest(args: argparse.Namespace) -> Dict[str, Any]:
     return evidence_payload
 
 
-def cmd_verify_macos_host(args: argparse.Namespace) -> Dict[str, Any]:
-    agy_bin = Path(args.agy_bin) if args.agy_bin else DEFAULT_AGY_BIN
-    sop_root = Path(args.sop_root) if args.sop_root else DEFAULT_SOP_ROOT
-    return verify_macos_environment(agy_bin=agy_bin, sop_root=sop_root)
-
-
-def cmd_preflight_declare(args: argparse.Namespace) -> Dict[str, Any]:
-    proj = Path(args.project_root).expanduser().resolve()
-    decl_file = Path(normalize_target_path(args.declaration_file, cwd=proj))
-    decl_data = json.loads(decl_file.read_text(encoding="utf-8"))
-    return preflight_declare(
-        project_root=proj,
-        task_id=args.task_id,
-        declaration_data=decl_data,
-        conversation_id=args.conversation_id,
-        brain_dir=args.brain_dir,
-    )
-
-
-def cmd_archunit_op(args: argparse.Namespace) -> Dict[str, Any]:
-    proj = Path(args.project_root).expanduser().resolve()
-    payload_file = Path(normalize_target_path(args.payload_file, cwd=proj))
-    payload_data = json.loads(payload_file.read_text(encoding="utf-8"))
-    return execute_archunit_op(
-        project_root=proj,
-        task_id=args.task_id,
-        action=args.action,
-        payload_data=payload_data,
-        conversation_id=args.conversation_id,
-        brain_dir=args.brain_dir,
-    )
-
-
-def cmd_verify_completion(args: argparse.Namespace) -> Dict[str, Any]:
-    proj = Path(args.project_root).expanduser().resolve()
-    return verify_completion(
-        project_root=proj,
-        task_id=args.task_id,
-        declaration_id=args.declaration_id,
-        stage_id=args.stage_id,
-        conversation_id=args.conversation_id,
-        brain_dir=args.brain_dir,
-    )
-
 
 SUBCOMMAND_HANDLERS: Dict[str, Callable[[argparse.Namespace], Dict[str, Any]]] = {
     "audit-reads": cmd_audit_reads,
     "verify-citations": cmd_verify_citations,
     "verify-substance": cmd_verify_substance,
     "run-and-attest": cmd_run_and_attest,
-    "verify-macos-host": cmd_verify_macos_host,
-    "preflight-declare": cmd_preflight_declare,
-    "archunit-op": cmd_archunit_op,
-    "verify-completion": cmd_verify_completion,
 }
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="AGY Anti-Degradation Harness Guardrails & ArchUnit 0.3 macOS Strong-Contract CLI"
+        description="AGY Anti-Degradation Harness Guardrails CLI"
     )
     sub = parser.add_subparsers(dest="subcommand", required=True)
 
@@ -314,41 +254,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_att.add_argument("--project-root", default=str(PROJECT_ROOT_DEFAULT))
     p_att.add_argument("--implementation-files", nargs="*", default=[])
     p_att.add_argument("command", nargs=argparse.REMAINDER)
-
-    # 5. verify-macos-host
-    p_mac = sub.add_parser("verify-macos-host", help="Guardrail 4: Verify macOS codesign & sop-master SHA256")
-    p_mac.add_argument("--agy-bin", default=None)
-    p_mac.add_argument("--sop-root", default=None)
-    p_mac.add_argument("--out", default=None)
-
-    # 6. preflight-declare
-    p_pre = sub.add_parser("preflight-declare", help="Guardrails 1+2+3+4 Joint Declaration Gate")
-    p_pre.add_argument("--project-root", default=str(PROJECT_ROOT_DEFAULT))
-    p_pre.add_argument("--task-id", default="session3-harness-guardrails")
-    p_pre.add_argument("--declaration-file", required=True)
-    p_pre.add_argument("--conversation-id", required=True)
-    p_pre.add_argument("--brain-dir", default=None)
-    p_pre.add_argument("--out", default=None)
-
-    # 7. archunit-op
-    p_op = sub.add_parser("archunit-op", help="Guardrail 4: Execute strong-contract ArchUnit 0.3 operation")
-    p_op.add_argument("--project-root", default=str(PROJECT_ROOT_DEFAULT))
-    p_op.add_argument("--task-id", default="session3-harness-guardrails")
-    p_op.add_argument("--action", required=True)
-    p_op.add_argument("--payload-file", required=True)
-    p_op.add_argument("--conversation-id", default=None)
-    p_op.add_argument("--brain-dir", default=None)
-    p_op.add_argument("--out", default=None)
-
-    # 8. verify-completion
-    p_comp = sub.add_parser("verify-completion", help="Guardrails 1+2+3+4 Completion Gate")
-    p_comp.add_argument("--project-root", default=str(PROJECT_ROOT_DEFAULT))
-    p_comp.add_argument("--task-id", default="session3-harness-guardrails")
-    p_comp.add_argument("--declaration-id", default=None)
-    p_comp.add_argument("--stage-id", default=None)
-    p_comp.add_argument("--conversation-id", default=None)
-    p_comp.add_argument("--brain-dir", default=None)
-    p_comp.add_argument("--out", default=None)
 
     return parser
 

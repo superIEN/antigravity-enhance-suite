@@ -128,6 +128,11 @@ class MockNode {
     child.parentNode = this;
     child.parentElement = this.nodeType === Node.ELEMENT_NODE ? this : null;
     this.childNodes.push(child);
+    if (this.isConnected) {
+      for (const obs of activeMutationObservers) {
+        obs._notify([{ type: 'childList', target: this, addedNodes: [child] }]);
+      }
+    }
     return child;
   }
   insertBefore(newNode, refNode) {
@@ -1424,7 +1429,7 @@ async function runVerification() {
   );
 
   // -------------------------------------------------------------------------
-  // Verification 6: 1M Context Ring (#agy-ctx-ring-pill)
+  // Verification 6: 1M Context Ring (#agy-ctx-ring-pill) & v2.29.0 Official Indicator Coexistence
   // -------------------------------------------------------------------------
   const ringPill = doc.getElementById('agy-ctx-ring-pill');
   assert.ok(ringPill, '#agy-ctx-ring-pill must be mounted');
@@ -1434,7 +1439,61 @@ async function runVerification() {
   // 120k + 100k + 5k = 225k / 1000k = 23% · 225k
   assert.equal(ringText, '23% · 225k', 'Context ring must compute exact 225k / 1M (23%) from Fiber usage');
   assert.equal(ringArc?.getAttribute('stroke'), '#10b981', 'Context ring stroke color must be green (<55%)');
-  console.log(`  [PASS 6] 1M 上下文环 (#agy-ctx-ring-pill) 实时计算与固定展示核验通过: "${ringText}"`);
+
+  // Verify v2.29.0 flags & official context-usage-indicator / context-usage-panel integration
+  const savedFlags = JSON.parse(win.localStorage.getItem('jetski.developer.customFlagOverrides') || '{}');
+  assert.equal(savedFlags['enable-context-usage-indicator'], true, 'enable-context-usage-indicator must be enabled');
+  assert.equal(win.localStorage.getItem('contextUsageIndicatorEnabled'), 'true', 'contextUsageIndicatorEnabled must default to "true"');
+
+  const officialIndicator = doc.createElement('button');
+  officialIndicator.setAttribute('data-testid', 'context-usage-indicator');
+  doc.body.appendChild(officialIndicator);
+  win.dispatchEvent({ type: 'resize' });
+  assert.equal(
+    ringPill.style.display,
+    'none',
+    '#agy-ctx-ring-pill must automatically yield (display: none) when official [data-testid="context-usage-indicator"] is mounted'
+  );
+  officialIndicator.remove();
+
+  const officialPanel = doc.createElement('div');
+  officialPanel.setAttribute('data-testid', 'context-usage-panel');
+  const hdrSpan = doc.createElement('span');
+  hdrSpan.textContent = 'Context window';
+  const subP = doc.createElement('p');
+  subP.className = 'font-mono tabular-nums';
+  subP.appendChild(doc.createTextNode('120K'));
+  subP.appendChild(doc.createTextNode(' of'));
+  subP.appendChild(doc.createTextNode(' '));
+  subP.appendChild(doc.createTextNode('983K'));
+  subP.appendChild(doc.createTextNode(' tokens used'));
+  const panelQuotaSpan = doc.createElement('span');
+  panelQuotaSpan.className = 'font-mono';
+  panelQuotaSpan.appendChild(doc.createTextNode('85'));
+  panelQuotaSpan.appendChild(doc.createTextNode('% left'));
+  const dt1 = doc.createElement('dt');
+  dt1.textContent = 'Instructions and tools';
+  const dt2 = doc.createElement('dt');
+  dt2.textContent = 'Conversation';
+  const dt3 = doc.createElement('dt');
+  dt3.textContent = 'Free';
+  officialPanel.appendChild(hdrSpan);
+  officialPanel.appendChild(subP);
+  officialPanel.appendChild(panelQuotaSpan);
+  officialPanel.appendChild(dt1);
+  officialPanel.appendChild(dt2);
+  officialPanel.appendChild(dt3);
+  doc.body.appendChild(officialPanel);
+  await new Promise((r) => setTimeout(r, 90));
+  assert.equal(hdrSpan.textContent, '上下文窗口');
+  assert.equal(subP.textContent, '120K / 983K Token 已用');
+  assert.equal(panelQuotaSpan.textContent, '85% 剩余');
+  assert.equal(dt1.textContent, '系统指令与工具');
+  assert.equal(dt2.textContent, '会话正文与工具结果');
+  assert.equal(dt3.textContent, '剩余可用空间');
+  officialPanel.remove();
+
+  console.log(`  [PASS 6] 1M 上下文环 (#agy-ctx-ring-pill) 与 v2.29.0 官方指示器退让/面板中文化核验通过: "${ringText}"`);
 
   // -------------------------------------------------------------------------
   // Verification 7: Workspace Clutter & macOS + Windows Temp Folder Filtering (plus non-temp guard)

@@ -74,7 +74,8 @@
     'enable-auto-permission-preset': true,
     'enable-resume-conversations-from-restart': true,
     'enable-conversation-search-v2': true,
-    'context-window-selector': true
+    'context-window-selector': true,
+    'enable-context-usage-indicator': true
   };
 
   async function runOneTimeLegacyFlagsReset() {
@@ -87,8 +88,9 @@
       if (rawFlags) {
         try { existing = JSON.parse(rawFlags) || {}; } catch (e) { existing = {}; }
       }
-      const merged = Object.assign({}, OFFICIAL_HIDDEN_FLAGS, existing, {
-        'context-window-selector': true
+      const merged = Object.assign({}, existing, OFFICIAL_HIDDEN_FLAGS, {
+        'context-window-selector': true,
+        'enable-context-usage-indicator': true
       });
       const mergedStr = JSON.stringify(merged);
       if (rawFlags !== mergedStr) {
@@ -100,6 +102,23 @@
             oldValue: rawFlags,
             storageArea: window.localStorage
           }));
+        } catch (e) {}
+      }
+
+      if (!window.localStorage.getItem('agy_enhance_ctx_indicator_default_v2290')) {
+        window.localStorage.setItem('agy_enhance_ctx_indicator_default_v2290', '1');
+        if (window.localStorage.getItem('contextUsageIndicatorEnabled') === null) {
+          window.localStorage.setItem('contextUsageIndicatorEnabled', 'true');
+        }
+        try {
+          const stApi = window.nativeStorage || (window.electronAPI && window.electronAPI.storage);
+          if (stApi && typeof stApi.getItems === 'function' && typeof stApi.updateItems === 'function') {
+            Promise.resolve(stApi.getItems()).then((items) => {
+              if (!items || items.contextUsageIndicatorEnabled === undefined) {
+                stApi.updateItems({ contextUsageIndicatorEnabled: 'true' });
+              }
+            }).catch(() => {});
+          }
         } catch (e) {}
       }
 
@@ -130,6 +149,8 @@
       }
     } catch (e) {}
   }
+
+  let fmFlagsHotPatched = false;
 
   function sanitizeWorkspaceAndGoogleCorpClutter() {
     try {
@@ -167,6 +188,34 @@
       }
 
       if (fm) {
+        try {
+          const cf = fm.runtimeEnvironment && fm.runtimeEnvironment.customFlags;
+          let addedAnyFlag = false;
+          if (Array.isArray(cf)) {
+            for (const [fk, fv] of Object.entries(OFFICIAL_HIDDEN_FLAGS)) {
+              if (fv && !cf.includes(fk)) {
+                cf.push(fk);
+                addedAnyFlag = true;
+              }
+            }
+          }
+          if (addedAnyFlag && fm.getCache && typeof fm.getCache.delete === 'function') {
+            fm.getCache.delete('contextUsageIndicator');
+            fm.getCache.delete('contextUsageIndicatorEnabled');
+            fm.getCache.delete('contextWindowSelector');
+          }
+          if (!fmFlagsHotPatched) {
+            fmFlagsHotPatched = true;
+            const stApi = window.nativeStorage || (window.electronAPI && window.electronAPI.storage);
+            if (stApi && typeof stApi.getItems === 'function' && typeof stApi.updateItems === 'function') {
+              Promise.resolve(stApi.getItems()).then((items) => {
+                if (!items || items.contextUsageIndicatorEnabled === undefined) {
+                  stApi.updateItems({ contextUsageIndicatorEnabled: 'true' });
+                }
+              }).catch(() => {});
+            }
+          }
+        } catch (e) {}
         const pc = fm.get('projectsCustomizations');
         if (pc && typeof pc === 'object') {
           pc.magicWorkspaceEnabled = false;
@@ -885,6 +934,16 @@
     'Set the volume of agent sounds.': '调节智能体事件提示音的音量大小。',
     'Configure default behaviors, skills, and MCP servers.': '管理系统默认扩展、全局技能与外部 MCP 服务。',
     'Token Usage': '上下文 Token 占用明细',
+    'Context window': '上下文窗口',
+    'Instructions and tools': '系统指令与工具',
+    'Free': '剩余可用空间',
+    'tokens used': 'Token 已用',
+    'Compacted since the last response; counts update after the next one.': '自上次回复后已完成压缩，计数将在下一轮回复后更新。',
+    'When it fills up, older turns are summarized to make room.': '当上下文将满时，系统会自动摘要早期轮次以腾出空间。',
+    'Context and Quota Indicator': '上下文与配额指示器',
+    'Show how full the context window is next to the send button. Click it for a breakdown and to see your model quota.': '在发送按钮旁显示上下文窗口占用环；点击可查看分类占用明细与模型配额。',
+    'View Usage': '查看用量',
+    'Model quota': '模型配额',
     'Loading token usage...': '正在统计 Token 占用...',
     'Loading workspace customizations...': '正在加载工作区扩展与规则...',
     'Loading available plugins...': '正在加载可用插件列表...',
@@ -1085,7 +1144,26 @@
     'Queries the UniBind database for experimentally validated transcription factor (TF) binding sites. Use when retrieving direct TF-DNA interaction datasets, downloading binding site coordinates (BED/FASTA) for local analysis, or listing available datasets by species, cell line, or TF name. Don\'t use to query specific intervals, locations, genes, motif models or expression data.': '检索 UniBind 实验验证的转录因子直接结合位点 (TFBS) 数据集',
     'Access protein metadata, function, taxonomy, and sequences across UniProtKB, UniParc, and UniRef. Use when searching for proteins, mapping identifiers, or retrieving functional annotations and publications. Don\'t use for sequence alignment, protein folding, or sequence similarity search (use specialized skills for those tasks).': '检索 UniProt 蛋白质知识库的序列、功能注释、分类学与文献记录',
     'Checks whether the uv Python package manager is installed and installs it if missing. Ensures uv is on PATH. Use when another skill requires uv as a prerequisite.': '检查并配置 uv Python 包管理器运行环境',
-    'Distills a completed user workflow or interaction into a reusable agent skill. Use when the user asks to turn their workflow, interaction, or multi-step process into a skill, or when they say "make this a skill", "create a skill from what we just did", "package this workflow" or similar. Do not use for creating skills from scratch without an existing workflow (use a generic skill-creator for that).': '将已完成的交互式多步工作流提炼封装为可复用的 SKILL.md 技能包'
+    'Distills a completed user workflow or interaction into a reusable agent skill. Use when the user asks to turn their workflow, interaction, or multi-step process into a skill, or when they say "make this a skill", "create a skill from what we just did", "package this workflow" or similar. Do not use for creating skills from scratch without an existing workflow (use a generic skill-creator for that).': '将已完成的交互式多步工作流提炼封装为可复用的 SKILL.md 技能包',
+    // --- v2.29.0 上下文与配额指示器 (dqc / Spc) React 拆分文本片段与新增设置项 ---
+    'Context window': '上下文窗口',
+    'Context Window': '上下文窗口',
+    'tokens used': 'Token 已用',
+    'Tokens used': 'Token 已用',
+    'tokens remaining': '剩余 Token',
+    'tokens available': '可用 Token',
+    '% left': '% 剩余',
+    '% used': '% 已用',
+    '% full': '% 已满',
+    'Instructions and tools': '系统指令与工具',
+    'Free': '剩余可用空间',
+    'Compacted since the last response; counts update after the next one.': '自上次回复后已压缩；统计将在下一轮更新。',
+    'When it fills up, older turns are summarized to make room.': '上下文写满时，早期对话将自动摘要以腾出空间。',
+    'Chat Width': '对话与版面宽度',
+    'Context and Quota Indicator': '上下文与模型额度指示器',
+    'Show how full the context window is next to the send button. Click it for a breakdown and to see your model quota.': '在发送按钮旁显示当前上下文窗口占用环；点击可查看上下文构成明细与模型剩余额度。',
+    'Open Links In': '默认打开链接方式',
+    'Choose where links open by default when clicked.': '选择点击网页链接时的默认打开位置。'
   };
 
   const REVERSE_TO_EN = {};
@@ -1201,6 +1279,18 @@
       }
     },
     {
+      re: /^(\d+)%\s+left$/i,
+      zh: (_, pct) => `剩余 ${pct}%`
+    },
+    {
+      re: /^Context window\s+(?:about\s+)?(\d+)%\s+full(?:,\s*compacted since the last response)?$/i,
+      zh: (full, pct) => full.includes('compacted') ? `上下文窗口已用约 ${pct}%（上次回复后已压缩）` : `上下文窗口已用 ${pct}%`
+    },
+    {
+      re: /^(\d+)%\s+of the context window used$/i,
+      zh: (_, pct) => `已使用 ${pct}% 上下文窗口`
+    },
+    {
       re: /^You have used some of your weekly limit, it will fully refresh in\s+(.+)\.$/i,
       zh: (_, t) => `您已使用部分本周额度，将在 ${t.replace(/days?/i, '天').replace(/hours?/i, '小时').replace(/minutes?/i, '分钟')} 后完全重置。`
     },
@@ -1305,13 +1395,17 @@
       }
 
       const cls = typeof cur.className === 'string' ? cur.className : '';
-      if (
-        cls.includes('prose') ||
-        cls.includes('monaco') ||
-        cls.includes('prism') ||
-        cls.includes('font-mono')
-      ) {
+      if (cls.includes('prose') || cls.includes('monaco') || cls.includes('prism')) {
         return true;
+      }
+      if (cls.includes('font-mono')) {
+        const inAllowedUiPanel = Boolean(
+          cur.closest &&
+          cur.closest('[data-testid="context-usage-panel"], [data-testid="context-usage-indicator"], .settings-modal-container')
+        );
+        if (!inAllowedUiPanel) {
+          return true;
+        }
       }
       cur = cur.parentElement;
     }
@@ -1337,6 +1431,26 @@
     const currentRaw = textNode.nodeValue || '';
     const { leading, core, trailing } = splitWhitespace(currentRaw);
     if (!core) return;
+
+    const inCtxUsagePanel = Boolean(parent.closest && parent.closest('[data-testid="context-usage-panel"]'));
+    if (inCtxUsagePanel && (core === 'of' || core === '/')) {
+      const wantZh = globalPrefs.enabled && globalPrefs.lang !== 'en' && !globalPrefs.bossMode;
+      const nextRaw = leading + (wantZh ? '/' : 'of') + trailing;
+      trackedTextNodes.set(textNode, { origEn: 'of', lastWritten: nextRaw });
+      if (textNode.nodeValue !== nextRaw) {
+        textNode.nodeValue = nextRaw;
+      }
+      return;
+    }
+    if (inCtxUsagePanel && (core === 'Conversation' || core === '会话正文与工具结果' || core === '当前会话操作')) {
+      const wantZh = globalPrefs.enabled && globalPrefs.lang !== 'en' && !globalPrefs.bossMode;
+      const nextRaw = leading + (wantZh ? '会话正文与工具结果' : 'Conversation') + trailing;
+      trackedTextNodes.set(textNode, { origEn: 'Conversation', lastWritten: nextRaw });
+      if (textNode.nodeValue !== nextRaw) {
+        textNode.nodeValue = nextRaw;
+      }
+      return;
+    }
 
     let rec = trackedTextNodes.get(textNode);
     if (rec) {
@@ -1588,6 +1702,10 @@
       html[data-agy-widescreen="1"] .prose table {
         display: table !important;
         width: 100% !important;
+      }
+
+      body:has([data-testid="context-usage-indicator"]) #agy-ctx-ring-pill {
+        display: none !important;
       }
 
       #agy-ctx-ring-pill {
@@ -2233,6 +2351,14 @@
       return;
     }
 
+    const officialInd = document.querySelector
+      ? document.querySelector('[data-testid="context-usage-indicator"]')
+      : null;
+    if (officialInd && officialInd.offsetWidth > 0 && officialInd.offsetHeight > 0) {
+      if (ctxRingPill) ctxRingPill.style.display = 'none';
+      return;
+    }
+
     const turboBtn = findActiveComposerTurboButton();
     if (!turboBtn) {
       if (ctxRingPill) ctxRingPill.style.display = 'none';
@@ -2795,10 +2921,8 @@
     if (!s) return '';
     if (/[\u4e00-\u9fa5]{4,}/.test(s) && !/[a-zA-Z]{4,}\s+[a-zA-Z]{4,}/.test(s)) return s;
 
-    let m = s.match(/^Run\s+(?:resident\s+)?ArchUnit\s+(L\d+)\s+(?:gate\s+)?review\s+on\s+(.+)$/i);
-    if (m) return `执行 ${translateEnglishPhrasePartsToZh(m[2])} 阶段 ArchUnit ${m[1]} 关口审读`;
 
-    m = s.match(/^Commit\s+([A-Za-z0-9_-]+)\s+checkpoint\s+(r\d+)(?:\s+revoking\s+(.+))?(?:\s+for\s+(.+))?$/i);
+    let m = s.match(/^Commit\s+([A-Za-z0-9_-]+)\s+checkpoint\s+(r\d+)(?:\s+revoking\s+(.+))?(?:\s+for\s+(.+))?$/i);
     if (m) {
       if (m[3]) return `提交 ${m[1]} 检查点 ${m[2]}（撤回 ${translateEnglishPhrasePartsToZh(m[3])}）`;
       if (m[4]) return `提交 ${m[1]} 检查点 ${m[2]}（${translateEnglishPhrasePartsToZh(m[4])}）`;

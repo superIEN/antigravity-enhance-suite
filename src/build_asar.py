@@ -36,7 +36,13 @@ def patch_storage_js(code: str) -> str:
     old_ctor = "this.emitter = new events_1.EventEmitter();"
     new_ctor = (
         "this.emitter = new events_1.EventEmitter();\n"
-        "        this._writeQueue = Promise.resolve();"
+        "        this._writeQueue = Promise.resolve();\n"
+        "        if (!this.defaults) {\n"
+        "            this.defaults = new Map();\n"
+        "        }\n"
+        "        if (this.defaults instanceof Map && !this.defaults.has('contextUsageIndicatorEnabled')) {\n"
+        "            this.defaults.set('contextUsageIndicatorEnabled', 'true');\n"
+        "        }"
     )
     assert old_ctor in code, "storage.js constructor anchor not found"
     code = code.replace(old_ctor, new_ctor, 1)
@@ -75,6 +81,19 @@ def patch_storage_js(code: str) -> str:
         "const windows = (0, utils_1.getHubWindows)();",
     )
 
+    old_update_v229 = old_update_v226.replace(
+        """            const windows = electron_1.BrowserWindow.getAllWindows();
+            for (const win of windows) {
+                win.webContents.send('storage:changed', changes);
+            }""",
+        """            for (const win of (0, utils_1.getHubWindows)()) {
+                const hubContents = (0, utils_1.getHubWebContents)(win);
+                if (hubContents && !hubContents.isDestroyed?.()) {
+                    hubContents.send('storage:changed', changes);
+                }
+            }""",
+    )
+
     new_update = """    async updateItems(changes) {
         const op = this._writeQueue.then(() => this._doUpdateItems(changes));
         this._writeQueue = op.catch(() => {});
@@ -108,10 +127,13 @@ def patch_storage_js(code: str) -> str:
             const tmpPath = this.storagePath + '.tmp.' + process.pid;
             await fs.writeFile(tmpPath, JSON.stringify(currentItems, null, 2), 'utf-8');
             await fs.rename(tmpPath, this.storagePath);
-            const windows = typeof utils_1 !== 'undefined' && typeof utils_1.getHubWindows === 'function' ? (0, utils_1.getHubWindows)() : electron_1.BrowserWindow.getAllWindows();
+            const windows = typeof utils_1 !== 'undefined' && typeof utils_1.getHubWindows === 'function' ? (0, utils_1.getHubWindows)() : (typeof electron_1 !== 'undefined' ? electron_1.BrowserWindow.getAllWindows() : []);
             for (const win of windows) {
-                if (!win.isDestroyed()) {
-                    win.webContents.send('storage:changed', changes);
+                if (win && !win.isDestroyed?.()) {
+                    const wc = typeof utils_1 !== 'undefined' && typeof utils_1.getHubWebContents === 'function' ? (0, utils_1.getHubWebContents)(win) : win.webContents;
+                    if (wc && !wc.isDestroyed?.()) {
+                        wc.send('storage:changed', changes);
+                    }
                 }
             }
             this.emitter.emit('changed', changes);
@@ -121,6 +143,8 @@ def patch_storage_js(code: str) -> str:
             throw e;
         }
     }"""
+    if old_update_v229 in code:
+        return code.replace(old_update_v229, new_update, 1)
     if old_update_v227 in code:
         return code.replace(old_update_v227, new_update, 1)
     assert old_update_v226 in code, "storage.js updateItems anchor not found"
@@ -155,8 +179,14 @@ def patch_ipc_handlers_js(code: str) -> str:
     function isTrustedAgySender(_event) {
         if (!_event || !_event.sender || _event.sender.isDestroyed()) return null;
         if (_event.senderFrame !== _event.sender.mainFrame) return null;
-        const win = electron_1.BrowserWindow.fromWebContents(_event.sender);
-        if (!win || win.isDestroyed()) return null;
+        const win = (typeof utils_1 !== 'undefined' && typeof utils_1.resolveHubWindowFromWebContents === 'function')
+            ? (0, utils_1.resolveHubWindowFromWebContents)(_event.sender)
+            : electron_1.BrowserWindow.fromWebContents(_event.sender);
+        if (!win || win.isDestroyed?.()) return null;
+        const hubWc = (typeof utils_1 !== 'undefined' && typeof utils_1.getHubWebContents === 'function')
+            ? (0, utils_1.getHubWebContents)(win)
+            : win.webContents;
+        if (!hubWc || hubWc !== _event.sender) return null;
         try {
             const parsed = new URL(_event.sender.getURL() || '');
             const liveLsPort = (0, languageServer_agy_ipc.getLsPort)();
@@ -182,6 +212,7 @@ def patch_ipc_handlers_js(code: str) -> str:
         if (
             win &&
             process.platform === 'win32' &&
+            typeof win.setTitleBarOverlay === 'function' &&
             options &&
             typeof options.color === 'string' &&
             /^#[0-9a-fA-F]{6}$/.test(options.color) &&
@@ -335,9 +366,17 @@ def patch_ipc_handlers_js(code: str) -> str:
                     lsGeneration: global.__agyLsGeneration || 1,
                     global: agyPrefsState.global,
                 };
-                for (const w of electron_1.BrowserWindow.getAllWindows()) {
-                    if (!w.isDestroyed()) {
-                        w.webContents.send('agy:preferences-changed', msg);
+                const allWins = (typeof utils_1 !== 'undefined' && typeof utils_1.getHubWindows === 'function')
+                    ? (0, utils_1.getHubWindows)()
+                    : electron_1.BrowserWindow.getAllWindows();
+                for (const w of allWins) {
+                    if (w && !w.isDestroyed?.()) {
+                        const wc = (typeof utils_1 !== 'undefined' && typeof utils_1.getHubWebContents === 'function')
+                            ? (0, utils_1.getHubWebContents)(w)
+                            : w.webContents;
+                        if (wc && !wc.isDestroyed?.()) {
+                            wc.send('agy:preferences-changed', msg);
+                        }
                     }
                 }
             }
@@ -370,6 +409,83 @@ def patch_ipc_handlers_js(code: str) -> str:
 
 def patch_preload_js(code: str) -> str:
     bridge_code = """
+// --- Antigravity Enhance Suite: Synchronous Pre-Main-World Flag & Indicator Bootstrap ---
+(function bootstrapAgyEnhanceFlagsSync() {
+    const seedFlags = () => {
+        try {
+            const g = globalThis;
+            if (!g.window || !g.localStorage || !g.location) return;
+            if (g.location.protocol !== 'https:' || g.location.hostname !== '127.0.0.1') return;
+
+            const REQUIRED_FLAGS = {
+                'enable-trajectory-debug-tools': true,
+                'enableRawErrorDetails': true,
+                'enableCompactionNotification': true,
+                'enable-developer-mode': true,
+                'enable-conversation-selection-quoting': true,
+                'enable-conversation-forking': true,
+                'enable-fork-at-historical-step': true,
+                'enable-fork-in-new-worktree': true,
+                'enable-conversation-navigator': true,
+                'enable-input-draft-persistence': true,
+                'enable-input-autocomplete': true,
+                'enable-sidebar-unread-dot': true,
+                'enable-conversation-groups': true,
+                'enable-split-view': true,
+                'enable-thought-editing': true,
+                'enable-thought-steering-from-selection': true,
+                'markdown-table-v2': true,
+                'configure-artifact-width': true,
+                'enable-pdf-viewer': true,
+                'enable-notebook-rendering': true,
+                'enable-file-explorer-tab': true,
+                'enable-code-search-palette': true,
+                'enable-git-vcs-ui': true,
+                'enable-permissions-selector': true,
+                'enable-auto-permission-preset': true,
+                'enable-resume-conversations-from-restart': true,
+                'enable-conversation-search-v2': true,
+                'context-window-selector': true,
+                'enable-context-usage-indicator': true,
+            };
+
+            let existing = {};
+            const rawFlags = g.localStorage.getItem('jetski.developer.customFlagOverrides');
+            if (rawFlags) {
+                try {
+                    const parsed = JSON.parse(rawFlags);
+                    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                        existing = parsed;
+                    }
+                } catch {}
+            }
+            const merged = Object.assign({}, existing, REQUIRED_FLAGS);
+            g.localStorage.setItem('jetski.developer.customFlagOverrides', JSON.stringify(merged));
+            if (g.localStorage.getItem('contextUsageIndicatorEnabled') === null) {
+                g.localStorage.setItem('contextUsageIndicatorEnabled', 'true');
+            }
+            if (!g.localStorage.getItem('jetski.developer.featureEnvironmentOverride')) {
+                g.localStorage.setItem(
+                    'jetski.developer.featureEnvironmentOverride',
+                    JSON.stringify({ enabled: true, userCohort: 'google' })
+                );
+            }
+            g.localStorage.setItem('jetski.projectV5Migration.regroupCardDismissed.v1', 'true');
+            if (typeof storageAPI !== 'undefined' && storageAPI && typeof storageAPI.getItems === 'function') {
+                Promise.resolve(storageAPI.getItems()).then((items) => {
+                    if (!items || items.contextUsageIndicatorEnabled === undefined) {
+                        storageAPI.updateItems({ contextUsageIndicatorEnabled: 'true' });
+                    }
+                }).catch(() => {});
+            }
+        } catch {}
+    };
+    seedFlags();
+    try {
+        globalThis.window?.addEventListener?.('DOMContentLoaded', seedFlags, { capture: true, once: true });
+    } catch {}
+})();
+
 const agyBridgeAPI = {
     getPreferences: () => electron_1.ipcRenderer.invoke('agy:get-preferences'),
     updatePreferences: (patch) => electron_1.ipcRenderer.invoke('agy:update-preferences', patch),
@@ -399,7 +515,11 @@ def patch_utils_js(code: str, loader_sha256: str, loader_byte_len: int) -> str:
     code = code.replace("devTools: (0, debugConsole_1.isDebugConsoleEnabled)(),", "devTools: true,")
     code = code.replace("const maxLength = 25;", "const maxLength = 120;")
 
-    old_create = "function createWindow(url, storageManager) {"
+    old_create_v229 = "function createWindow(url, storageManager, options) {"
+    old_create_v226 = "function createWindow(url, storageManager) {"
+    create_sig = old_create_v229 if old_create_v229 in code else old_create_v226
+    assert create_sig in code, "utils.js createWindow anchor not found"
+
     new_create = f"""let _defaultStorageManager = null;
 const crypto_agy = require("crypto");
 const os_agy = require("os");
@@ -418,13 +538,17 @@ function verifyLoaderIntegrity(rawBytes, actualSha) {{
         const receiptPath = path_agy.join(path_agy.dirname(AGY_LOADER_PATH), "last_install_receipt.json");
         if (fs.existsSync(receiptPath)) {{
             const receipt = JSON.parse(fs.readFileSync(receiptPath, "utf-8"));
-            const selfUtilsSha = crypto_agy.createHash("sha256").update(fs.readFileSync(__filename)).digest("hex");
+            const asarRec = (receipt && receipt.asar_receipt) || {{}};
+            const recBytes = typeof receipt?.loader_bytes === "number" ? receipt.loader_bytes : asarRec.loader_bytes;
+            const recSha = receipt?.loader_sha256 || asarRec.loader_sha256;
+            const appVer = typeof electron_1?.app?.getVersion === "function" ? electron_1.app.getVersion() : null;
+            const verOk = !appVer || !receipt?.version || receipt.version === appVer;
             if (
                 receipt &&
+                verOk &&
                 receipt.desktop_enhance_version === EXPECTED_LOADER_VERSION &&
-                receipt.utils_js_sha256 === selfUtilsSha &&
-                receipt.loader_bytes === rawBytes.length &&
-                receipt.loader_sha256 === actualSha
+                recBytes === rawBytes.length &&
+                recSha === actualSha
             ) {{
                 return true;
             }}
@@ -434,7 +558,8 @@ function verifyLoaderIntegrity(rawBytes, actualSha) {{
 }}
 
 function attachControlledEnhancement(win) {{
-    const wc = win.webContents;
+    const wc = (typeof getHubWebContents === 'function' ? getHubWebContents(win) : null) || win.webContents;
+    if (!wc) return;
     let generation = 0;
     let disposed = false;
 
@@ -485,7 +610,7 @@ function attachControlledEnhancement(win) {{
     wc.once('destroyed', disposeBinding);
 }}
 
-function createWindow(url, storageManager) {{
+{create_sig}
     if (storageManager) {{
         _defaultStorageManager = storageManager;
     }} else if (_defaultStorageManager) {{
@@ -500,8 +625,21 @@ function createWindow(url, storageManager) {{
         }}
     }} catch {{}}"""
 
-    assert old_create in code, "utils.js createWindow anchor not found"
-    code = code.replace(old_create, new_create, 1)
+    code = code.replace(create_sig, new_create, 1)
+
+    old_load_v229 = """    const hubContents = getHubWebContents(win);
+    if (!hubContents) {
+        throw new Error('Failed to resolve Hub webContents for window');
+    }
+    void hubContents.loadURL(url);"""
+    new_load_v229 = """    const hubContents = getHubWebContents(win);
+    if (!hubContents) {
+        throw new Error('Failed to resolve Hub webContents for window');
+    }
+    attachControlledEnhancement(win);
+    void hubContents.loadURL(url);"""
+    if old_load_v229 in code:
+        return code.replace(old_load_v229, new_load_v229, 1)
 
     old_load = "    void win.loadURL(url);"
     new_load = "    attachControlledEnhancement(win);\n    void win.loadURL(url);"
@@ -880,14 +1018,33 @@ def patch_main_js(code: str) -> str:
         "const windows = (0, utils_1.getHubWindows)();",
     )
 
+    old_port_cb_v229 = """            onPortChanged: (newPort) => {
+                const newUrl = `${constants_1.WINDOW_ORIGIN}:${newPort}/`;
+                console.log(`[Auto-Restart] Port changed! Reloading all windows with URL: ${newUrl}`);
+                // Apply cert trust
+                (0, languageServer_1.setupLocalCertTrust)();
+                if (!HEADLESS) {
+                    const windows = (0, utils_1.getHubWindows)();
+                    for (const win of windows) {
+                        const hubContents = (0, utils_1.getHubWebContents)(win);
+                        if (hubContents && !hubContents.isDestroyed?.()) {
+                            void hubContents.loadURL(newUrl);
+                        }
+                    }
+                }
+            },"""
+
     new_port_cb = """            onPortChanged: (newPort) => {
                 (0, languageServer_1.setupLocalCertTrust)();
                 const lsGen = global.__agyLsGeneration || 1;
                 if (!HEADLESS) {
                     const allWins = typeof utils_1 !== 'undefined' && typeof utils_1.getHubWindows === 'function' ? (0, utils_1.getHubWindows)() : electron_1.BrowserWindow.getAllWindows();
                     for (const w of allWins) {
-                        if (!w.isDestroyed()) {
-                            w.webContents.send('agy:preferences-changed', { lsGeneration: lsGen });
+                        if (w && !w.isDestroyed?.()) {
+                            const wc = typeof utils_1 !== 'undefined' && typeof utils_1.getHubWebContents === 'function' ? (0, utils_1.getHubWebContents)(w) : w.webContents;
+                            if (wc && !wc.isDestroyed?.()) {
+                                wc.send('agy:preferences-changed', { lsGeneration: lsGen });
+                            }
                         }
                     }
                 }
@@ -900,9 +1057,11 @@ def patch_main_js(code: str) -> str:
                 if (!HEADLESS) {
                     const windows = typeof utils_1 !== 'undefined' && typeof utils_1.getHubWindows === 'function' ? (0, utils_1.getHubWindows)() : electron_1.BrowserWindow.getAllWindows();
                     for (const win of windows) {
-                        if (win.isDestroyed()) continue;
+                        if (!win || win.isDestroyed?.()) continue;
                         try {
-                            const cur = win.webContents.getURL() || '';
+                            const wc = typeof utils_1 !== 'undefined' && typeof utils_1.getHubWebContents === 'function' ? (0, utils_1.getHubWebContents)(win) : win.webContents;
+                            if (!wc || wc.isDestroyed?.()) continue;
+                            const cur = wc.getURL() || '';
                             const parsed = new URL(cur);
                             if (
                                 parsed.protocol === 'https:' &&
@@ -911,13 +1070,15 @@ def patch_main_js(code: str) -> str:
                                 parsed.password === ''
                             ) {
                                 parsed.port = String(newPort);
-                                void win.loadURL(parsed.toString());
+                                void wc.loadURL(parsed.toString());
                             }
                         } catch {}
                     }
                 }
             },"""
 
+    if old_port_cb_v229 in code:
+        return code.replace(old_port_cb_v229, new_port_cb, 1)
     if old_port_cb_v227 in code:
         return code.replace(old_port_cb_v227, new_port_cb, 1)
     assert old_port_cb_v226 in code, "main.js onPortChanged anchor not found"
@@ -966,7 +1127,7 @@ def build_candidate_asar(orig_asar_path: Path, loader_path: Path, candidate_asar
             continue
         finfo = dist_entries[fname]
         off, sz = int(finfo["offset"]), int(finfo["size"])
-        orig_code = raw_orig[orig_data_start + off : orig_data_start + off + sz].decode("utf-8")
+        orig_code = raw_orig[orig_data_start + off : orig_data_start + off + sz].decode("utf-8").replace("\r\n", "\n")
         new_code = patch_fn(orig_code)
         staged_file = staging_js_dir / fname
         staged_file.write_text(new_code, encoding="utf-8", newline="\n")
@@ -1034,6 +1195,7 @@ def build_candidate_asar(orig_asar_path: Path, loader_path: Path, candidate_asar
         "header_sha256": header_sha256,
         "loader_sha256": loader_sha,
         "loader_bytes": loader_len,
+        "utils_js_sha256": sha256_hex(patched_dist_bytes["utils.js"]) if "utils.js" in patched_dist_bytes else "",
         "patched_modules": list(patched_dist_bytes.keys()),
         "packed_files": packed_count,
         "unpacked_files": unpacked_count,

@@ -223,10 +223,18 @@ def locate_h2ping_sites(data: bytes, funcs: dict):
     f1_off, f1_sz = funcs["net/http.(*Transport).protocols"]
     f1_bytes = data[f1_off : f1_off + f1_sz]
     idx1 = f1_bytes.find(H2_PROTOCOLS_CTX)
-    if idx1 == -1:
-        raise RuntimeError("Could not find TLSClientConfig check in net/http.(*Transport).protocols")
-    patch1_off = f1_off + idx1 + len(H2_PROTOCOLS_CTX)
-    sites.append(("net/http.(*Transport).protocols (HTTP/2 enable)", patch1_off, H2_PROTOCOLS_ORIG, H2_PROTOCOLS_PATCH))
+    if idx1 != -1:
+        patch1_off = f1_off + idx1 + len(H2_PROTOCOLS_CTX)
+        sites.append(("net/http.(*Transport).protocols (HTTP/2 enable)", patch1_off, H2_PROTOCOLS_ORIG, H2_PROTOCOLS_PATCH))
+    else:
+        # v2.29.0+: cmp qword ptr [rax+0x78], 0 (4883787800) followed by jne +0x66 (7566)
+        ctx_v229 = bytes.fromhex("4883787800")
+        orig_v229 = bytes.fromhex("7566")
+        idx1_v229 = f1_bytes.find(ctx_v229)
+        if idx1_v229 == -1:
+            raise RuntimeError("Could not find TLSClientConfig check in net/http.(*Transport).protocols")
+        patch1_off = f1_off + idx1_v229 + len(ctx_v229)
+        sites.append(("net/http.(*Transport).protocols (v2.29.0+ HTTP/2 enable)", patch1_off, orig_v229, H2_PROTOCOLS_PATCH))
 
     # Site 2: net/http/internal/http2.setConfigDefaults
     f2_off, f2_sz = funcs["net/http/internal/http2.setConfigDefaults"]
@@ -399,10 +407,40 @@ def locate_1m_context_sites(data: bytes, funcs: dict):
         if pos_hyd != -1:
             sites.append(("gateway.HydrateModelEntryDefaults (v2.25.0 default input 200K -> 1M)", h_off + pos_hyd, hyd_orig, hyd_patch))
 
+    # Site 22 (x64): utils.ClampCheckpointConfigForModelInfo (983,040 for 1M, preserves 200,000 for 200k under MaxTokenLimit in {0, 256000})
+    clamp_key = next((k for k in funcs if k.endswith("/utils.ClampCheckpointConfigForModelInfo")), None)
+    if clamp_key:
+        cl_off, cl_sz = funcs[clamp_key]
+        cl_bytes = data[cl_off : cl_off + cl_sz]
+        cl_x64_orig = bytes.fromhex("83780c00751c486353144881fa409c00007f0531d290eb074881c2c063ffff89500c")
+        cl_x64_patch = bytes.fromhex("8b500c85d2740881fa00e8030075138b531466837b16047e0681ea0000010089500c")
+        pos_cl = _find_orig_or_patch(cl_bytes, cl_x64_orig, cl_x64_patch)
+        if pos_cl != -1:
+            sites.append(
+                (
+                    "Site 22 utils.ClampCheckpointConfigForModelInfo (983,040 for 1M, preserves 200k)",
+                    cl_off + pos_cl,
+                    cl_x64_orig,
+                    cl_x64_patch,
+                )
+            )
+
     return sites
 
 
 def locate_media_compression_sites(data: bytes, funcs: dict):
+    # v2.29.0+ introduces native media.smallerAsJPEG / media.compressedMedia /
+    # media.CompressConfigFromProto / local.(*Backend).mediaCompressConfig, which
+    # natively compares PNG vs JPEG encoded byte sizes and retires Sites 7-8.
+    has_official_v229_media_compress = any(
+        k.endswith("/media.smallerAsJPEG")
+        or k.endswith("/media.CompressConfigFromProto")
+        or k.endswith("(*Backend).mediaCompressConfig")
+        for k in funcs
+    )
+    if has_official_v229_media_compress:
+        return []
+
     sites = []
     # Site 7: media.DefaultCompressionConfig in .data (5MB/2576px/Q85 -> 512KB/1280px/Q80)
     cfg_orig = struct.pack("<QQQ", 5242880, 2576, 85)
@@ -895,36 +933,56 @@ def locate_bg_task_timeout_sites(data: bytes, funcs: dict):
     if tr_key:
         tr_off, tr_sz = funcs[tr_key]
         tr_bytes = data[tr_off : tr_off + tr_sz]
-        tr_orig = bytes.fromhex("440fb68424c90000004584c00f84cc000000")
-        tr_patch = bytes.fromhex("440fb68424c90000004584c0e9cd00000090")
-        pos_tr = tr_bytes.find(tr_orig)
-        if pos_tr == -1:
-            pos_tr = tr_bytes.find(tr_patch)
-        if pos_tr != -1:
-            sites.append((
-                "AgentExecutor.transitionFromRunningToIdleOrClosed (always restart message watcher on Idle)",
-                tr_off + pos_tr,
-                tr_orig,
-                tr_patch,
-            ))
+        tr_candidates = [
+            # v2.29.0+: jz +0xcb -> jmp +0xcc; nop
+            (
+                bytes.fromhex("440fb68424c90000004584c00f84cb000000"),
+                bytes.fromhex("440fb68424c90000004584c0e9cc00000090"),
+            ),
+            # v2.28.x: jz +0xcc -> jmp +0xcd; nop
+            (
+                bytes.fromhex("440fb68424c90000004584c00f84cc000000"),
+                bytes.fromhex("440fb68424c90000004584c0e9cd00000090"),
+            ),
+        ]
+        for tr_orig, tr_patch in tr_candidates:
+            pos_tr = _find_orig_or_patch(tr_bytes, tr_orig, tr_patch)
+            if pos_tr != -1:
+                sites.append((
+                    "AgentExecutor.transitionFromRunningToIdleOrClosed (always restart message watcher on Idle)",
+                    tr_off + pos_tr,
+                    tr_orig,
+                    tr_patch,
+                ))
+                break
 
     # Site 20 (x64): (*AgentExecutor).startMessageWatcherLocked.func2
     mw2_key = next((k for k in funcs if k.endswith("/agentexecutor.(*AgentExecutor).startMessageWatcherLocked.func2")), None)
     if mw2_key:
         mw2_off, mw2_sz = funcs[mw2_key]
         mw2_bytes = data[mw2_off : mw2_off + mw2_sz]
-        mw2_orig = bytes.fromhex("0fb64c243384c97441488b8424a8000000")
-        mw2_patch = bytes.fromhex("0fb64c243384c99090488b8424a8000000")
-        pos_mw2 = mw2_bytes.find(mw2_orig)
-        if pos_mw2 == -1:
-            pos_mw2 = mw2_bytes.find(mw2_patch)
-        if pos_mw2 != -1:
-            sites.append((
-                "AgentExecutor.startMessageWatcherLocked.func2 (force immediate shouldWakeUp check)",
-                mw2_off + pos_mw2,
-                mw2_orig,
-                mw2_patch,
-            ))
+        mw2_candidates = [
+            # v2.29.0+: movzx edx, byte ptr [rsp+0x33]; test dl, dl; jz +0x41; mov rax, [rsp+0xa8]
+            (
+                bytes.fromhex("0fb654243384d27441488b8424a8000000"),
+                bytes.fromhex("0fb654243384d29090488b8424a8000000"),
+            ),
+            # v2.28.x: movzx ecx, byte ptr [rsp+0x33]; test cl, cl; jz +0x41; mov rax, [rsp+0xa8]
+            (
+                bytes.fromhex("0fb64c243384c97441488b8424a8000000"),
+                bytes.fromhex("0fb64c243384c99090488b8424a8000000"),
+            ),
+        ]
+        for mw2_orig, mw2_patch in mw2_candidates:
+            pos_mw2 = _find_orig_or_patch(mw2_bytes, mw2_orig, mw2_patch)
+            if pos_mw2 != -1:
+                sites.append((
+                    "AgentExecutor.startMessageWatcherLocked.func2 (force immediate shouldWakeUp check)",
+                    mw2_off + pos_mw2,
+                    mw2_orig,
+                    mw2_patch,
+                ))
+                break
 
     # Site 21 (x64): (*AgentExecutor).startMessageWatcherLocked.func2.1-range1
     mwr_key = next((k for k in funcs if k.endswith("/agentexecutor.(*AgentExecutor).startMessageWatcherLocked.func2.1-range1")), None)
