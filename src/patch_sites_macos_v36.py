@@ -137,9 +137,49 @@ ARM64_V36_SITES: tuple[Arm64FixedSite, ...] = (
 )
 
 
+def _resolve_dynamic_v36_sites(data: bytes | bytearray) -> list[Arm64FixedSite]:
+    funcs = base_patcher.parse_gopclntab(data)
+    sections = base_patcher.parse_macho_sections(data)
+    bg_sites = base_patcher.locate_bg_task_timeout_sites(data, funcs)
+    ctx_sites = base_patcher.locate_1m_context_sites(data, funcs)
+
+    by_id: dict[int, tuple[str, int, bytes, bytes]] = {}
+    for label, off, orig_b, patch_b in bg_sites + ctx_sites:
+        if "Site 19" in label:
+            by_id[19] = (label, off, orig_b, patch_b)
+        elif "Site 20" in label:
+            by_id[20] = (label, off, orig_b, patch_b)
+        elif "Site 21" in label:
+            by_id[21] = (label, off, orig_b, patch_b)
+        elif "Site 22" in label:
+            by_id[22] = (label, off, orig_b, patch_b)
+
+    resolved: list[Arm64FixedSite] = []
+    for site in ARM64_V36_SITES:
+        if site.site_id in by_id:
+            _, dyn_off, dyn_orig, dyn_patch = by_id[site.site_id]
+            dyn_va = base_patcher.macho_raw_to_va(sections, dyn_off) or (0x100000000 + dyn_off)
+            resolved.append(
+                Arm64FixedSite(
+                    site_id=site.site_id,
+                    name=site.name,
+                    symbol=site.symbol,
+                    va=dyn_va,
+                    file_off=dyn_off,
+                    orig_bytes=dyn_orig,
+                    patch_bytes=dyn_patch,
+                    description=site.description,
+                    prev_patch_bytes=site.prev_patch_bytes,
+                )
+            )
+        else:
+            resolved.append(site)
+    return resolved
+
+
 def inspect_v36_sites(data: bytes | bytearray) -> list[dict[str, object]]:
     results: list[dict[str, object]] = []
-    for site in ARM64_V36_SITES:
+    for site in _resolve_dynamic_v36_sites(data):
         end = site.file_off + len(site.orig_bytes)
         actual = bytes(data[site.file_off:end])
         if actual == site.patch_bytes:
@@ -174,7 +214,7 @@ def inspect_v36_sites(data: bytes | bytearray) -> list[dict[str, object]]:
 
 def apply_v36_sites(buf: bytearray) -> list[str]:
     actions: list[str] = []
-    for site in ARM64_V36_SITES:
+    for site in _resolve_dynamic_v36_sites(buf):
         end = site.file_off + len(site.orig_bytes)
         actual = bytes(buf[site.file_off:end])
         if actual == site.patch_bytes:
