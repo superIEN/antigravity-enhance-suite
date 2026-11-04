@@ -136,10 +136,14 @@ def locate_h2ping_sites(data: bytes, funcs: dict):
         # 1. net/http.(*Transport).protocols (HTTP/2 enable with custom TLSClientConfig)
         f1_off, f1_sz = funcs["net/http.(*Transport).protocols"]
         f1_bytes = data[f1_off : f1_off + f1_sz]
-        # Context: ldr x1, [x0, #0xc8] (016440f9) followed by cbnz x1, +0x80 (210400b5)
+        # Context: ldr x1, [x0, #0xc8] (016440f9) or v2.29.0+ ldr x1, [x0, #0x78] (013c40f9)
+        # followed by cbnz x1, +0x80/+0x84 (210400b5)
         ctx1 = bytes.fromhex("016440f9")
+        ctx1_v229 = bytes.fromhex("013c40f9")
         orig1 = bytes.fromhex("210400b5")
         idx1 = f1_bytes.find(ctx1)
+        if idx1 == -1:
+            idx1 = f1_bytes.find(ctx1_v229)
         if idx1 == -1:
             raise RuntimeError("Could not find TLSClientConfig check in ARM64 net/http.(*Transport).protocols")
         sites.append(
@@ -280,6 +284,16 @@ def locate_1m_context_sites(data: bytes, funcs: dict):
                 p2 = _find_orig_or_patch(f_bytes, cap_orig, cap_patch, p1 + len(cap_orig))
                 if p2 != -1:
                     sites.append(("utils.GetCheckpointConfig (cap 256K -> 1M #2)", f_off + p2, cap_orig, cap_patch))
+            else:
+                # v2.26.0+ / v2.29.0 ARM64: mov x4, #0xe800; movk x4, #0x3, lsl #16 -> 1M
+                cap29_orig = bytes.fromhex("04009dd26400a0f2")
+                cap29_patch = bytes.fromhex("040080d20402a0f2")
+                p1_29 = _find_orig_or_patch(f_bytes, cap29_orig, cap29_patch, 0)
+                if p1_29 != -1:
+                    sites.append(("utils.GetCheckpointConfig (cap 256K -> 1M #1)", f_off + p1_29, cap29_orig, cap29_patch))
+                    p2_29 = _find_orig_or_patch(f_bytes, cap29_orig, cap29_patch, p1_29 + len(cap29_orig))
+                    if p2_29 != -1:
+                        sites.append(("utils.GetCheckpointConfig (cap 256K -> 1M #2)", f_off + p2_29, cap29_orig, cap29_patch))
 
             fb_orig = bytes.fromhex("03009dd26300a0f2")
             fb_patch = bytes.fromhex("034888d2c301a0f2")
@@ -334,6 +348,20 @@ def locate_1m_context_sites(data: bytes, funcs: dict):
                         cl_patch,
                     )
                 )
+            else:
+                # v2.26.0+ / v2.29.0 ARM64: MaxTokenLimit field offset is [x0, #0xc] (str w3/w4, [x0, #0xc])
+                cl29_orig = bytes.fromhex("23010035231480b9048893d27f0004eb6c000054e3031faa02000014630004cb030c00b9")
+                cl29_patch = bytes.fromhex("65f84051bf0020716418407ac1000054241480b9854040d19f004171a4c0841a040c00b9")
+                p_cl29 = _find_orig_or_patch(cl_bytes, cl29_orig, cl29_patch)
+                if p_cl29 != -1:
+                    sites.append(
+                        (
+                            "Site 22 utils.ClampCheckpointConfigForModelInfo (983,040 for 1M, preserves 200k)",
+                            cl_off + p_cl29,
+                            cl29_orig,
+                            cl29_patch,
+                        )
+                    )
 
         return sites
 
@@ -550,6 +578,7 @@ def locate_stream_retry_sites(data: bytes, funcs: dict):
 
     if is_macho_arm64(data):
         sections = parse_macho_sections(data)
+        fn_va = macho_raw_to_va(sections, ir_off)
         # Site 13: unexpected EOF suffix match
         s13_arm_orig = bytes.fromhex("42f00c91630480d2")
         s13_arm_patch = bytes.fromhex("42440d91c30180d2")
@@ -563,9 +592,36 @@ def locate_stream_retry_sites(data: bytes, funcs: dict):
                     s13_arm_patch,
                 )
             )
+        else:
+            for i in range(0, len(ir_bytes) - 12, 4):
+                w1, w2, w3 = struct.unpack_from("<III", ir_bytes, i)
+                # adrp x2, page; add x2, x2, #imm; mov x3, #35 (or #14)
+                if (w1 & 0x9F00001F) == 0x90000002 and (w2 & 0xFFC003FF) == 0x91000042 and w3 in (0xD2800463, 0xD28001C3):
+                    immlo = (w1 >> 29) & 0x3
+                    immhi = (w1 >> 5) & 0x7FFFF
+                    imm = ((immhi << 2) | immlo) << 12
+                    if imm & (1 << 32):
+                        imm -= 1 << 33
+                    page = ((fn_va + i) & ~0xFFF) + imm
+                    add_imm = (w2 >> 10) & 0xFFF
+                    orig_add_imm = add_imm if w3 == 0xD2800463 else (add_imm - 21)
+                    str_raw = macho_va_to_raw(sections, page + orig_add_imm)
+                    if str_raw is not None and data[str_raw : str_raw + 35] == b"incomplete envelope: unexpected EOF":
+                        w2_orig = (w2 & 0xFFC003FF) | ((orig_add_imm & 0xFFF) << 10)
+                        w2_patch = (w2 & 0xFFC003FF) | (((orig_add_imm + 21) & 0xFFF) << 10)
+                        dyn13_orig = struct.pack("<II", w2_orig, 0xD2800463)
+                        dyn13_patch = struct.pack("<II", w2_patch, 0xD28001C3)
+                        sites.append(
+                            (
+                                "utils.IsRetryableAPIError ('unexpected EOF' mid-stream auto-retry)",
+                                ir_off + i + 4,
+                                dyn13_orig,
+                                dyn13_patch,
+                            )
+                        )
+                        break
 
         # Site 14: retryableSubstrings table in Mach-O __DATA
-        fn_va = macho_raw_to_va(sections, ir_off)
         arr_raw = None
         arr_len = 0
         for i in range(0, len(ir_bytes) - 8, 4):
@@ -632,6 +688,36 @@ def locate_stream_retry_sites(data: bytes, funcs: dict):
             )
             sites.append(
                 ("utils.IsRetryableAPIError (retryableSubstrings table expansion)", arr_raw, s14_orig, s14_patch)
+            )
+        elif arr_raw is not None and arr_len == 15:
+            # v2.26.0+ / v2.29.0 ARM64: 15-slot lowercase table after strings.ToLower
+            entries = [list(struct.unpack_from("<QQ", data, arr_raw + i * 16)) for i in range(15)]
+            va0, _ = entries[0]
+            va4, len4 = entries[4]
+            orig_va4 = va4 if len4 == 32 else (va4 - 22)
+            va13, _ = entries[13]
+            orig_va5 = macho_raw_to_va(sections, data.find(b"connection reset by peer"))
+            va_sre = macho_raw_to_va(sections, data.find(b"stream reading error: %w"))
+            va_unauth_lower = macho_raw_to_va(sections, data.find(b"unauthenticated"))
+
+            orig_entries = [list(e) for e in entries]
+            orig_entries[0] = [va0, 7]
+            orig_entries[1] = [va0 + 7, 7]
+            orig_entries[4] = [orig_va4, 32]
+            orig_entries[5] = [orig_va5, 24]
+            orig_entries[13] = [va13, 29]
+
+            patch_entries = [list(e) for e in entries]
+            patch_entries[0] = [va0, 3]
+            patch_entries[1] = [va_sre, 7]
+            patch_entries[4] = [orig_va4 + 22, 10]
+            patch_entries[5] = [va_unauth_lower, 15]
+            patch_entries[13] = [va13, 6]
+
+            s14_26_orig = b"".join(struct.pack("<QQ", v, l) for v, l in orig_entries)
+            s14_26_patch = b"".join(struct.pack("<QQ", v, l) for v, l in patch_entries)
+            sites.append(
+                ("utils.IsRetryableAPIError (v2.26.0+ 15-slot retryableSubstrings expansion)", arr_raw, s14_26_orig, s14_26_patch)
             )
         return sites
 
@@ -761,6 +847,24 @@ def locate_bg_task_timeout_sites(data: bytes, funcs: dict):
                         rtl_arm_patch,
                     )
                 )
+            else:
+                # v2.29.0 ARM64: x1=cmdSpec, x2=timeoutSec (at [sp, #0x88])
+                rtl29_arm_orig = bytes.fromhex(
+                    "820300b4e53741f9a60040f9c60200b4c64c40f9860200b4c600403986000037e3031faae60340b214000014"
+                )
+                rtl29_arm_patch = bytes.fromhex(
+                    "5f0000f14c010054e10200b426a04139a6020035820780d2e24700f9040000141f2003d51f2003d51f2003d5"
+                )
+                pos_rtl29 = _find_orig_or_patch(rtl_bytes, rtl29_arm_orig, rtl29_arm_patch)
+                if pos_rtl29 != -1:
+                    sites.append(
+                        (
+                            "RunCommandHandler.runTaskListeners (v2.29.0 non-daemon 60s default timeout wakeup)",
+                            rtl_off + pos_rtl29,
+                            rtl29_arm_orig,
+                            rtl29_arm_patch,
+                        )
+                    )
         else:
             rtl_orig = bytes.fromhex(
                 "4885f60f849e000000488b394885ff0f8482000000488bbf98000000"
@@ -848,6 +952,30 @@ def locate_bg_task_timeout_sites(data: bytes, funcs: dict):
                     break
 
     if is_macho_arm64(data):
+        # Site 16 (v2.28.0+ ARM64): (*runningCommand).waitInBackground non-daemon 60s default NotificationTimeoutSeconds wakeup
+        wib_key = next((k for k in funcs if k.endswith("/tools.(*runningCommand).waitInBackground")), None)
+        if wib_key:
+            wib_off, wib_sz = funcs[wib_key]
+            wib_bytes = data[wib_off : wib_off + wib_sz]
+            wib_arm_orig = bytes.fromhex(
+                "631c40f9044099d24473a7f2637c049b44a0403984000036e2031faae30340b21e000014"
+                "420040f9420300b4424c40f9020300b442004039620200367f0000f18c000054e2031faae30340b213000014"
+            )
+            wib_arm_patch = bytes.fromhex(
+                "64c0403904040035641c40f99f0000f16c000054840780d2641c00f9054099d24573a7f2"
+                "837c059b44a04039c4020037" + ("1f2003d5" * 8)
+            )
+            pos_wib = _find_orig_or_patch(wib_bytes, wib_arm_orig, wib_arm_patch)
+            if pos_wib != -1:
+                sites.append(
+                    (
+                        "runningCommand.waitInBackground (v2.28.0+ non-daemon 60s default timeout wakeup)",
+                        wib_off + pos_wib,
+                        wib_arm_orig,
+                        wib_arm_patch,
+                    )
+                )
+
         # Site 19 (ARM64): (*AgentExecutor).transitionFromRunningToIdleOrClosed
         tr_key = next((k for k in funcs if k.endswith("/agentexecutor.(*AgentExecutor).transitionFromRunningToIdleOrClosed")), None)
         if tr_key:
@@ -889,18 +1017,33 @@ def locate_bg_task_timeout_sites(data: bytes, funcs: dict):
         if mwr_key:
             mwr_off, mwr_sz = funcs[mwr_key]
             mwr_bytes = data[mwr_off : mwr_off + mwr_sz]
-            mwr_arm_orig = bytes.fromhex("4c67e197e21f40f94300403903010037e0000036")
-            mwr_arm_patch = bytes.fromhex("e00340b2e21f40f9430040391f2003d5e0000036")
-            pos_mwr = _find_orig_or_patch(mwr_bytes, mwr_arm_orig, mwr_arm_patch)
-            if pos_mwr != -1:
-                sites.append(
-                    (
-                        "Site 21 (*AgentExecutor).startMessageWatcherLocked.func2.1-range1 (SubagentsAndTasksIdle -> 1)",
-                        mwr_off + pos_mwr,
-                        mwr_arm_orig,
-                        mwr_arm_patch,
+            for ldr_x2_hex in ("e21f40f9", "e22740f9"):
+                mwr_tail_orig = bytes.fromhex(f"{ldr_x2_hex}4300403903010037e0000036")
+                mwr_arm_patch = bytes.fromhex(f"e00340b2{ldr_x2_hex}430040391f2003d5e0000036")
+                pos_tail = mwr_bytes.find(mwr_tail_orig)
+                if pos_tail >= 4 and (struct.unpack_from("<I", mwr_bytes, pos_tail - 4)[0] >> 26) == 0b100101:
+                    pos_mwr = pos_tail - 4
+                    mwr_arm_orig = bytes(mwr_bytes[pos_mwr : pos_mwr + 20])
+                else:
+                    pos_mwr = mwr_bytes.find(mwr_arm_patch)
+                    sub_idle_key = next((k for k in funcs if k.endswith(".(*AgentState).SubagentsAndTasksIdle")), None)
+                    if sub_idle_key and pos_mwr != -1:
+                        delta_words = (funcs[sub_idle_key][0] - (mwr_off + pos_mwr)) // 4
+                        bl_word = 0x94000000 | (delta_words & 0x03FFFFFF)
+                        bl_orig = struct.pack("<I", bl_word)
+                    else:
+                        bl_orig = bytes.fromhex("4c67e197")
+                    mwr_arm_orig = bl_orig + mwr_tail_orig
+                if pos_mwr != -1:
+                    sites.append(
+                        (
+                            "Site 21 (*AgentExecutor).startMessageWatcherLocked.func2.1-range1 (SubagentsAndTasksIdle -> 1)",
+                            mwr_off + pos_mwr,
+                            mwr_arm_orig,
+                            mwr_arm_patch,
+                        )
                     )
-                )
+                    break
         return sites
 
     # Site 16 (v2.28.0+ x64): (*runningCommand).waitInBackground non-daemon 60s default NotificationTimeoutSeconds wakeup

@@ -1130,7 +1130,7 @@ def build_candidate_asar(orig_asar_path: Path, loader_path: Path, candidate_asar
         orig_code = raw_orig[orig_data_start + off : orig_data_start + off + sz].decode("utf-8").replace("\r\n", "\n")
         new_code = patch_fn(orig_code)
         staged_file = staging_js_dir / fname
-        staged_file.write_text(new_code, encoding="utf-8", newline="\n")
+        staged_file.write_bytes(new_code.encode("utf-8"))
 
         chk = subprocess.run([node_bin, "--check", str(staged_file)], capture_output=True, text=True)
         if chk.returncode != 0:

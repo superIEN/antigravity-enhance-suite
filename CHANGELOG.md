@@ -9,9 +9,10 @@
 ### 新增与优化 (Added & Changed)
 - **官方 Antigravity `v2.29.0` 全栈深度适配与架构升级（经 Grok、Kimi、Codex、AGY 两轮多智能体交叉会诊）**：
   - **`language_server(.exe)` 二进制位点精准对齐与官方原生媒体压缩切流**：
-    - 适配 `v2.29.0` 编译偏移漂移位点：`Site 1 (net/http.(*Transport).protocols)`（`0x3688aa`）、`Site 19 ((*AgentExecutor).transitionFromRunningToIdleOrClosed)`（`0x25848ba`）、`Site 20 ((*AgentExecutor).startMessageWatcherLocked.func2)`（`0x2593fc5`）；
+    - 适配 Windows `x86_64` `v2.29.0` 编译偏移漂移位点：`Site 1 (net/http.(*Transport).protocols)`（`0x3688aa`）、`Site 19 ((*AgentExecutor).transitionFromRunningToIdleOrClosed)`（`0x25848ba`）、`Site 20 ((*AgentExecutor).startMessageWatcherLocked.func2)`（`0x2593fc5`）；
+    - 适配 macOS Apple Silicon (`darwin-arm64`) `v2.29.0` Mach-O 全部 28 处二进制位点：对齐 `Site 1 (net/http.(*Transport).protocols)` `[x0, #0x78]` 偏移（`0x2fe768`）、`Sites 4–5 (utils.GetCheckpointConfig)` `x4` 寄存器 `256K -> 1M`（`0x13aca84` / `0x13aca90`）、`Site 13 (utils.IsRetryableAPIError)` `adrp + add` 页内偏移自适应解析（`0x13b491c`）、`Site 14` 15 槽位小写断流重试表扩展（`0xa0ab2a8`）、`Site 15 (runTaskListeners)`（`0x1f0f788`）与 `Site 16 (waitInBackground)`（`0x1f46e00`）非守护命令 60s 默认超时唤醒、`Site 21 (startMessageWatcherLocked.func2.1-range1)` `[sp, #0x48]` 栈偏移与相对 `bl` 动态还原（`0x1f96784`），以及 `Site 22 (ClampCheckpointConfigForModelInfo)` `[x0, #0xc]` 字段偏移（`0x13acffc`）；
     - 自动识别 `v2.29.0` 新增的官方原生 `media.smallerAsJPEG` / `CompressConfigFromProto` / `local.(*Backend).mediaCompressConfig` 图片重编码管线，在 `v2.29.0+` 上优雅退役旧二进制 `Sites 7–8`（保留 `v2.24–v2.28` 向下兼容与 `src/compress_tempmedia.py` 会话级历史目录防爆守护）；
-    - 完整保留全部 5 处 1M（`983,040` Tokens）上下文扩窗位点（`Sites 3, 4, 5, 6, 22`）。
+    - 完整保留全部 1M（`983,040` Tokens）上下文扩窗位点（`Sites 3, 4, 5, 6, 22`），并在 `src/build_asar.py` 中使用 `write_bytes` 兼容 macOS 系统自带 Python 3.9。
   - **Electron 宿主 `BaseWindow` + `WebContentsView` (`hubWcv`) 架构适配与首屏同步预注入（`src/build_asar.py`）**：
     - 全面适配 `v2.29.0` 新增的 `getHubWindows()`、`getHubWebContents(win)` 与 `resolveHubWindowFromWebContents(wc)` 视图层封装；
     - **`patch_preload_js` 新端口首屏同步预注入**：针对每次重启后 `language_server` 切换随机端口导致 Chromium `window.localStorage` 按 Origin 归零的问题，在 `preload.js` 顶层（早于页面 `/main.js` 执行）同步写入 `REQUIRED_FLAGS`（含 `'enable-context-usage-indicator': true`、`'context-window-selector': true`）并通过 `storageAPI` 同步 `app_storage.json`；
