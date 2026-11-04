@@ -73,7 +73,7 @@ RE_NUMBERED_LINE = re.compile(r"(?m)^(\d+): ")
 # Spilled command output regex (matches host truncation notice in command output preamble)
 RE_SPILLED_OUTPUT = re.compile(
     r"The tool's output was truncated due to being too long\.\s*"
-    r"You can find the full output in a file at (?:file://)?(/[^\s\"'`\n\r]+?/\.system_generated/steps/(\d+)/output\.txt)"
+    r"You can find the full output in a file at (?:file:///?)?((?:/|[A-Za-z]:[\\/])[^\n\r\"`]+?[/\\]\.system_generated[/\\]steps[/\\](\d+)[/\\]output\.txt)"
 )
 
 
@@ -100,9 +100,13 @@ def normalize_target_path(raw_path: str, cwd: Optional[Path] = None) -> str:
     if not raw_path:
         return ""
     s = raw_path.strip().strip("`").strip("'").strip('"')
-    if s.startswith("file://"):
+    if s.startswith("file:///") and len(s) >= 10 and s[9] == ":":
+        s = s[len("file:///") :]
+    elif s.startswith("file://"):
         s = s[len("file://") :]
     s = urllib.parse.unquote(s)
+    if len(s) >= 3 and s[0] == "/" and s[2] == ":":
+        s = s[1:]
     p = Path(s)
     if not p.is_absolute() and cwd is not None:
         p = cwd / p
@@ -621,10 +625,7 @@ class FileReadTracker:
         disk_bytes: Optional[int] = None
         disk_sha256: Optional[str] = None
         p = Path(self.path)
-        is_mutable_ledger_projection = (
-            (p.name == "record.json" and ".biluohuangquan" in p.parts and "archunit" in p.parts)
-            or p.name.startswith("read_snapshots")
-        )
+        is_mutable_ledger_projection = p.name.startswith("read_snapshots")
         if check_disk and p.is_file():
             disk_lines, disk_bytes = count_file_lines_and_bytes(p)
             disk_sha256 = sha256_file(p)
@@ -1015,8 +1016,7 @@ def audit_session_reads(
         snapshot_ledger_path = (
             project_root
             / ".biluohuangquan"
-            / "archunit"
-            / "session3-harness-guardrails"
+            / "harness-guardrails"
             / f"read_snapshots_{conversation_id[:8]}.jsonl"
         )
 

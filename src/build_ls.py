@@ -38,16 +38,18 @@ def build_and_verify_ls(orig_ls_path: Path, candidate_ls_path: Path) -> dict:
     patched_sites = []
 
     if p.is_macho_arm64(raw):
+        media_sites = p.locate_media_compression_sites(raw, funcs)
         all_sites = (
             p.locate_h2ping_sites(raw, funcs)
             + p.locate_1m_context_sites(raw, funcs)
-            + p.locate_media_compression_sites(raw, funcs)
+            + media_sites
             + p.locate_utf8_and_uri_sites(raw, funcs)
             + p.locate_stream_retry_sites(raw, funcs)
             + p.locate_bg_task_timeout_sites(raw, funcs)
             + p.locate_oauth_token_sites(raw, funcs)
         )
-        assert len(all_sites) >= 28, f"Expected >=28 Mach-O ARM64 sites (Sites 1..22), got {len(all_sites)}"
+        min_arm64_sites = 28 if media_sites else 26
+        assert len(all_sites) >= min_arm64_sites, f"Expected >={min_arm64_sites} Mach-O ARM64 sites, got {len(all_sites)}"
         for name, off, before, after in all_sites:
             cur = bytes(raw[off : off + len(before)])
             if "retryableSubstrings" in name or "ClampCheckpointConfigForModelInfo" in name:
@@ -122,17 +124,23 @@ def build_and_verify_ls(orig_ls_path: Path, candidate_ls_path: Path) -> dict:
 
     image_base, sections = p.parse_pe_sections(raw)
 
+    media_sites = p.locate_media_compression_sites(raw, funcs)
     base_sites = (
         p.locate_h2ping_sites(raw, funcs)
         + p.locate_1m_context_sites(raw, funcs)
-        + p.locate_media_compression_sites(raw, funcs)
+        + media_sites
         + p.locate_utf8_and_uri_sites(raw, funcs)
         + [s for s in p.locate_stream_retry_sites(raw, funcs) if "unexpected EOF" in s[0]]
     )
-    assert len(base_sites) in (13, 14), f"Expected 13 or 14 base sites (Sites 1..13), got {len(base_sites)}"
+    expected_base_counts = (14, 15) if media_sites else (12, 13)
+    if len(base_sites) not in expected_base_counts:
+        raise RuntimeError(f"Expected {expected_base_counts} base sites, got {len(base_sites)}")
+    if not any("Site 22" in s[0] for s in base_sites):
+        raise RuntimeError("Site 22 (ClampCheckpointConfigForModelInfo) must be located on Windows PE")
     for name, off, before, after in base_sites:
         cur = bytes(raw[off : off + len(before)])
-        assert cur in (before, after), f"Unexpected bytes at {name}"
+        if cur not in (before, after):
+            raise RuntimeError(f"Unexpected bytes at {name}")
         raw[off : off + len(after)] = after
         patched_sites.append({"name": name, "offset": f"0x{off:x}"})
 

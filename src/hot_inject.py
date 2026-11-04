@@ -101,7 +101,12 @@ def hot_inject_running_windows(loader_path: Path, devtools_port_file: Optional[P
         targets = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=3).read().decode("utf-8"))
     except Exception:
         return []
-    pages = [t for t in targets if t.get("type") == "page" and "127.0.0.1:" in t.get("url", "")]
+    pages = [
+        t
+        for t in targets
+        if t.get("type") in ("page", "other", "webview")
+        and t.get("url", "").startswith("https://127.0.0.1:")
+    ]
 
     loader_code = loader_path.read_text(encoding="utf-8")
     expr = (

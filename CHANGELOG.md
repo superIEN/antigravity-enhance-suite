@@ -4,6 +4,31 @@
 
 ---
 
+## [v3.6.0] - 2026-11-05
+
+### 新增与优化 (Added & Changed)
+- **官方 Antigravity `v2.29.0` 全栈深度适配与架构升级（经 Grok、Kimi、Codex、AGY 两轮多智能体交叉会诊）**：
+  - **`language_server(.exe)` 二进制位点精准对齐与官方原生媒体压缩切流**：
+    - 适配 `v2.29.0` 编译偏移漂移位点：`Site 1 (net/http.(*Transport).protocols)`（`0x3688aa`）、`Site 19 ((*AgentExecutor).transitionFromRunningToIdleOrClosed)`（`0x25848ba`）、`Site 20 ((*AgentExecutor).startMessageWatcherLocked.func2)`（`0x2593fc5`）；
+    - 自动识别 `v2.29.0` 新增的官方原生 `media.smallerAsJPEG` / `CompressConfigFromProto` / `local.(*Backend).mediaCompressConfig` 图片重编码管线，在 `v2.29.0+` 上优雅退役旧二进制 `Sites 7–8`（保留 `v2.24–v2.28` 向下兼容与 `src/compress_tempmedia.py` 会话级历史目录防爆守护）；
+    - 完整保留全部 5 处 1M（`983,040` Tokens）上下文扩窗位点（`Sites 3, 4, 5, 6, 22`）。
+  - **Electron 宿主 `BaseWindow` + `WebContentsView` (`hubWcv`) 架构适配与首屏同步预注入（`src/build_asar.py`）**：
+    - 全面适配 `v2.29.0` 新增的 `getHubWindows()`、`getHubWebContents(win)` 与 `resolveHubWindowFromWebContents(wc)` 视图层封装；
+    - **`patch_preload_js` 新端口首屏同步预注入**：针对每次重启后 `language_server` 切换随机端口导致 Chromium `window.localStorage` 按 Origin 归零的问题，在 `preload.js` 顶层（早于页面 `/main.js` 执行）同步写入 `REQUIRED_FLAGS`（含 `'enable-context-usage-indicator': true`、`'context-window-selector': true`）并通过 `storageAPI` 同步 `app_storage.json`；
+    - **`patch_storage_js` 默认开启指示器并尊重用户开关**：在主进程 `StorageManager` 构造函数的 `this.defaults` Map 中注入 `'contextUsageIndicatorEnabled': 'true'`；
+    - **`patch_utils_js` 解除 `verifyLoaderIntegrity` 自指哈希死锁**：移除因 `EXPECTED_LOADER_SHA256` 内嵌于 `utils.js` 导致的 `selfUtilsSha` 自指死锁，改为校验应用版本及回执中的 `loader_sha256` / `loader_bytes`。
+  - **Windows 独占文件锁后台 WMI 自动换包守护（`agy_suite.py` · `deferred_asar_swapper.py`）**：
+    - 解决在已打开的 Antigravity 窗口内执行 `install --hot-inject` 时 `resources\app.asar` 被 `Antigravity.exe` 独占锁死（`[WinError 32]`）导致重启后前端增强丢失的顽疾；
+    - 通过 Windows WMI `Win32_Process.Create` 派生脱离进程树 Job Object 的无窗口守护进程，预先在 `resources\` 同目录完成候选包写入与 `fsync`，并在检测到客户端关闭释放文件锁的瞬间（`<100ms`）校验原包 SHA256 防版本漂移、执行 NTFS 元数据级原子替换 `os.replace`、清理历史 `.old.*` 残余文件并原子更新回执。
+  - **官方 `v2.29.0` 原生上下文与配额指示器（`context-usage-indicator` / `context-usage-panel`）联动与 React 拆分节点零破坏汉化（`src/agy-enhance-loader.js`）**：
+    - 接入原厂 `window.nativeStorage` 桥接对象并按 `Array.isArray(cf)` 规范热刷新 React `FeatureManager (Rka)` 的 `runtimeEnvironment.customFlags` 数组与 `getCache`，使官方底栏指示器在热注入与冷启动下均即时挂载；
+    - 通过 CSS `body:has([data-testid="context-usage-indicator"])` 与 JS 可见性双重检测，使自建 `#agy-ctx-ring-pill` 在官方指示器挂载时零闪烁自动退让；
+    - 放行 `[data-testid="context-usage-panel"]` 等面板内的 `font-mono` 文本节点翻译，并针对 React `dqc`（5 节点拆分 `120K of 983K tokens used`）与 `Spc`（2 节点拆分 `85% left`）实现单节点原地中文映射，100% 保持 React Fiber 引用零破坏。
+  - **修复数据库升级器 `src/upgrade_db_context_limit.py` 的行级 200K 判定**：将 `executor_metadata` 的 `db_has_any_200k` 判定从跨行跨字段 `any(v <= 262_144)` 修正为单行全字段 `all(v <= 262_144)`，消除子配置默认值 `200,000` 对 1M 会话 `gen_metadata` 升级的误拦截。
+- **社区 PR 审评与双轨可选分支归档**：新增 [《PR #4 (`v3.5.0`) 综合技术审核报告》](./docs/reviews/PR4_v3.5.0_Review_Report.md) 与 `optional/*` 分支拉取索引。
+
+---
+
 ## [v3.4.0] - 2026-11-01
 
 ### 新增与优化 (Added & Changed)

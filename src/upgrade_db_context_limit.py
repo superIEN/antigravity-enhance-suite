@@ -3,7 +3,7 @@
 AGY Trajectory SQLite (.db) Context Window Inspector & Structural Protobuf Upgrader
 ===================================================================================
 Inspects or upgrades `checkpoint_config.max_token_limit` and `ContextWindowMetadata.max_context_tokens`
-inside `/Users/ien/.gemini/antigravity/conversations/*.db` protobuf blobs using an exact
+inside `~/.gemini/antigravity/conversations/*.db` protobuf blobs using an exact
 structural protobuf wire-tree parser (zero blind byte-slice replacement).
 
 Verified Protobuf Field Paths & 3-Byte Varints:
@@ -116,22 +116,20 @@ def find_varints_at_path(
 
 
 def backup_sqlite_with_sidecars(db_path: Path) -> Path:
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     bak_db = db_path.with_suffix(f".db.bak_{ts}")
+    src_conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=10.0)
+    dst_conn = sqlite3.connect(str(bak_db))
     try:
-        src_conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=10.0)
-        dst_conn = sqlite3.connect(str(bak_db))
-        try:
-            src_conn.backup(dst_conn)
-        finally:
-            dst_conn.close()
-            src_conn.close()
+        src_conn.backup(dst_conn)
     except Exception:
-        shutil.copy2(db_path, bak_db)
-    for sidecar in ("-wal", "-shm"):
-        sc_path = Path(str(db_path) + sidecar)
-        if sc_path.exists():
-            shutil.copy2(sc_path, Path(str(bak_db) + sidecar))
+        dst_conn.close()
+        src_conn.close()
+        bak_db.unlink(missing_ok=True)
+        raise
+    finally:
+        dst_conn.close()
+        src_conn.close()
     return bak_db
 
 
@@ -163,6 +161,31 @@ def inspect_or_upgrade_db(db_path: Path, upgrade_to: int | None = None) -> dict[
         ]
         summary: list[dict[str, object]] = []
 
+        db_has_any_200k = False
+        if "executor_metadata" in tables:
+            em_rows = cur.execute("SELECT data FROM executor_metadata").fetchall()
+            row_is_200k_flags: list[bool] = []
+            for (em_val,) in em_rows:
+                em_blob = (
+                    bytearray(em_val)
+                    if isinstance(em_val, bytes)
+                    else (bytearray.fromhex(em_val) if isinstance(em_val, str) else None)
+                )
+                if em_blob is None:
+                    continue
+                row_vals = [
+                    cs.value
+                    for cs in (
+                        find_varints_at_path(em_blob, (10, 1, 13, 2, 22))
+                        + find_varints_at_path(em_blob, (10, 1, 32, 3))
+                    )
+                    if cs.value > 0
+                ]
+                if row_vals:
+                    row_is_200k_flags.append(all(v <= 262_144 for v in row_vals))
+            if row_is_200k_flags and any(row_is_200k_flags):
+                db_has_any_200k = True
+
         for tbl, target_path in TARGET_PATHS.items():
             if tbl not in tables:
                 continue
@@ -184,13 +207,26 @@ def inspect_or_upgrade_db(db_path: Path, upgrade_to: int | None = None) -> dict[
                     continue
 
                 spans = find_varints_at_path(blob, target_path)
+                is_200k_model = db_has_any_200k if tbl == "gen_metadata" else False
+                if tbl == "executor_metadata":
+                    ctx_vals = [
+                        cs.value
+                        for cs in (
+                            find_varints_at_path(blob, (10, 1, 13, 2, 22))
+                            + find_varints_at_path(blob, (10, 1, 32, 3))
+                        )
+                        if cs.value > 0
+                    ]
+                    if ctx_vals and all(v <= 262_144 for v in ctx_vals):
+                        is_200k_model = True
                 row_modified = False
                 for sp in spans:
-                    if sp.value == 256_000:
+                    if sp.value == 256_000 and not is_200k_model:
                         if upgrade_to is not None and new_varint is not None:
-                            assert sp.val_end - sp.val_start == 3, (
-                                f"Expected 3-byte varint at {sp.path}, got {sp.val_end - sp.val_start}"
-                            )
+                            if sp.val_end - sp.val_start != 3:
+                                raise ValueError(
+                                    f"Expected 3-byte varint at {sp.path}, got {sp.val_end - sp.val_start}"
+                                )
                             blob[sp.val_start : sp.val_end] = new_varint
                             tbl_replaced += 1
                             row_modified = True
@@ -253,12 +289,12 @@ def main() -> int:
         nargs="*",
         type=Path,
         default=[],
-        help="Paths to .db files to inspect (default: b6ce5010 and e93889f8, or all with --all)",
+        help="Paths to .db files to inspect or upgrade (or pass --all for all conversation DBs)",
     )
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Scan all *.db files under /Users/ien/.gemini/antigravity/conversations/",
+        help="Scan all *.db files under ~/.gemini/antigravity/conversations/",
     )
     parser.add_argument(
         "--upgrade-to",
@@ -268,22 +304,33 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    conv_dir = Path("/Users/ien/.gemini/antigravity/conversations")
+    conv_dir = Path.home() / ".gemini" / "antigravity" / "conversations"
+    if args.upgrade_to is not None and not args.all and not args.dbs:
+        parser.error("--upgrade-to requires either --all or explicit .db file paths")
+
     if args.all:
         db_list = sorted(p for p in conv_dir.glob("*.db") if ".bak_" not in p.name)
     elif args.dbs:
         db_list = args.dbs
     else:
-        db_list = [
-            conv_dir / "b6ce5010-8b99-45c4-a3d8-cb7bbb1f531b.db",
-            conv_dir / "e93889f8-4672-4741-994b-fcb135fd507d.db",
-        ]
+        db_list = sorted(p for p in conv_dir.glob("*.db") if ".bak_" not in p.name)
 
+    if not db_list:
+        print(f"[SKIP] No .db files found in {conv_dir}")
+        return 1
+
+    skipped = 0
     for db_path in db_list:
         if not db_path.exists():
             print(f"[SKIP] {db_path} (not found)")
+            skipped += 1
             continue
-        info = inspect_or_upgrade_db(db_path, upgrade_to=args.upgrade_to)
+        try:
+            info = inspect_or_upgrade_db(db_path, upgrade_to=args.upgrade_to)
+        except (sqlite3.Error, PermissionError, OSError, ValueError) as exc:
+            print(f"[LOCKED/SKIP] {db_path} ({exc})")
+            skipped += 1
+            continue
         print(f"=== {info['db']} ===")
         if info["backup"]:
             print(f"  [BACKUP] {info['backup']}")
@@ -293,7 +340,7 @@ def main() -> int:
                 f"256k={b['hits_256k']:3d} | 983k={b['hits_983k']:3d} | "
                 f"1008k={b['hits_1008k']:3d} | other={b['hits_other']:3d} | replaced={b['replaced']}"
             )
-    return 0
+    return 1 if skipped > 0 else 0
 
 
 if __name__ == "__main__":
