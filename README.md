@@ -1,4 +1,4 @@
-# Antigravity Enhance Suite `v3.6.0`
+# Antigravity Enhance Suite `v3.6.1`
 
 一套面向 Google **Antigravity Desktop IDE**（支持 **macOS Apple Silicon `arm64`** 与 **Windows `x86_64`**，`v2.24.0` / `v2.25.0` / `v2.26.0` / `v2.27.0` / `v2.28.x` / `v2.29.0+`）的全栈稳定性增强、桌面端 1M（`983,040` Tokens）上下文窗口真实解锁、官方 `v2.29.0` 原生上下文与配额指示器汉化联动、Windows 独占锁后台 WMI 自动换包守护、后台任务/子智能体响应式唤醒死锁双层根治、会话媒体 `18 MB` 自适应预算守护、防退化 Harness 三大工程护栏与深度专业中文汉化套件。
 
@@ -82,8 +82,8 @@ antigravity-enhance-suite/
 ├── agy_suite.py                          # 统一 CLI 工具（inspect / install / rollback / hot-inject）
 ├── src/
 │   ├── __init__.py
-│   ├── patch_sites.py                    # Go 二进制符号解析（gopclntab）与跨平台 Sites 1–22 定位器
-│   ├── patch_sites_macos_v36.py          # macOS ARM64 Sites 1–22 独立检查/补丁工具
+│   ├── patch_sites.py                    # Go 二进制符号解析（gopclntab）与跨平台 Sites 1–23 定位器
+│   ├── patch_sites_macos_v36.py          # macOS ARM64 Sites 1–23 独立检查/补丁工具
 │   ├── build_ls.py                       # language_server(.exe) 补丁构建、Hardened Runtime/allow-jit 签名与校验器
 │   ├── build_asar.py                     # Electron app.asar 宿主补丁构建与 SHA-256 块校验器
 │   ├── asar_inject_and_rollback.py       # macOS app.asar 隔离构建、原子安装、CDP 热注入与多目标回滚工具

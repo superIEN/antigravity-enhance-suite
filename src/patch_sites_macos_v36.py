@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-macOS ARM64 AGY language_server v3.6 Patcher (Sites 1-22)
+macOS ARM64 AGY language_server v3.6 Patcher (Sites 1-23)
 =========================================================
 Preserves all 18 sites from `/Users/ien/.gemini/agy-enhance/antigravity-enhance-suite/src/patch_sites.py`
-and adds Sites 19-22 localized in `/Users/ien/agy治理/01_runtime_backend`:
+and adds Sites 19-23 localized in `/Users/ien/agy治理/01_runtime_backend`:
 
 - Site 19: `(*AgentExecutor).transitionFromRunningToIdleOrClosed` (`va=0x101d834b0`, `file_off=0x1d834ac`)
   Fixes reactive wakeup race condition when transitioning from RUNNING to IDLE:
@@ -27,6 +27,9 @@ and adds Sites 19-22 localized in `/Users/ien/agy治理/01_runtime_backend`:
   - 200k Claude models (`ContextLength = 200,000 <= 262,144`): `w4 = 200,000` for both `w3 == 0` and `w3 == 256,000`,
     which the tail at `0x10134feb0` clamps to `200,000 - x2` (zero regression on 200k models).
   - Custom non-zero `MaxTokenLimit != 256,000`: preserved untouched.
+- Site 23: `(*TruncationDecorator).truncateIfTooLarge` (trajectory byte cap `25MB -> 256MB`)
+  Upgrades all `movz xN/wN, #0x190, lsl #16` (`0x01900000` = `25 MB`) instructions inside `truncateIfTooLarge`
+  to `movz xN/wN, #0x1000, lsl #16` (`0x10000000` = `256 MB`).
 """
 
 from __future__ import annotations
@@ -50,11 +53,14 @@ ENTITLEMENTS_XML = """<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 """
 
-SUITE_SRC = Path("/Users/ien/.gemini/agy-enhance/antigravity-enhance-suite/src")
+SUITE_SRC = Path(__file__).resolve().parent
 if str(SUITE_SRC) not in sys.path:
     sys.path.insert(0, str(SUITE_SRC))
 
-import patch_sites as base_patcher  # noqa: E402
+try:
+    from . import patch_sites as base_patcher  # type: ignore[no-redef]
+except ImportError:
+    import patch_sites as base_patcher  # type: ignore[no-redef]  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -177,22 +183,43 @@ def _resolve_dynamic_v36_sites(data: bytes | bytearray) -> list[Arm64FixedSite]:
         else:
             resolved.append(site)
 
-    if 23 in by_id:
-        _, dyn_off, dyn_orig, dyn_patch = by_id[23]
-        dyn_va = base_patcher.macho_raw_to_va(sections, dyn_off) or (0x100000000 + dyn_off)
-        resolved.append(
-            Arm64FixedSite(
-                site_id=23,
-                name="truncation_decorator_trajectory_byte_cap_256mb",
-                symbol="(*TruncationDecorator).truncateIfTooLarge",
-                va=dyn_va,
-                file_off=dyn_off,
-                orig_bytes=dyn_orig,
-                patch_bytes=dyn_patch,
-                description="trajectory byte cap 25MB (0x01900000) -> 256MB (0x10000000)",
-            )
+    if 23 not in by_id:
+        raise RuntimeError("Site 23 (TruncationDecorator.truncateIfTooLarge) could not be resolved in Mach-O binary")
+    _, dyn_off, dyn_orig, dyn_patch = by_id[23]
+    dyn_va = base_patcher.macho_raw_to_va(sections, dyn_off) or (0x100000000 + dyn_off)
+    resolved.append(
+        Arm64FixedSite(
+            site_id=23,
+            name="truncation_decorator_trajectory_byte_cap_256mb",
+            symbol="(*TruncationDecorator).truncateIfTooLarge",
+            va=dyn_va,
+            file_off=dyn_off,
+            orig_bytes=dyn_orig,
+            patch_bytes=dyn_patch,
+            description="trajectory byte cap 25MB (0x01900000) -> 256MB (0x10000000)",
         )
+    )
     return resolved
+
+
+def _is_valid_mixed_site23(cur: bytes, before: bytes, after: bytes) -> bool:
+    if len(cur) != len(before) or len(before) != len(after):
+        return False
+    i = 0
+    n = len(cur)
+    while i < n:
+        if before[i] == after[i]:
+            if cur[i] != before[i]:
+                return False
+            i += 1
+        else:
+            j = i + 1
+            while j < n and before[j] != after[j]:
+                j += 1
+            if cur[i:j] not in (before[i:j], after[i:j]):
+                return False
+            i = j
+    return True
 
 
 def inspect_v36_sites(data: bytes | bytearray) -> list[dict[str, object]]:
@@ -206,6 +233,8 @@ def inspect_v36_sites(data: bytes | bytearray) -> list[dict[str, object]]:
             state = "PATCHED_V36_0"
         elif actual == site.orig_bytes:
             state = "ORIGINAL"
+        elif site.site_id == 23 and _is_valid_mixed_site23(actual, site.orig_bytes, site.patch_bytes):
+            state = "MIXED"
         else:
             # Also search entire binary in case offsets shifted
             idx_patch = data.find(site.patch_bytes)
@@ -237,7 +266,11 @@ def apply_v36_sites(buf: bytearray) -> list[str]:
         actual = bytes(buf[site.file_off:end])
         if actual == site.patch_bytes:
             actions.append(f"[Site {site.site_id}] {site.name}: already PATCHED at 0x{site.file_off:x}")
-        elif actual == site.orig_bytes or actual in site.prev_patch_bytes:
+        elif (
+            actual == site.orig_bytes
+            or actual in site.prev_patch_bytes
+            or (site.site_id == 23 and _is_valid_mixed_site23(actual, site.orig_bytes, site.patch_bytes))
+        ):
             buf[site.file_off:end] = site.patch_bytes
             actions.append(f"[Site {site.site_id}] {site.name}: PATCHED at 0x{site.file_off:x} ({site.description})")
         else:
@@ -249,7 +282,7 @@ def apply_v36_sites(buf: bytearray) -> list[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Inspect or patch macOS ARM64 AGY language_server with Sites 1-22.")
+    parser = argparse.ArgumentParser(description="Inspect or patch macOS ARM64 AGY language_server with Sites 1-23.")
     parser.add_argument(
         "--binary",
         type=Path,
@@ -276,7 +309,7 @@ def main() -> int:
     print(f"SHA256: {sha256_before}")
     print("-" * 72)
 
-    # Check Sites 19-22
+    # Check Sites 19-23
     for info in inspect_v36_sites(raw):
         print(
             f"Site {info['site_id']:2d} | {info['state']:10s} | va={info['va']} off={info['file_off']} | "
@@ -313,7 +346,7 @@ def main() -> int:
         cur = bytes(buf[off : off + len(patch_b)])
         if cur == patch_b:
             base_already += 1
-        elif cur == orig_b:
+        elif cur == orig_b or ("Site 23" in label and _is_valid_mixed_site23(cur, orig_b, patch_b)):
             buf[off : off + len(patch_b)] = patch_b
             base_patched += 1
         else:
@@ -321,7 +354,7 @@ def main() -> int:
     print("-" * 72)
     print(f"Base Sites status: {len(base_sites)} located ({base_already} already patched, {base_patched} newly patched)")
 
-    # Apply Sites 19-22
+    # Apply Sites 19-23
     v36_actions = apply_v36_sites(buf)
     for line in v36_actions:
         print(line)

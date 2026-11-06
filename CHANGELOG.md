@@ -9,7 +9,7 @@
 ### 新增与优化 (Added & Changed)
 - **新增 `Site 23 ((*TruncationDecorator).truncateIfTooLarge)` 单会话轨迹物理体积上限扩容（`25 MB -> 256 MB`）**：
   - 经对多模态重度会话（含大量高清 PNG/JPEG 素材与多段完整 `.mp3` 音频母带）的底层 SQLite（`steps` / `gen_metadata`）与 Go 二进制逆向取证，定位到 `google3/third_party/jetski/cortex/trajectory/decorators/decorators.(*TruncationDecorator).truncateIfTooLarge` 在 `983,040` Token 阈值之外另设有一道硬编码的 **`25 MB`（`0x01900000 = 26,214,400` Bytes）** 单会话物理体积上限：一旦未清除步骤的总字节体积突破 `25 MB`，该函数即从第 0 步起循环调用 `utils.ClearTrajectoryStep` 将旧步骤状态抹为 `CORTEX_STEP_STATUS_CLEARED (5)`，进而导致 `TrajectoryToChatMessagesToTokenLimitOrStepIndex` 遇到 `CLEARED` 断层而在 ~400k Tokens 处提前触发 `CHECKPOINT` 自动压缩；
-  - 在 `src/patch_sites.py` 与 `src/build_ls.py` 中新增 **`Site 23`**：将 Windows `x86_64`（`cmp rax, 0x01900000`、`cmp rdx, 0x01900000`、`mov eax, 0x01900000`）与 macOS `ARM64`（`movz xN/wN, #0x190, lsl #16`）下 `(*TruncationDecorator).truncateIfTooLarge` 内的全部 `25 MB`（`0x01900000`）立即数原地升级为 **`256 MB`（`0x10000000 = 268,435,456` Bytes）**，兼容 `v2.28.x`（4 处立即数）与 `v2.29.0+`（6 处立即数），确保多媒体重度会话与普通代码会话一样完整跑满 `983,040` Tokens 上下文窗口。
+  - 在 `src/patch_sites.py`、`src/build_ls.py` 与 `src/patch_sites_macos_v36.py` 中新增 **`Site 23`**：将 Windows `x86_64`（`cmp rax, 0x01900000`、`cmp rdx, 0x01900000`、`mov eax, 0x01900000`）与 macOS `ARM64`（`movz xN/wN, #0x190, lsl #16`）下 `(*TruncationDecorator).truncateIfTooLarge` 内的全部 `25 MB`（`0x01900000`）立即数原地升级为 **`256 MB`（`0x10000000 = 268,435,456` Bytes）**，支持混合补丁态幂等归一化与 `movabs` 指令边界防护，兼容 `v2.28.x`（4 处立即数）与 `v2.29.0+`（6 处立即数），确保多媒体重度会话与普通代码会话一样完整跑满 `983,040` Tokens 上下文窗口。
 
 ---
 
