@@ -54,8 +54,10 @@ ENTITLEMENTS_XML = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 SUITE_SRC = Path(__file__).resolve().parent
-if str(SUITE_SRC) not in sys.path:
-    sys.path.insert(0, str(SUITE_SRC))
+FALLBACK_SUITE_SRC = Path("/Users/ien/.gemini/agy-enhance/antigravity-enhance-suite/src")
+for _cand_src in (SUITE_SRC, FALLBACK_SUITE_SRC):
+    if (_cand_src / "patch_sites.py").exists() and str(_cand_src) not in sys.path:
+        sys.path.insert(0, str(_cand_src))
 
 try:
     from . import patch_sites as base_patcher  # type: ignore[no-redef]

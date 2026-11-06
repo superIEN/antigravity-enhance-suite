@@ -384,7 +384,7 @@ def locate_1m_context_sites(data: bytes, funcs: dict):
                         struct.pack_into("<I", td_orig, off4, 0x52A03200 | rd)
                         struct.pack_into("<I", td_patch, off4, 0x52A20000 | rd)
                         arm_hits += 1
-                if arm_hits > 0 and (td_sz < 512 or arm_hits in (4, 6)):
+                if arm_hits > 0 and (td_sz < 512 or arm_hits in (3, 4, 5, 6)):
                     sites.append(
                         (
                             "Site 23 (*TruncationDecorator).truncateIfTooLarge (trajectory byte cap 25MB -> 256MB)",
