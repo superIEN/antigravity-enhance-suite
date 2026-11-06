@@ -363,6 +363,37 @@ def locate_1m_context_sites(data: bytes, funcs: dict):
                         )
                     )
 
+        # Site 23 (ARM64): (*TruncationDecorator).truncateIfTooLarge trajectory byte cap (25MB 0x01900000 -> 256MB 0x10000000)
+        td_key = next((k for k in funcs if k.endswith("(*TruncationDecorator).truncateIfTooLarge")), None)
+        if td_key:
+            td_off, td_sz = funcs[td_key]
+            if td_off % 4 == 0 and td_sz >= 4:
+                td_bytes = bytes(data[td_off : td_off + td_sz])
+                td_orig = bytearray(td_bytes)
+                td_patch = bytearray(td_bytes)
+                arm_hits = 0
+                for off4 in range(0, td_sz - 3, 4):
+                    w = struct.unpack_from("<I", td_bytes, off4)[0]
+                    rd = w & 0x1F
+                    op_mask = w & 0xFFFFFFE0
+                    if op_mask in (0xD2A03200, 0xD2A20000):
+                        struct.pack_into("<I", td_orig, off4, 0xD2A03200 | rd)
+                        struct.pack_into("<I", td_patch, off4, 0xD2A20000 | rd)
+                        arm_hits += 1
+                    elif op_mask in (0x52A03200, 0x52A20000):
+                        struct.pack_into("<I", td_orig, off4, 0x52A03200 | rd)
+                        struct.pack_into("<I", td_patch, off4, 0x52A20000 | rd)
+                        arm_hits += 1
+                if arm_hits > 0 and (td_sz < 512 or arm_hits in (4, 6)):
+                    sites.append(
+                        (
+                            "Site 23 (*TruncationDecorator).truncateIfTooLarge (trajectory byte cap 25MB -> 256MB)",
+                            td_off,
+                            bytes(td_orig),
+                            bytes(td_patch),
+                        )
+                    )
+
         return sites
 
     if chk_key:
@@ -450,6 +481,61 @@ def locate_1m_context_sites(data: bytes, funcs: dict):
                     cl_off + pos_cl,
                     cl_x64_orig,
                     cl_x64_patch,
+                )
+            )
+
+    # Site 23 (x64): (*TruncationDecorator).truncateIfTooLarge trajectory byte cap (25MB 0x01900000 -> 256MB 0x10000000)
+    td_key = next((k for k in funcs if k.endswith("(*TruncationDecorator).truncateIfTooLarge")), None)
+    if td_key:
+        td_off, td_sz = funcs[td_key]
+        td_bytes = bytes(data[td_off : td_off + td_sz])
+        td_orig = bytearray(td_bytes)
+        td_patch = bytearray(td_bytes)
+        x64_patterns = (
+            (b"\x48\x3d", b""),
+            (b"\x48\x81\xfa", b""),
+            (b"\x48\x81\xf8", b""),
+            (b"\x48\xc7\xc0", b""),
+            (b"\x48\xb8", b"\x00\x00\x00\x00"),
+            (b"\xb8", b""),
+            (b"\x3d", b""),
+        )
+        spans = []
+        for insn_prefix, insn_suffix in x64_patterns:
+            p_orig = insn_prefix + b"\x00\x00\x90\x01" + insn_suffix
+            p_patch = insn_prefix + b"\x00\x00\x00\x10" + insn_suffix
+            idx = 0
+            while True:
+                i_orig = td_bytes.find(p_orig, idx)
+                i_patch = td_bytes.find(p_patch, idx)
+                cands = [x for x in (i_orig, i_patch) if x != -1]
+                if not cands:
+                    break
+                pos_p = min(cands)
+                # Guard against 1-byte opcode false-matching inside a REX instruction or 10-byte movabs immediate
+                if insn_prefix in (b"\xb8", b"\x3d") and pos_p > 0 and 0x40 <= td_bytes[pos_p - 1] <= 0x4F:
+                    idx = pos_p + 1
+                    continue
+                if any(
+                    td_bytes[m] in (0x48, 0x49) and 0xB8 <= td_bytes[m + 1] <= 0xBF
+                    for m in range(max(0, pos_p - 9), pos_p)
+                ):
+                    idx = pos_p + 1
+                    continue
+                spans.append((pos_p, pos_p + len(p_orig), p_orig, p_patch))
+                idx = pos_p + len(p_orig)
+        spans.sort(key=lambda s: s[0])
+        non_overlapping = all(spans[i][1] <= spans[i + 1][0] for i in range(len(spans) - 1))
+        if spans and non_overlapping and (td_sz < 512 or len(spans) in (4, 6)):
+            for s_start, s_end, p_orig, p_patch in spans:
+                td_orig[s_start:s_end] = p_orig
+                td_patch[s_start:s_end] = p_patch
+            sites.append(
+                (
+                    "Site 23 (*TruncationDecorator).truncateIfTooLarge (trajectory byte cap 25MB -> 256MB)",
+                    td_off,
+                    bytes(td_orig),
+                    bytes(td_patch),
                 )
             )
 

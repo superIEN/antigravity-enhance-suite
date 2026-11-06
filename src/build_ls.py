@@ -30,6 +30,28 @@ def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _is_valid_site_state(name: str, cur: bytes, before: bytes, after: bytes) -> bool:
+    if cur in (before, after):
+        return True
+    if "truncateIfTooLarge" not in name or len(cur) != len(before) or len(before) != len(after):
+        return False
+    i = 0
+    n = len(cur)
+    while i < n:
+        if before[i] == after[i]:
+            if cur[i] != before[i]:
+                return False
+            i += 1
+        else:
+            j = i + 1
+            while j < n and before[j] != after[j]:
+                j += 1
+            if cur[i:j] not in (before[i:j], after[i:j]):
+                return False
+            i = j
+    return True
+
+
 def build_and_verify_ls(orig_ls_path: Path, candidate_ls_path: Path) -> dict:
     raw_base = orig_ls_path.read_bytes()
     base_sha = sha256_bytes(raw_base)
@@ -48,14 +70,16 @@ def build_and_verify_ls(orig_ls_path: Path, candidate_ls_path: Path) -> dict:
             + p.locate_bg_task_timeout_sites(raw, funcs)
             + p.locate_oauth_token_sites(raw, funcs)
         )
-        min_arm64_sites = 28 if media_sites else 26
+        if not any("Site 23" in s[0] for s in all_sites):
+            raise RuntimeError("Site 23 (TruncationDecorator.truncateIfTooLarge) must be located on macOS ARM64")
+        min_arm64_sites = 29 if media_sites else 27
         assert len(all_sites) >= min_arm64_sites, f"Expected >={min_arm64_sites} Mach-O ARM64 sites, got {len(all_sites)}"
         for name, off, before, after in all_sites:
             cur = bytes(raw[off : off + len(before)])
             if "retryableSubstrings" in name or "ClampCheckpointConfigForModelInfo" in name:
                 assert len(cur) == len(after)
             else:
-                assert cur in (before, after), f"Unexpected bytes at {name} (@0x{off:x})"
+                assert _is_valid_site_state(name, cur, before, after), f"Unexpected bytes at {name} (@0x{off:x})"
             raw[off : off + len(after)] = after
             patched_sites.append({"name": name, "offset": f"0x{off:x}"})
 
@@ -132,14 +156,16 @@ def build_and_verify_ls(orig_ls_path: Path, candidate_ls_path: Path) -> dict:
         + p.locate_utf8_and_uri_sites(raw, funcs)
         + [s for s in p.locate_stream_retry_sites(raw, funcs) if "unexpected EOF" in s[0]]
     )
-    expected_base_counts = (14, 15) if media_sites else (12, 13)
+    expected_base_counts = (15, 16) if media_sites else (13, 14)
     if len(base_sites) not in expected_base_counts:
         raise RuntimeError(f"Expected {expected_base_counts} base sites, got {len(base_sites)}")
     if not any("Site 22" in s[0] for s in base_sites):
         raise RuntimeError("Site 22 (ClampCheckpointConfigForModelInfo) must be located on Windows PE")
+    if not any("Site 23" in s[0] for s in base_sites):
+        raise RuntimeError("Site 23 (TruncationDecorator.truncateIfTooLarge) must be located on Windows PE")
     for name, off, before, after in base_sites:
         cur = bytes(raw[off : off + len(before)])
-        if cur not in (before, after):
+        if not _is_valid_site_state(name, cur, before, after):
             raise RuntimeError(f"Unexpected bytes at {name}")
         raw[off : off + len(after)] = after
         patched_sites.append({"name": name, "offset": f"0x{off:x}"})

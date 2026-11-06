@@ -522,5 +522,84 @@ class TestGuardrail3SubstanceVerifier(unittest.TestCase):
             self.assertTrue(hyg_ok["passed"])
 
 
+class Site23TrajectoryCapTests(unittest.TestCase):
+    """Tests for Site 23 (*TruncationDecorator).truncateIfTooLarge 25MB -> 256MB binary patcher."""
+
+    SYMBOL = "google3/third_party/jetski/cortex/trajectory/decorators/decorators.(*TruncationDecorator).truncateIfTooLarge"
+
+    def test_x64_orig_patched_mixed_and_movabs_boundary(self) -> None:
+        from src import build_ls, patch_sites
+
+        old_imm = bytes.fromhex("00009001")
+        new_imm = bytes.fromhex("00000010")
+        body_orig = bytes.fromhex("483d00009001 90 4881fa00009001 90 b80000900190 c3")
+        body_patched = body_orig.replace(old_imm, new_imm)
+        body_mixed_1 = bytes.fromhex("483d00000010 90 4881fa00009001 90 b80000900190 c3")
+        body_mixed_2 = bytes.fromhex("483d00009001 90 4881fa00000010 90 b80000001090 c3")
+
+        for variant in (body_orig, body_patched, body_mixed_1, body_mixed_2):
+            data = b"\x00" * 32 + variant
+            sites = [
+                s for s in patch_sites.locate_1m_context_sites(data, {self.SYMBOL: (32, len(variant))})
+                if "Site 23" in s[0]
+            ]
+            self.assertEqual(len(sites), 1)
+            name, off, before, after = sites[0]
+            self.assertEqual(off, 32)
+            self.assertEqual(before, body_orig)
+            self.assertEqual(after, body_patched)
+            self.assertTrue(build_ls._is_valid_site_state(name, variant, before, after))
+
+        # Corrupted half-slot immediate must be rejected
+        corrupted = bytes.fromhex("483d00009010 90 4881fa00009001 90 b80000900190 c3")
+        self.assertFalse(build_ls._is_valid_site_state("Site 23 (*TruncationDecorator).truncateIfTooLarge", corrupted, body_orig, body_patched))
+
+        # 10-byte movabs rbx, imm64 containing b8 00 00 90 01 e8 must not false-match
+        movabs_body = bytes.fromhex("48bbb800009001e80000c3")
+        movabs_sites = [
+            s for s in patch_sites.locate_1m_context_sites(b"\x00" * 32 + movabs_body, {self.SYMBOL: (32, len(movabs_body))})
+            if "Site 23" in s[0]
+        ]
+        self.assertEqual(len(movabs_sites), 0)
+
+    def test_arm64_movz_and_mandatory_site23_assertion(self) -> None:
+        import struct
+        from unittest.mock import patch
+        from src import build_ls, patch_sites, patch_sites_macos_v36
+
+        arm_head = bytes.fromhex("cffaedfe") + b"\x00" * 28
+        for base_old, base_new in ((0xD2A03200, 0xD2A20000), (0x52A03200, 0x52A20000)):
+            for rd in (0, 3, 7, 19, 30):
+                orig = struct.pack("<I", base_old | rd)
+                patched = struct.pack("<I", base_new | rd)
+                s_orig = patch_sites.locate_1m_context_sites(arm_head + orig, {self.SYMBOL: (32, 4)})
+                s_patch = patch_sites.locate_1m_context_sites(arm_head + patched, {self.SYMBOL: (32, 4)})
+                self.assertEqual(len(s_orig), 1)
+                self.assertEqual(s_orig[0][1:], (32, orig, patched))
+                self.assertEqual(s_patch[0][1:], (32, orig, patched))
+
+        # Verify macOS build_ls and patch_sites_macos_v36 fail closed when Site 23 is missing
+        dummy_sites = [(f"legacy-{i}", 32 + 4 * i, b"\x1f\x20\x03\xd5", b"\x1f\x20\x03\xd5") for i in range(28)]
+        raw_macho = arm_head + (b"\x1f\x20\x03\xd5" * 32)
+        with (
+            patch.object(patch_sites, "parse_gopclntab", return_value={}),
+            patch.object(patch_sites, "parse_macho_sections", return_value=[]),
+            patch.object(patch_sites, "locate_h2ping_sites", return_value=dummy_sites),
+            patch.object(patch_sites, "locate_media_compression_sites", return_value=[]),
+            patch.object(patch_sites, "locate_utf8_and_uri_sites", return_value=[]),
+            patch.object(patch_sites, "locate_stream_retry_sites", return_value=[]),
+            patch.object(patch_sites, "locate_bg_task_timeout_sites", return_value=[]),
+            patch.object(patch_sites, "locate_oauth_token_sites", return_value=[]),
+        ):
+            with tempfile.TemporaryDirectory(prefix="s23-mac-") as td:
+                in_p = Path(td) / "in_ls"
+                out_p = Path(td) / "out_ls"
+                in_p.write_bytes(raw_macho)
+                with self.assertRaises(RuntimeError):
+                    build_ls.build_and_verify_ls(in_p, out_p)
+                with self.assertRaises(RuntimeError):
+                    patch_sites_macos_v36.inspect_v36_sites(raw_macho)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
