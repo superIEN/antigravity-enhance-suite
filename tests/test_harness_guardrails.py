@@ -578,6 +578,17 @@ class Site23TrajectoryCapTests(unittest.TestCase):
                 self.assertEqual(s_orig[0][1:], (32, orig, patched))
                 self.assertEqual(s_patch[0][1:], (32, orig, patched))
 
+        # Verify realistic macOS ARM64 function sizes (td_sz >= 512) with 3 hits (v2.25.0) and 5 hits (v2.29.0)
+        nop = b"\x1f\x20\x03\xd5"
+        for hit_count, fn_sz in ((3, 1152), (5, 1440)):
+            body_words = [nop] * (fn_sz // 4)
+            for idx in range(hit_count):
+                body_words[10 + idx * 20] = struct.pack("<I", 0xD2A03200 | (idx % 5))
+            fn_orig = b"".join(body_words)
+            res_real = patch_sites.locate_1m_context_sites(arm_head + fn_orig, {self.SYMBOL: (32, fn_sz)})
+            self.assertEqual(len(res_real), 1)
+            self.assertIn("Site 23", res_real[0][0])
+
         # Verify macOS build_ls and patch_sites_macos_v36 fail closed when Site 23 is missing
         dummy_sites = [(f"legacy-{i}", 32 + 4 * i, b"\x1f\x20\x03\xd5", b"\x1f\x20\x03\xd5") for i in range(28)]
         raw_macho = arm_head + (b"\x1f\x20\x03\xd5" * 32)
