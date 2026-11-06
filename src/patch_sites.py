@@ -363,6 +363,33 @@ def locate_1m_context_sites(data: bytes, funcs: dict):
                         )
                     )
 
+        # Site 23 (ARM64): (*TruncationDecorator).truncateIfTooLarge trajectory byte cap (25MB 0x01900000 -> 256MB 0x10000000)
+        td_key = next((k for k in funcs if k.endswith("(*TruncationDecorator).truncateIfTooLarge")), None)
+        if td_key:
+            td_off, td_sz = funcs[td_key]
+            td_bytes = bytes(data[td_off : td_off + td_sz])
+            td_orig = bytearray(td_bytes)
+            td_patch = bytearray(td_bytes)
+            for off4 in range(0, td_sz - 3, 4):
+                w = struct.unpack_from("<I", td_bytes, off4)[0]
+                rd = w & 0x1F
+                op_mask = w & 0xFFFFFFE0
+                if op_mask in (0xD2A03200, 0xD2A20000):
+                    struct.pack_into("<I", td_orig, off4, 0xD2A03200 | rd)
+                    struct.pack_into("<I", td_patch, off4, 0xD2A20000 | rd)
+                elif op_mask in (0x52A03200, 0x52A20000):
+                    struct.pack_into("<I", td_orig, off4, 0x52A03200 | rd)
+                    struct.pack_into("<I", td_patch, off4, 0x52A20000 | rd)
+            if td_orig != td_patch:
+                sites.append(
+                    (
+                        "Site 23 (*TruncationDecorator).truncateIfTooLarge (trajectory byte cap 25MB -> 256MB)",
+                        td_off,
+                        bytes(td_orig),
+                        bytes(td_patch),
+                    )
+                )
+
         return sites
 
     if chk_key:
@@ -450,6 +477,36 @@ def locate_1m_context_sites(data: bytes, funcs: dict):
                     cl_off + pos_cl,
                     cl_x64_orig,
                     cl_x64_patch,
+                )
+            )
+
+    # Site 23 (x64): (*TruncationDecorator).truncateIfTooLarge trajectory byte cap (25MB 0x01900000 -> 256MB 0x10000000)
+    td_key = next((k for k in funcs if k.endswith("(*TruncationDecorator).truncateIfTooLarge")), None)
+    if td_key:
+        td_off, td_sz = funcs[td_key]
+        td_bytes = bytes(data[td_off : td_off + td_sz])
+        td_orig = bytearray(td_bytes)
+        td_patch = bytearray(td_bytes)
+        for insn_prefix, insn_suffix in ((b"\x48\x3d", b""), (b"\x48\x81\xfa", b""), (b"\xb8", b"\xe8")):
+            p_orig = insn_prefix + b"\x00\x00\x90\x01" + insn_suffix
+            p_patch = insn_prefix + b"\x00\x00\x00\x10" + insn_suffix
+            idx = 0
+            while True:
+                pos_p = td_bytes.find(p_orig, idx)
+                if pos_p == -1:
+                    pos_p = td_bytes.find(p_patch, idx)
+                if pos_p == -1:
+                    break
+                td_orig[pos_p : pos_p + len(p_orig)] = p_orig
+                td_patch[pos_p : pos_p + len(p_patch)] = p_patch
+                idx = pos_p + len(p_orig)
+        if td_orig != td_patch:
+            sites.append(
+                (
+                    "Site 23 (*TruncationDecorator).truncateIfTooLarge (trajectory byte cap 25MB -> 256MB)",
+                    td_off,
+                    bytes(td_orig),
+                    bytes(td_patch),
                 )
             )
 

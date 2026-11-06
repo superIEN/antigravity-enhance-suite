@@ -12,7 +12,7 @@
 
 | 分支名称 | 定位与适用场景 | 包含核心能力与差异说明 | 对应审核报告 / PR |
 | :--- | :--- | :--- | :--- |
-| **[`main`](https://github.com/superIEN/antigravity-enhance-suite/tree/main)**<br>*(默认推荐)* | **核心稳定主线**<br>追求零额外 RPC 请求负担、零界面布局抖动、极简一行思考摘要的日常主力环境 | Go 服务端 Sites 1–22（`983,040` 上下文真实解锁 + HTTP/2 防断流 + 响应式唤醒死锁双层根治）、Electron 宿主 8 项加固、深度专业汉化、集合差分看门狗、`18 MB` 媒体自适应守护、Harness 工程护栏 | 主线基线（**严禁直接合入高频实验性 UI 组件**） |
+| **[`main`](https://github.com/superIEN/antigravity-enhance-suite/tree/main)**<br>*(默认推荐)* | **核心稳定主线**<br>追求零额外 RPC 请求负担、零界面布局抖动、极简一行思考摘要的日常主力环境 | Go 服务端 Sites 1–23（`983,040` 上下文真实解锁 + `256 MB` 轨迹物理体积上限 + HTTP/2 防断流 + 响应式唤醒死锁双层根治）、Electron 宿主 8 项加固、深度专业汉化、集合差分看门狗、`18 MB` 媒体自适应守护、Harness 工程护栏 | 主线基线（**严禁直接合入高频实验性 UI 组件**） |
 | **[`optional/hud-thinking-stream`](https://github.com/superIEN/antigravity-enhance-suite/tree/optional/hud-thinking-stream)** | **可选增强演进主分支**<br>供贡献者针对「思考流同传与快慢双层 Mission HUD」提交后续修订 PR 并经维护者审阅合入 | 作为实验性 UI 增强组件的独立演进靶标分支（PR 基底分支） | [PR #4](https://github.com/superIEN/antigravity-enhance-suite/pull/4) · [《PR #4 综合技术审核报告》](./docs/reviews/PR4_v3.5.0_Review_Report.md) |
 | **[`optional/pr4-v3.5.0-hud-thinking`](https://github.com/superIEN/antigravity-enhance-suite/tree/optional/pr4-v3.5.0-hud-thinking)** | **PR #4 (`v3.5.0`) 完整代码快照分支**<br>供希望立即体验「思考过程流式实时中译 + 自动展开/折叠 + 快慢双层防走偏看板」的使用者直接拉取或附加合并 | 在 `main` (`v3.4.0`) 基础上完整附加 `@sorry-makerT-T` 提交的 `v3.5.0` 思考流实时中文同传、快慢双层 Mission HUD 与设置面板双开关（ Commit `fd84bc1`） | [《PR #4 (`v3.5.0`) 综合技术审核报告》](./docs/reviews/PR4_v3.5.0_Review_Report.md) |
 
@@ -42,9 +42,10 @@ python3 agy_suite.py install --hot-inject
 
 ## 核心特性概览
 
-1. **Go 语言服务端（macOS `language_server` / Windows `language_server*.exe`）22 项（29 处位点）二进制级增强**
-   - **桌面端 1M（`983,040` Tokens）上下文真实解锁与 200k 模型零回退保护（`v3.4.0` 新增 Site 22）**：
-     - 针对桌面端 `applyFeatureProviderCheckpointOverrideConfig` 强行注入 `MaxTokenLimit = 256,000` 导致每 ~250k 自动触发有损压缩（`<CONTEXT_SUMMARY>`）的根因，在 `utils.ClampCheckpointConfigForModelInfo`（`Site 22`）植入 9 指令 `csel` 补丁：对 1M 模型精确解锁至 **`983,040` Tokens**（`1,048,576 - 65,536`），对 `200,000` 模型（Claude 系列）在 `w3 == 0` 与 `w3 == 256,000` 下均保持 **`200,000` Tokens** 零回退。
+1. **Go 语言服务端（macOS `language_server` / Windows `language_server*.exe`）23 项（30 处位点）二进制级增强**
+   - **桌面端 1M（`983,040` Tokens）上下文真实解锁、200k 模型零回退保护与 `256 MB` 轨迹物理体积扩容（Sites 22–23）**：
+     - 针对桌面端 `applyFeatureProviderCheckpointOverrideConfig` 强行注入 `MaxTokenLimit = 256,000` 导致每 ~250k 自动触发有损压缩（`<CONTEXT_SUMMARY>`）的根因，在 `utils.ClampCheckpointConfigForModelInfo`（`Site 22`）植入原地补丁：对 1M 模型精确解锁至 **`983,040` Tokens**（`1,048,576 - 65,536`），对 `200,000` 模型（Claude 系列）在 `w3 == 0` 与 `w3 == 256,000` 下均保持 **`200,000` Tokens** 零回退。
+     - **新增 `Site 23 ((*TruncationDecorator).truncateIfTooLarge)` 单会话轨迹物理字节上限扩容（`25 MB -> 256 MB`）**：解除官方 `TruncationDecorator` 硬编码的 `0x01900000`（`25 MB`）单会话物理体积红线（将其扩容至 `0x10000000` = **`256 MB`**），防止含大量高清图片、立绘或 `.mp3` 音频母带的多媒体重度会话在 Token 远未达 1M 时因物理体积触碰 `25 MB` 而提前调用 `utils.ClearTrajectoryStep`（`CORTEX_STEP_STATUS_CLEARED`）清空旧步骤并连带触发检查点压缩。
      - 配套提供 `src/upgrade_db_context_limit.py`，基于结构化 Protobuf Wire 语法树解析、在线备份与 `BEGIN IMMEDIATE` 事务，将存量 `.db` 会话的 `executor_metadata`（`$.10.2.5`）与 `gen_metadata`（`$.1.9.10.4`）从 `256,000` 等长无损升级至 `983,040`。
    - **长连接防断流与 HTTP/2 KeepAlive 优化（Sites 1–3）**：显式开启自定义 `TLSClientConfig` 下的 HTTP/2 协议协商，配置 `SendPing=20s` / `PingTimeout=80s`（stdlib）与 `ReadIdle=25s` / `PingTimeout=50s`（`go_net/http2`），消除 120s 静默断流（`unexpected EOF`）。
    - **后台任务/子智能体完成静默唤醒失败双层根治（Sites 15–16, 19–21）**：

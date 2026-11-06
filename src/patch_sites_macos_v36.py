@@ -153,6 +153,8 @@ def _resolve_dynamic_v36_sites(data: bytes | bytearray) -> list[Arm64FixedSite]:
             by_id[21] = (label, off, orig_b, patch_b)
         elif "Site 22" in label:
             by_id[22] = (label, off, orig_b, patch_b)
+        elif "Site 23" in label:
+            by_id[23] = (label, off, orig_b, patch_b)
 
     resolved: list[Arm64FixedSite] = []
     for site in ARM64_V36_SITES:
@@ -174,6 +176,22 @@ def _resolve_dynamic_v36_sites(data: bytes | bytearray) -> list[Arm64FixedSite]:
             )
         else:
             resolved.append(site)
+
+    if 23 in by_id:
+        _, dyn_off, dyn_orig, dyn_patch = by_id[23]
+        dyn_va = base_patcher.macho_raw_to_va(sections, dyn_off) or (0x100000000 + dyn_off)
+        resolved.append(
+            Arm64FixedSite(
+                site_id=23,
+                name="truncation_decorator_trajectory_byte_cap_256mb",
+                symbol="(*TruncationDecorator).truncateIfTooLarge",
+                va=dyn_va,
+                file_off=dyn_off,
+                orig_bytes=dyn_orig,
+                patch_bytes=dyn_patch,
+                description="trajectory byte cap 25MB (0x01900000) -> 256MB (0x10000000)",
+            )
+        )
     return resolved
 
 

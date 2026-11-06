@@ -132,11 +132,13 @@ def build_and_verify_ls(orig_ls_path: Path, candidate_ls_path: Path) -> dict:
         + p.locate_utf8_and_uri_sites(raw, funcs)
         + [s for s in p.locate_stream_retry_sites(raw, funcs) if "unexpected EOF" in s[0]]
     )
-    expected_base_counts = (14, 15) if media_sites else (12, 13)
+    expected_base_counts = (14, 15, 16) if media_sites else (12, 13, 14)
     if len(base_sites) not in expected_base_counts:
         raise RuntimeError(f"Expected {expected_base_counts} base sites, got {len(base_sites)}")
     if not any("Site 22" in s[0] for s in base_sites):
         raise RuntimeError("Site 22 (ClampCheckpointConfigForModelInfo) must be located on Windows PE")
+    if not any("Site 23" in s[0] for s in base_sites):
+        raise RuntimeError("Site 23 (TruncationDecorator.truncateIfTooLarge) must be located on Windows PE")
     for name, off, before, after in base_sites:
         cur = bytes(raw[off : off + len(before)])
         if cur not in (before, after):
