@@ -1284,9 +1284,10 @@ def locate_oauth_token_sites(data: bytes, funcs: dict):
         else:
             ns_5m = struct.pack("<Q", 300_000_000_000)
             ns_20m = struct.pack("<Q", 1_200_000_000_000)
-            # 1) Legacy single-instruction candidate (`movabs rax, imm64`)
+            total_imm_hits = ca_bytes.count(ns_5m) + ca_bytes.count(ns_20m)
+            # 1) Legacy single-instruction candidate (`movabs rax, imm64`, total_imm_hits == 1)
             idx_ca = _find_orig_or_patch(ca_bytes, b"\x48\xb8" + ns_5m, b"\x48\xb8" + ns_20m)
-            if idx_ca != -1:
+            if idx_ca != -1 and total_imm_hits == 1:
                 sites.append(
                     (
                         "codeassistclient.RefreshingTokenSource (5m -> 20m)",
@@ -1295,7 +1296,7 @@ def locate_oauth_token_sites(data: bytes, funcs: dict):
                         b"\x48\xb8" + ns_20m,
                     )
                 )
-            else:
+            elif total_imm_hits == 3:
                 # 2) v2.28-v2.30+ x64: 1x `movabs r8, imm64; mov [rdx+0x60], r8` + 2x `movabs rcx, imm64; mov [rax+0x20], rcx`
                 r8_5m = b"\x49\xb8" + ns_5m + bytes.fromhex("4c894260")
                 r8_20m = b"\x49\xb8" + ns_20m + bytes.fromhex("4c894260")

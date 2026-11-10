@@ -14,9 +14,9 @@
   - **`language_server_windows_x64.exe` `v2.30.0` 结构体与栈帧编译偏移适配（`src/patch_sites.py` · `src/build_ls.py`）**：
     - **`Site 16 ((*runningCommand).waitInBackground)`**：适配 `v2.30.0` 中 `*RunCommandTool`（`rsi = [rcx]`）特性标志偏移从 `+0x28`（`807e2800`）迁移至 `+0x50`（`807e5000`）的编译变化，同时保留 `*CommandSpec`（`rbx = [rcx+0x8]`）中 `IsDaemon`（`[rbx+0x30]`）与 `NotificationTimeoutSeconds`（`[rbx+0x38]`）的 60s 默认唤醒原地 78 字节块补丁；
     - **`Site 19 ((*AgentExecutor).transitionFromRunningToIdleOrClosed)`**：适配 `v2.30.0` 栈帧扩容 `+0x10`（`0x190 -> 0x1a0`）引起的局部变量偏移变化（`[rsp+0xc9] -> [rsp+0xca]`），新增 `440fb68424ca0000004584c00f84cb000000 -> 440fb68424ca0000004584c0e9cc00000090` 候选模式；
-    - **`Site 17 (codeassistclient.RefreshingTokenSource)`**：新增 `movabs rcx, imm64`（`\x48\xb9` + 8 字节纳秒常量）与 `movabs rax, imm64`（`\x48\xb8` + 8 字节纳秒常量）精确 10 字节指令级候选匹配，并在 `src/build_ls.py` 中统一调用 `locate_oauth_token_sites` 替代整函数块替换。
-  - **新增 23 条 `v2.30.0` Web UI 汉化词条与会话升级临时备份自动清理（`src/agy-enhance-loader.js` · `src/upgrade_db_context_limit.py`）**：
-    - 覆盖 `v2.30.0` 新增的 `Side Question`（`侧边追问`）、`Side Questions`（`侧边追问列表`）、`Peek References`（`速览引用位置`）、`Progress Updates`（`进度动态时间线`）、`Suggested Actions`（`推荐后续操作`）及配套设置说明，并在 `.db` 事务 `COMMIT` 成功后自动清理临时 `.db.bak_*` 文件。
+    - **`Site 17 (codeassistclient.RefreshingTokenSource)`**：新增 `total_imm_hits == 3`（`1x movabs r8, imm64; mov [rdx+0x60], r8` + `2x movabs rcx, imm64; mov [rax+0x20], rcx`）与 `total_imm_hits == 1`（`movabs rax, imm64`）精确指令级唯一跨度校验，并在 `src/build_ls.py` 中统一调用 `locate_oauth_token_sites` 替代整函数块替换。
+  - **新增 23 条 `v2.30.0` Web UI 汉化词条（`src/agy-enhance-loader.js`）**：
+    - 覆盖 `v2.30.0` 新增的 `Side Question`（`侧边追问`）、`Side Questions`（`侧边追问列表`）、`Peek References`（`速览引用位置`）、`Progress Updates`（`进度动态时间线`）、`Suggested Actions`（`推荐后续操作`）及配套设置说明，保持 `REVERSE_TO_EN` 双向字典一一对应。
 
 ---
 

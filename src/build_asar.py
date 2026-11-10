@@ -60,10 +60,13 @@ def patch_storage_js(code: str) -> str:
         "            ['contextUsageIndicatorEnabled', 'true'],\n"
         "        ]);"
     )
-    if "['contextUsageIndicatorEnabled', 'true']" not in code:
-        assert old_defaults_map in code, "storage.js defaults Map anchor not found"
-        code = code.replace(old_defaults_map, new_defaults_map, 1)
-    assert "['contextUsageIndicatorEnabled', 'true']" in code, "storage.js contextUsageIndicatorEnabled default missing"
+    if "this.defaults = new Map([" in code:
+        if "['contextUsageIndicatorEnabled', 'true']" not in code:
+            assert old_defaults_map in code, "storage.js defaults Map anchor not found"
+            code = code.replace(old_defaults_map, new_defaults_map, 1)
+        assert "['contextUsageIndicatorEnabled', 'true']" in code, "storage.js contextUsageIndicatorEnabled default missing"
+    else:
+        assert "this.defaults.set('contextUsageIndicatorEnabled', 'true');" in code, "storage.js legacy defaults injection missing"
     if "this.writeChain = Promise.resolve();" in code and "getItemsSync(keys)" in code:
         return code
 
