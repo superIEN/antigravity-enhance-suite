@@ -11,12 +11,12 @@
   - **`dist/storage.js` 原生 `writeChain` 队列与 `getItemsSync()` 接口兼容（`src/build_asar.py`）**：
     - 官方 `v2.30.0` 在 `FileStorage` 中原生实装了 `this.writeChain = Promise.resolve()` 串行写入队列、`.corrupt-${Date.now()}.bak` 损坏备份恢复以及主进程启动时调用的 `getItemsSync(keys)` 同步批量读取方法；
     - `patch_storage_js` 新增对 `v2.30.0+` 原生 `writeChain` 的自动识别：在注入 `'contextUsageIndicatorEnabled': 'true'` 默认开关后直接保留官方完整 `FileStorage` 类体与 `getItemsSync()` 实现，消除因旧版正则替换覆盖 `FileStorage` 导致的 `storage.getItemsSync is not a function` 启动异常，同时对 `v2.24.0–v2.29.0` 保持向下兼容。
-  - **`language_server_windows_x64.exe` `v2.30.0` 结构体与栈帧编译偏移适配（`src/patch_sites.py`）**：
-    - **`Site 16 ((*runningCommand).waitInBackground)`**：适配 `v2.30.0` 中 `runningCommand` 结构体字段从 `+0x28` 迁移至 `+0x50` 的编译变化，新增 `807e5000`（`cmp byte ptr [rsi+0x50], 0`）候选模式，保持 `751f -> 9090`（2 字节 `NOP`）原地唤醒补丁精确闭合；
-    - **`Site 19 ((*AgentExecutor).transitionFromRunningToIdleOrClosed)`**：适配 `v2.30.0` 栈帧扩容 `+0x10`（`0x190 -> 0x1a0`）引起的局部变量偏移变化（`[rsp+0xba] -> [rsp+0xca]`），新增 `440fb68424ca0000004584c00f84cb000000 -> 440fb68424ca0000004584c0e9cc00000090` 候选模式；
-    - **`Site 17 (codeassistclient.RefreshingTokenSource)`**：新增函数块内 `NS_5_MIN -> NS_20_MIN`（`300,000,000,000 ns -> 1,200,000,000,000 ns`）块级校验锚点，与 `src/build_ls.py` 的替换逻辑保持 100% 一致，兼容 `v2.30.0` 将 64 位立即数加载寄存器从 `rcx`（`48b9`）调整为 `rax`（`48b8`）的编译变化。
-  - **新增 23 条 `v2.30.0` Web UI 汉化词条（`src/agy-enhance-loader.js`）**：
-    - 覆盖 `v2.30.0` 新增的 `Side Question`（`侧边追问`）、`Ask a quick side question without leaving the conversation`（`不离开当前对话快速发起侧边追问`）、`Peek References`（`速览引用`）、`Progress Updates`（`进度更新`）、`Suggested Actions`（`建议操作`）及配套设置说明。
+  - **`language_server_windows_x64.exe` `v2.30.0` 结构体与栈帧编译偏移适配（`src/patch_sites.py` · `src/build_ls.py`）**：
+    - **`Site 16 ((*runningCommand).waitInBackground)`**：适配 `v2.30.0` 中 `*RunCommandTool`（`rsi = [rcx]`）特性标志偏移从 `+0x28`（`807e2800`）迁移至 `+0x50`（`807e5000`）的编译变化，同时保留 `*CommandSpec`（`rbx = [rcx+0x8]`）中 `IsDaemon`（`[rbx+0x30]`）与 `NotificationTimeoutSeconds`（`[rbx+0x38]`）的 60s 默认唤醒原地 78 字节块补丁；
+    - **`Site 19 ((*AgentExecutor).transitionFromRunningToIdleOrClosed)`**：适配 `v2.30.0` 栈帧扩容 `+0x10`（`0x190 -> 0x1a0`）引起的局部变量偏移变化（`[rsp+0xc9] -> [rsp+0xca]`），新增 `440fb68424ca0000004584c00f84cb000000 -> 440fb68424ca0000004584c0e9cc00000090` 候选模式；
+    - **`Site 17 (codeassistclient.RefreshingTokenSource)`**：新增 `movabs rcx, imm64`（`\x48\xb9` + 8 字节纳秒常量）与 `movabs rax, imm64`（`\x48\xb8` + 8 字节纳秒常量）精确 10 字节指令级候选匹配，并在 `src/build_ls.py` 中统一调用 `locate_oauth_token_sites` 替代整函数块替换。
+  - **新增 23 条 `v2.30.0` Web UI 汉化词条与会话升级临时备份自动清理（`src/agy-enhance-loader.js` · `src/upgrade_db_context_limit.py`）**：
+    - 覆盖 `v2.30.0` 新增的 `Side Question`（`侧边追问`）、`Side Questions`（`侧边追问列表`）、`Peek References`（`速览引用位置`）、`Progress Updates`（`进度动态时间线`）、`Suggested Actions`（`推荐后续操作`）及配套设置说明，并在 `.db` 事务 `COMMIT` 成功后自动清理临时 `.db.bak_*` 文件。
 
 ---
 

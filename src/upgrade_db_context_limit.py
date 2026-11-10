@@ -264,6 +264,9 @@ def inspect_or_upgrade_db(db_path: Path, upgrade_to: int | None = None) -> dict[
 
         if upgrade_to is not None:
             cur.execute("COMMIT")
+            if bak_path is not None:
+                bak_path.unlink(missing_ok=True)
+                bak_path = None
         return {
             "db": str(db_path),
             "backup": str(bak_path) if bak_path else None,

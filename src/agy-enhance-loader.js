@@ -1165,7 +1165,7 @@
     'Open Links In': '默认打开链接方式',
     'Choose where links open by default when clicked.': '选择点击网页链接时的默认打开位置。',
     'Side Question': '侧边追问',
-    'Side Questions': '侧边追问',
+    'Side Questions': '侧边追问列表',
     'Ask a side question': '发起侧边追问',
     'Ask a side question...': '输入侧边追问…',
     'Delete side question': '删除侧边追问',

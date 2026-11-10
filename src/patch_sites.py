@@ -1284,15 +1284,21 @@ def locate_oauth_token_sites(data: bytes, funcs: dict):
         else:
             ns_5m = struct.pack("<Q", 300_000_000_000)
             ns_20m = struct.pack("<Q", 1_200_000_000_000)
-            idx_ca = _find_orig_or_patch(ca_bytes, b"\x48\xb8" + ns_5m, b"\x48\xb8" + ns_20m)
-            if idx_ca != -1:
-                sites.append(
-                    ("codeassistclient.RefreshingTokenSource (5m -> 20m)", ca_off + idx_ca + 2, ns_5m, ns_20m)
-                )
-            elif ns_5m in ca_bytes or ns_20m in ca_bytes:
-                c_orig = bytes(ca_bytes).replace(ns_20m, ns_5m)
-                c_patch = bytes(ca_bytes).replace(ns_5m, ns_20m)
-                sites.append(
-                    ("codeassistclient.RefreshingTokenSource (5m -> 20m)", ca_off, c_orig, c_patch)
-                )
+            # v2.24-v2.29 uses `movabs rax, imm64` (48 b8); v2.30+ uses `movabs rcx, imm64` (48 b9)
+            rts_candidates = [
+                (b"\x48\xb8" + ns_5m, b"\x48\xb8" + ns_20m),
+                (b"\x48\xb9" + ns_5m, b"\x48\xb9" + ns_20m),
+            ]
+            for rts_orig, rts_patch in rts_candidates:
+                idx_ca = _find_orig_or_patch(ca_bytes, rts_orig, rts_patch)
+                if idx_ca != -1:
+                    sites.append(
+                        (
+                            "codeassistclient.RefreshingTokenSource (5m -> 20m)",
+                            ca_off + idx_ca,
+                            rts_orig,
+                            rts_patch,
+                        )
+                    )
+                    break
     return sites

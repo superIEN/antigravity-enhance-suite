@@ -44,8 +44,9 @@ def patch_storage_js(code: str) -> str:
         "            this.defaults.set('contextUsageIndicatorEnabled', 'true');\n"
         "        }"
     )
-    assert old_ctor in code, "storage.js constructor anchor not found"
-    code = code.replace(old_ctor, new_ctor, 1)
+    if "this.defaults.set('contextUsageIndicatorEnabled', 'true');" not in code:
+        assert old_ctor in code, "storage.js constructor anchor not found"
+        code = code.replace(old_ctor, new_ctor, 1)
     old_defaults_map = (
         "        this.defaults = new Map([\n"
         "            ['onboardingCompleted', 'false'],\n"
@@ -59,9 +60,11 @@ def patch_storage_js(code: str) -> str:
         "            ['contextUsageIndicatorEnabled', 'true'],\n"
         "        ]);"
     )
-    if old_defaults_map in code:
+    if "['contextUsageIndicatorEnabled', 'true']" not in code:
+        assert old_defaults_map in code, "storage.js defaults Map anchor not found"
         code = code.replace(old_defaults_map, new_defaults_map, 1)
-    if "this.writeChain = Promise.resolve();" in code:
+    assert "['contextUsageIndicatorEnabled', 'true']" in code, "storage.js contextUsageIndicatorEnabled default missing"
+    if "this.writeChain = Promise.resolve();" in code and "getItemsSync(keys)" in code:
         return code
 
     old_update_v226 = """    async updateItems(changes) {
