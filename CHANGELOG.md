@@ -10,7 +10,10 @@
 - **官方 Antigravity `v2.30.0`（Electron `41.2.1` / Chromium `146.0.7680.197`）全栈适配**：
   - **`dist/storage.js` 原生 `writeChain` 队列与 `getItemsSync()` 接口兼容（`src/build_asar.py`）**：
     - 官方 `v2.30.0` 在 `FileStorage` 中原生实装了 `this.writeChain = Promise.resolve()` 串行写入队列、`.corrupt-${Date.now()}.bak` 损坏备份恢复以及主进程启动时调用的 `getItemsSync(keys)` 同步批量读取方法；
-    - `patch_storage_js` 新增对 `v2.30.0+` 原生 `writeChain` 的自动识别：在注入 `'contextUsageIndicatorEnabled': 'true'` 默认开关后直接保留官方完整 `FileStorage` 类体与 `getItemsSync()` 实现，消除因旧版正则替换覆盖 `FileStorage` 导致的 `storage.getItemsSync is not a function` 启动异常，同时对 `v2.24.0–v2.29.0` 保持向下兼容。
+    - `patch_storage_js` 新增对 `v2.30.0+` 原生 `writeChain` 与无参 `getItemsSync()` 的自动识别：在注入 `'contextUsageIndicatorEnabled': 'true'` 默认开关后直接保留官方完整 `StorageManager` 实现，消除因旧版正则替换导致的 `storage.getItemsSync is not a function` 启动异常，同时对 `v2.24.0–v2.29.0` 保持向下兼容。
+  - **Windows 后台 WMI 延迟换包守护（`deferred_asar_swapper.py`）根因修复（`agy_suite.py`）**：
+    - 修复 `DEFERRED_SWAP_SCRIPT` 与 `atomic_replace_from_file` 在 Windows 下对只读句柄 `"rb"` 调用 `os.fsync()`（`FlushFileBuffers` 要求 `"r+b"` 写权限）引发 `OSError: [Errno 9] Bad file descriptor` 导致后台换包守护进程启动即退出的缺陷；
+    - 将 WMI `Win32_Process.Create` 超时放宽至 20s（确保脱离 Antigravity Job Object 挂载于 `WmiPrvSE.exe` 下），并将 `os.replace` 轮询间隔收紧至 20ms（每 40 轮低频校验一次 `task_id` 与原文件哈希），确保即使通过客户端内快速重启（`app.relaunch()`）也能在句柄释放瞬间完成 `app.asar` 原子替换。
   - **`language_server_windows_x64.exe` `v2.30.0` 结构体与栈帧编译偏移适配（`src/patch_sites.py` · `src/build_ls.py`）**：
     - **`Site 16 ((*runningCommand).waitInBackground)`**：适配 `v2.30.0` 中 `*RunCommandTool`（`rsi = [rcx]`）特性标志偏移从 `+0x28`（`807e2800`）迁移至 `+0x50`（`807e5000`）的编译变化，同时保留 `*CommandSpec`（`rbx = [rcx+0x8]`）中 `IsDaemon`（`[rbx+0x30]`）与 `NotificationTimeoutSeconds`（`[rbx+0x38]`）的 60s 默认唤醒原地 78 字节块补丁；
     - **`Site 19 ((*AgentExecutor).transitionFromRunningToIdleOrClosed)`**：适配 `v2.30.0` 栈帧扩容 `+0x10`（`0x190 -> 0x1a0`）引起的局部变量偏移变化（`[rsp+0xc9] -> [rsp+0xca]`），新增 `440fb68424ca0000004584c00f84cb000000 -> 440fb68424ca0000004584c0e9cc00000090` 候选模式；
