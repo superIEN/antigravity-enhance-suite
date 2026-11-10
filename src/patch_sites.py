@@ -1137,8 +1137,13 @@ def locate_bg_task_timeout_sites(data: bytes, funcs: dict):
     if wib_key:
         wib_off, wib_sz = funcs[wib_key]
         wib_bytes = data[wib_off : wib_off + wib_sz]
-        wib_orig = bytes.fromhex(
+        wib_orig_v228 = bytes.fromhex(
             "488b8c2420020000488b59088403488b31807e2800740c31d2bb01000000e98d000000"
+            "488b164885d2747e488b92980000004885d27472803a007464488b53384869d200ca9a3b"
+            "4885d27f0931d2bb01000000eb5b4889d0"
+        )
+        wib_orig_v230 = bytes.fromhex(
+            "488b8c2420020000488b59088403488b31807e5000740c31d2bb01000000e98d000000"
             "488b164885d2747e488b92980000004885d27472803a007464488b53384869d200ca9a3b"
             "4885d27f0931d2bb01000000eb5b4889d0"
         )
@@ -1146,6 +1151,7 @@ def locate_bg_task_timeout_sites(data: bytes, funcs: dict):
             "488b8c2420020000488b5908807b30000f8593000000488b53384885d27f09ba3c000000"
             "488953384869c200ca9a3beb27" + ("90" * 39)
         )
+        wib_orig = wib_orig_v230 if wib_orig_v230 in wib_bytes else wib_orig_v228
         pos_wib = wib_bytes.find(wib_orig)
         if pos_wib == -1:
             pos_wib = wib_bytes.find(wib_patch)
@@ -1163,6 +1169,11 @@ def locate_bg_task_timeout_sites(data: bytes, funcs: dict):
         tr_off, tr_sz = funcs[tr_key]
         tr_bytes = data[tr_off : tr_off + tr_sz]
         tr_candidates = [
+            # v2.30.0+: movzx r8d, byte ptr [rsp+0xca]; jz +0xcb -> jmp +0xcc; nop
+            (
+                bytes.fromhex("440fb68424ca0000004584c00f84cb000000"),
+                bytes.fromhex("440fb68424ca0000004584c0e9cc00000090"),
+            ),
             # v2.29.0+: jz +0xcb -> jmp +0xcc; nop
             (
                 bytes.fromhex("440fb68424c90000004584c00f84cb000000"),
@@ -1273,9 +1284,46 @@ def locate_oauth_token_sites(data: bytes, funcs: dict):
         else:
             ns_5m = struct.pack("<Q", 300_000_000_000)
             ns_20m = struct.pack("<Q", 1_200_000_000_000)
+            total_imm_hits = ca_bytes.count(ns_5m) + ca_bytes.count(ns_20m)
+            # 1) Legacy single-instruction candidate (`movabs rax, imm64`, total_imm_hits == 1)
             idx_ca = _find_orig_or_patch(ca_bytes, b"\x48\xb8" + ns_5m, b"\x48\xb8" + ns_20m)
-            if idx_ca != -1:
+            if idx_ca != -1 and total_imm_hits == 1:
                 sites.append(
-                    ("codeassistclient.RefreshingTokenSource (5m -> 20m)", ca_off + idx_ca + 2, ns_5m, ns_20m)
+                    (
+                        "codeassistclient.RefreshingTokenSource (5m -> 20m)",
+                        ca_off + idx_ca,
+                        b"\x48\xb8" + ns_5m,
+                        b"\x48\xb8" + ns_20m,
+                    )
                 )
+            elif total_imm_hits == 3:
+                # 2) v2.28-v2.30+ x64: 1x `movabs r8, imm64; mov [rdx+0x60], r8` + 2x `movabs rcx, imm64; mov [rax+0x20], rcx`
+                r8_5m = b"\x49\xb8" + ns_5m + bytes.fromhex("4c894260")
+                r8_20m = b"\x49\xb8" + ns_20m + bytes.fromhex("4c894260")
+                rcx_5m = (
+                    b"\x48\xb9" + ns_5m + bytes.fromhex("48894820eb0e")
+                    + b"\x48\xb9" + ns_5m + bytes.fromhex("48894820")
+                )
+                rcx_20m = (
+                    b"\x48\xb9" + ns_20m + bytes.fromhex("48894820eb0e")
+                    + b"\x48\xb9" + ns_20m + bytes.fromhex("48894820")
+                )
+                p_r8 = _find_orig_or_patch(ca_bytes, r8_5m, r8_20m)
+                p_rcx = _find_orig_or_patch(ca_bytes, rcx_5m, rcx_20m)
+                if p_r8 != -1 and p_rcx != -1 and p_r8 < p_rcx:
+                    span_end = p_rcx + len(rcx_5m)
+                    span_orig = bytearray(ca_bytes[p_r8:span_end])
+                    span_patch = bytearray(ca_bytes[p_r8:span_end])
+                    span_orig[0 : len(r8_5m)] = r8_5m
+                    span_orig[p_rcx - p_r8 : span_end - p_r8] = rcx_5m
+                    span_patch[0 : len(r8_20m)] = r8_20m
+                    span_patch[p_rcx - p_r8 : span_end - p_r8] = rcx_20m
+                    sites.append(
+                        (
+                            "codeassistclient.RefreshingTokenSource (5m -> 20m)",
+                            ca_off + p_r8,
+                            bytes(span_orig),
+                            bytes(span_patch),
+                        )
+                    )
     return sites

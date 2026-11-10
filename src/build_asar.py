@@ -44,8 +44,31 @@ def patch_storage_js(code: str) -> str:
         "            this.defaults.set('contextUsageIndicatorEnabled', 'true');\n"
         "        }"
     )
-    assert old_ctor in code, "storage.js constructor anchor not found"
-    code = code.replace(old_ctor, new_ctor, 1)
+    if "this.defaults.set('contextUsageIndicatorEnabled', 'true');" not in code:
+        assert old_ctor in code, "storage.js constructor anchor not found"
+        code = code.replace(old_ctor, new_ctor, 1)
+    old_defaults_map = (
+        "        this.defaults = new Map([\n"
+        "            ['onboardingCompleted', 'false'],\n"
+        "            ['lastVersion', '0.0.0'],\n"
+        "        ]);"
+    )
+    new_defaults_map = (
+        "        this.defaults = new Map([\n"
+        "            ['onboardingCompleted', 'false'],\n"
+        "            ['lastVersion', '0.0.0'],\n"
+        "            ['contextUsageIndicatorEnabled', 'true'],\n"
+        "        ]);"
+    )
+    if "this.defaults = new Map([" in code:
+        if new_defaults_map not in code:
+            assert old_defaults_map in code, "storage.js defaults Map anchor not found"
+            code = code.replace(old_defaults_map, new_defaults_map, 1)
+        assert new_defaults_map in code, "storage.js contextUsageIndicatorEnabled default missing"
+    else:
+        assert "this.defaults.set('contextUsageIndicatorEnabled', 'true');" in code, "storage.js legacy defaults injection missing"
+    if "this.writeChain = Promise.resolve();" in code and "getItemsSync()" in code:
+        return code
 
     old_update_v226 = """    async updateItems(changes) {
         try {

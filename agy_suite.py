@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Antigravity Enhance Suite v3.6.0 — Unified CLI Installer, Inspector, Rollback, Live Hot-Injector, DB Upgrader & Media Guard (Windows & macOS).
+"""Antigravity Enhance Suite v3.6.2 — Unified CLI Installer, Inspector, Rollback, Live Hot-Injector, DB Upgrader & Media Guard (Windows & macOS).
 
 Usage:
     python3 agy_suite.py inspect [--agy-dir PATH]
@@ -91,8 +91,11 @@ def atomic_replace_from_file(src_path: Path, dst_path: Path):
     if tmp_path.exists():
         tmp_path.unlink()
     shutil.copy2(src_path, tmp_path)
-    with tmp_path.open("rb") as f:
-        os.fsync(f.fileno())
+    try:
+        with tmp_path.open("r+b") as f:
+            os.fsync(f.fileno())
+    except OSError:
+        pass
     os.replace(tmp_path, dst_path)
 
 
@@ -252,42 +255,52 @@ if not cand_asar.exists() or sha256_file(cand_asar) != expected_cand_sha:
     raise SystemExit(1)
 
 swap_tmp = prod_asar.parent / f".app.asar.swap.{os.getpid()}.tmp"
+for stale_tmp in prod_asar.parent.glob(".app.asar.swap.*.tmp"):
+    try:
+        stale_tmp.unlink()
+    except OSError:
+        pass
 shutil.copy2(cand_asar, swap_tmp)
-with swap_tmp.open("rb") as f:
-    os.fsync(f.fileno())
+try:
+    with swap_tmp.open("r+b") as f:
+        os.fsync(f.fileno())
+except OSError:
+    pass
 
 deadline = time.time() + 86400
 swapped = False
+iter_count = 0
 try:
     while time.time() < deadline:
-        try:
-            cur_task = json.loads(task_file.read_text(encoding="utf-8"))
-            if cur_task.get("task_id") != my_task_id:
-                break
-        except Exception:
-            break
-
-        if prod_asar.exists():
-            try:
-                cur_sha = sha256_file(prod_asar)
-                if cur_sha == expected_cand_sha:
-                    swapped = True
-                    break
-                if cur_sha != expected_orig_sha:
-                    # Target app.asar changed to a different version; abort safely
-                    break
-            except OSError:
-                pass
-
         try:
             os.replace(swap_tmp, prod_asar)
             if sha256_file(prod_asar) == expected_cand_sha:
                 swapped = True
                 break
         except PermissionError:
-            time.sleep(0.12)
+            pass
         except Exception:
-            time.sleep(0.25)
+            time.sleep(0.1)
+
+        if iter_count % 40 == 0:
+            try:
+                cur_task = json.loads(task_file.read_text(encoding="utf-8"))
+                if cur_task.get("task_id") != my_task_id:
+                    break
+            except Exception:
+                break
+            if prod_asar.exists():
+                try:
+                    cur_sha = sha256_file(prod_asar)
+                    if cur_sha == expected_cand_sha:
+                        swapped = True
+                        break
+                    if cur_sha != expected_orig_sha:
+                        break
+                except OSError:
+                    pass
+        iter_count += 1
+        time.sleep(0.02)
 finally:
     if swap_tmp.exists():
         try:
@@ -322,7 +335,11 @@ if swapped:
 
 
 def cleanup_stale_old_binaries(prod_asar: Path):
-    for old_f in list(prod_asar.parent.glob("*.old.*")) + list((prod_asar.parent / "bin").glob("*.old.*")):
+    for old_f in (
+        list(prod_asar.parent.glob("*.old.*"))
+        + list(prod_asar.parent.glob(".app.asar.swap.*.tmp"))
+        + list((prod_asar.parent / "bin").glob("*.old.*"))
+    ):
         try:
             old_f.unlink()
         except OSError:
@@ -374,7 +391,7 @@ def spawn_windows_deferred_asar_swapper(
             creationflags=CREATE_NO_WINDOW,
             text=True,
             errors="ignore",
-            timeout=8,
+            timeout=20,
         ).strip()
         for line in reversed(out.splitlines()):
             if line.strip().isdigit():
@@ -693,7 +710,7 @@ def cmd_hot_inject(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Antigravity Enhance Suite CLI (v3.6.0)")
+    parser = argparse.ArgumentParser(description="Antigravity Enhance Suite CLI (v3.6.2)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_ins = sub.add_parser("inspect", help="Inspect current Antigravity installation & patch sites")

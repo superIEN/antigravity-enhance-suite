@@ -232,16 +232,13 @@ def build_and_verify_ls(orig_ls_path: Path, candidate_ls_path: Path) -> dict:
         raw[off : off + len(after)] = after
         patched_sites.append({"name": name, "offset": f"0x{off:x}"})
 
-    rts_fn = next((k for k in funcs if k.endswith("/codeassistclient.RefreshingTokenSource")), None)
-    assert rts_fn is not None, "codeassistclient.RefreshingTokenSource not found"
-    rts_off, rts_sz = funcs[rts_fn]
-    rts_chunk = bytes(raw[rts_off : rts_off + rts_sz])
-    if rts_chunk.count(NS_5_MIN) > 0:
-        rts_patched = rts_chunk.replace(NS_5_MIN, NS_20_MIN)
-        assert len(rts_patched) == rts_sz
-        raw[rts_off : rts_off + rts_sz] = rts_patched
-    assert raw[rts_off : rts_off + rts_sz].count(NS_20_MIN) >= 1, "Site 17 20m refresh constant not verified"
-    patched_sites.append({"name": "Site 17 codeassistclient.RefreshingTokenSource 5m->20m", "offset": f"0x{rts_off:x}"})
+    oauth_sites = p.locate_oauth_token_sites(raw, funcs)
+    assert len(oauth_sites) == 1, f"Expected 1 OAuth token refresh site (Site 17), found {len(oauth_sites)}"
+    for name, off, before, after in oauth_sites:
+        cur = bytes(raw[off : off + len(before)])
+        assert cur in (before, after), f"Unexpected bytes at {name}"
+        raw[off : off + len(after)] = after
+        patched_sites.append({"name": f"Site 17 {name}", "offset": f"0x{off:x}"})
 
     exp_fn = next((k for k in funcs if k.endswith("/oauth2.(*Token).expired")), None)
     if exp_fn:
