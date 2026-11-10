@@ -4,6 +4,22 @@
 
 ---
 
+## [v3.6.2] - 2026-11-10
+
+### 新增与优化 (Added & Changed)
+- **官方 Antigravity `v2.30.0`（Electron `41.2.1` / Chromium `146.0.7680.197`）全栈适配**：
+  - **`dist/storage.js` 原生 `writeChain` 队列与 `getItemsSync()` 接口兼容（`src/build_asar.py`）**：
+    - 官方 `v2.30.0` 在 `FileStorage` 中原生实装了 `this.writeChain = Promise.resolve()` 串行写入队列、`.corrupt-${Date.now()}.bak` 损坏备份恢复以及主进程启动时调用的 `getItemsSync(keys)` 同步批量读取方法；
+    - `patch_storage_js` 新增对 `v2.30.0+` 原生 `writeChain` 的自动识别：在注入 `'contextUsageIndicatorEnabled': 'true'` 默认开关后直接保留官方完整 `FileStorage` 类体与 `getItemsSync()` 实现，消除因旧版正则替换覆盖 `FileStorage` 导致的 `storage.getItemsSync is not a function` 启动异常，同时对 `v2.24.0–v2.29.0` 保持向下兼容。
+  - **`language_server_windows_x64.exe` `v2.30.0` 结构体与栈帧编译偏移适配（`src/patch_sites.py`）**：
+    - **`Site 16 ((*runningCommand).waitInBackground)`**：适配 `v2.30.0` 中 `runningCommand` 结构体字段从 `+0x28` 迁移至 `+0x50` 的编译变化，新增 `807e5000`（`cmp byte ptr [rsi+0x50], 0`）候选模式，保持 `751f -> 9090`（2 字节 `NOP`）原地唤醒补丁精确闭合；
+    - **`Site 19 ((*AgentExecutor).transitionFromRunningToIdleOrClosed)`**：适配 `v2.30.0` 栈帧扩容 `+0x10`（`0x190 -> 0x1a0`）引起的局部变量偏移变化（`[rsp+0xba] -> [rsp+0xca]`），新增 `440fb68424ca0000004584c00f84cb000000 -> 440fb68424ca0000004584c0e9cc00000090` 候选模式；
+    - **`Site 17 (codeassistclient.RefreshingTokenSource)`**：新增函数块内 `NS_5_MIN -> NS_20_MIN`（`300,000,000,000 ns -> 1,200,000,000,000 ns`）块级校验锚点，与 `src/build_ls.py` 的替换逻辑保持 100% 一致，兼容 `v2.30.0` 将 64 位立即数加载寄存器从 `rcx`（`48b9`）调整为 `rax`（`48b8`）的编译变化。
+  - **新增 23 条 `v2.30.0` Web UI 汉化词条（`src/agy-enhance-loader.js`）**：
+    - 覆盖 `v2.30.0` 新增的 `Side Question`（`侧边追问`）、`Ask a quick side question without leaving the conversation`（`不离开当前对话快速发起侧边追问`）、`Peek References`（`速览引用`）、`Progress Updates`（`进度更新`）、`Suggested Actions`（`建议操作`）及配套设置说明。
+
+---
+
 ## [v3.6.1] - 2026-11-06
 
 ### 新增与优化 (Added & Changed)

@@ -1163,7 +1163,30 @@
     'Context and Quota Indicator': '上下文与模型额度指示器',
     'Show how full the context window is next to the send button. Click it for a breakdown and to see your model quota.': '在发送按钮旁显示当前上下文窗口占用环；点击可查看上下文构成明细与模型剩余额度。',
     'Open Links In': '默认打开链接方式',
-    'Choose where links open by default when clicked.': '选择点击网页链接时的默认打开位置。'
+    'Choose where links open by default when clicked.': '选择点击网页链接时的默认打开位置。',
+    'Side Question': '侧边追问',
+    'Side Questions': '侧边追问',
+    'Ask a side question': '发起侧边追问',
+    'Ask a side question...': '输入侧边追问…',
+    'Delete side question': '删除侧边追问',
+    'Confirm delete side question': '确认删除侧边追问',
+    'Pop out side question': '独立窗口打开侧边追问',
+    'Progress Updates': '进度动态时间线',
+    'Suggested Actions': '推荐后续操作',
+    'References': '引用位置',
+    'Peek References': '速览引用位置',
+    'No references found': '未找到引用位置',
+    'Filter files...': '筛选文件…',
+    'Filter rows...': '筛选数据行…',
+    'Clear site data': '清除站点数据',
+    'Site data cleared': '站点数据已清除',
+    'Configure GitHub App': '配置 GitHub 应用',
+    'Paste code instead': '改为粘贴授权码',
+    'Sign in with browser': '通过浏览器登录',
+    'Copy sign-in link': '复制登录链接',
+    'Reconnect microphone': '重新连接麦克风',
+    'Open voice settings': '打开语音设置',
+    'Open appearance settings': '打开外观设置'
   };
 
   const REVERSE_TO_EN = {};

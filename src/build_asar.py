@@ -46,6 +46,23 @@ def patch_storage_js(code: str) -> str:
     )
     assert old_ctor in code, "storage.js constructor anchor not found"
     code = code.replace(old_ctor, new_ctor, 1)
+    old_defaults_map = (
+        "        this.defaults = new Map([\n"
+        "            ['onboardingCompleted', 'false'],\n"
+        "            ['lastVersion', '0.0.0'],\n"
+        "        ]);"
+    )
+    new_defaults_map = (
+        "        this.defaults = new Map([\n"
+        "            ['onboardingCompleted', 'false'],\n"
+        "            ['lastVersion', '0.0.0'],\n"
+        "            ['contextUsageIndicatorEnabled', 'true'],\n"
+        "        ]);"
+    )
+    if old_defaults_map in code:
+        code = code.replace(old_defaults_map, new_defaults_map, 1)
+    if "this.writeChain = Promise.resolve();" in code:
+        return code
 
     old_update_v226 = """    async updateItems(changes) {
         try {
