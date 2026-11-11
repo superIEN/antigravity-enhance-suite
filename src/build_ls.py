@@ -181,25 +181,44 @@ def build_and_verify_ls(orig_ls_path: Path, candidate_ls_path: Path) -> dict:
     hdr_raw = p.rva_to_raw(sections, hdr_rva)
     arr_va, arr_len, _ = struct.unpack_from("<QQQ", raw, hdr_raw)
     arr_raw = p.rva_to_raw(sections, arr_va - image_base)
-    assert arr_len in (6, 7, 15), f"Unexpected retryableSubstrings length: {arr_len}"
+    assert arr_len in (6, 7, 15, 16), f"Unexpected retryableSubstrings length: {arr_len}"
 
     entries = [list(struct.unpack_from("<QQ", raw, arr_raw + i * 16)) for i in range(arr_len)]
     pos_sre = raw.find(b"stream reading error: %w")
     pos_unauth_lower = raw.find(b"unauthenticated")
+    pos_oneof = raw.find(b"oneof_index")
+    pos_proxyconn = raw.find(b"proxyconnect")
+    pos_ctx_deadline = raw.find(b"context deadline exceeded")
     assert pos_sre != -1 and pos_unauth_lower != -1
     va_sre = image_base + p.raw_to_rva(sections, pos_sre)
     va_unauth_lower = image_base + p.raw_to_rva(sections, pos_unauth_lower)
 
-    if arr_len == 15:
+    if arr_len in (15, 16):
+        assert pos_oneof != -1 and pos_proxyconn != -1 and pos_ctx_deadline != -1
+        va_eof = image_base + p.raw_to_rva(sections, pos_oneof + 2)
+        va_proxyconn = image_base + p.raw_to_rva(sections, pos_proxyconn)
+        va_deadline = image_base + p.raw_to_rva(sections, pos_ctx_deadline + 8)
+
         va0, _ = entries[0]
         va4, len4 = entries[4]
         orig_va4 = va4 if len4 == 32 else (va4 - 22)
+        va12, len12 = entries[12]
+        orig_va12 = va12 if len12 == 19 else (va12 - 10)
         va13, _ = entries[13]
-        entries[0] = [va0, 3]
-        entries[1] = [va_sre, 7]
-        entries[4] = [orig_va4 + 22, 10]
-        entries[5] = [va_unauth_lower, 15]
-        entries[13] = [va13, 6]
+        va_last, len_last = entries[arr_len - 1]
+        orig_va_last = va_last if len_last == 11 else (va_last - 4)
+
+        entries[0] = [va0, 3]                   # "wsa"
+        entries[1] = [va_sre, 7]                # "stream "
+        entries[4] = [orig_va4 + 22, 10]        # "connection"
+        entries[5] = [va_unauth_lower, 15]      # "unauthenticated"
+        entries[7] = [va_eof, 3]                # "eof"
+        entries[11] = [va_proxyconn, 12]        # "proxyconnect"
+        entries[12] = [orig_va12 + 10, 9]       # "timed out"
+        entries[13] = [va13, 6]                 # "http2:"
+        if arr_len == 16:
+            entries[14] = [va_deadline, 17]     # "deadline exceeded"
+        entries[arr_len - 1] = [orig_va_last + 4, 7]  # "timeout" (TLS handshake timeout, i/o timeout)
     elif arr_len == 7:
         va0, _ = entries[0]
         va4, len4 = entries[4]
