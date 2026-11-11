@@ -4,6 +4,19 @@
 
 ---
 
+## [v3.6.3] - 2026-11-12
+
+### 新增与优化 (Added & Changed)
+- **官方 Antigravity `v2.31.0` / `v2.31.1`（`2.31.0-6379060755038208` · `2.31.1-6044591015723008`）全栈兼容适配（`src/patch_sites.py` · `src/build_ls.py`）**：
+  - **`v2.31.1` 凭据存储热修核验**：核验官方 `v2.31.1` 针对 `codeassistclient.(*compositeTokenStorage)` 系统凭据环（Keyring）与本地文件迁移自愈逻辑重构引发的高地址段 `+0x26e0` 代码顺移与 `.rdata` `+0x4c40` 顺移（`0xb871948 -> 0xb876588`），全套 21 处二进制位点与 8 个 Electron 宿主模块经动态 `.gopclntab` 符号定位 100% 原生兼容并幂等通过；
+  - **`Site 14 (utils.IsRetryableAPIError retryableSubstrings)`**：适配官方 `v2.31.0+` 新增第 16 槽并在 Windows `x86_64` 与 macOS `ARM64` 双端全面扩充瞬态代理断流重试词表——将末槽 `'i/o timeout'` 裁剪为 `'timeout'`（覆盖 **`net/http: TLS handshake timeout`**），将槽位 `12` 裁剪为 `'timed out'`，并复用已被 `'connection'` / `'http2:'` 包含的冗余槽位 `7`、`11`、`14` 注入全小写 `'eof'`（覆盖建连期裸 `EOF`）、`'proxyconnect'`（覆盖代理切节点瞬断）与 `'deadline exceeded'`（覆盖上游响应头超时）；
+  - **`Site 16 ((*runningCommand).waitInBackground)`**：适配 `v2.31.0+` 中 `*RunCommandTool` 结构体字段编译偏移从 `+0x50`（`807e5000`）调整为 `+0x48`（`807e4800`），保持非守护后台命令默认 60s 超时主动唤醒补丁完整命中；
+  - **`Site 17 (codeassistclient.RefreshingTokenSource)`**：适配 `v2.31.0+` 函数扩容（`512B -> 608B`）后 Go 编译器在 `mov [rax+0x20], rcx` 与 `jmp +0xe` 之间插入 2 字节对齐 NOP `6690`（`488948206690eb0e`）的指令布局；
+  - **`Site 19 ((*AgentExecutor).transitionFromRunningToIdleOrClosed)`**：适配 `v2.31.0+` 因接入 `PostInvocationEvaluator` 引发的参数封装变化（原栈布尔参数 `[rsp+0xca]` 迁入 `[rsp+0xd8]` 结构体指针 `[r8+0x1a]`，即 `4c8b8424d80000004180781a000f1f000f84cb000000 -> 4c8b8424d80000004180781a000f1f00e9cc00000090`），确保回落至 `Idle` 时无条件重启 `startMessageWatcherLocked`；
+  - **Electron 宿主 8 项补丁（`src/build_asar.py`）**：全面兼容 `v2.31.0` / `v2.31.1` 内置浏览器下载审批通道（`webview:set-agent-controlled`、`webview:resolve-download`），8 大宿主模块 100% 原地通过。
+
+---
+
 ## [v3.6.2] - 2026-11-10
 
 ### 新增与优化 (Added & Changed)

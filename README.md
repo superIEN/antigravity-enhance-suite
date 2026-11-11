@@ -1,6 +1,6 @@
-# Antigravity Enhance Suite `v3.6.2`
+# Antigravity Enhance Suite `v3.6.3`
 
-一套面向 Google **Antigravity Desktop IDE**（支持 **macOS Apple Silicon `arm64`** 与 **Windows `x86_64`**，`v2.24.0` / `v2.25.0` / `v2.26.0` / `v2.27.0` / `v2.28.x` / `v2.29.0` / `v2.30.0+`）的全栈稳定性增强、桌面端 1M（`983,040` Tokens）上下文窗口真实解锁、官方 `v2.29.0+` 原生上下文与配额指示器汉化联动、Windows 独占锁后台 WMI 自动换包守护、后台任务/子智能体响应式唤醒死锁双层根治、会话媒体 `18 MB` 自适应预算守护、防退化 Harness 三大工程护栏与深度专业中文汉化套件。
+一套面向 Google **Antigravity Desktop IDE**（支持 **macOS Apple Silicon `arm64`** 与 **Windows `x86_64`**，`v2.24.0` / `v2.25.0` / `v2.26.0` / `v2.27.0` / `v2.28.x` / `v2.29.0` / `v2.30.0` / `v2.31.0` / `v2.31.1+`）的全栈稳定性增强、桌面端 1M（`983,040` Tokens）上下文窗口真实解锁、官方 `v2.29.0+` 原生上下文与配额指示器汉化联动、Windows 独占锁后台 WMI 自动换包守护、后台任务/子智能体响应式唤醒死锁双层根治、会话媒体 `18 MB` 自适应预算守护、防退化 Harness 三大工程护栏与深度专业中文汉化套件。
 
 > 版本演进与更新详情请参阅 [CHANGELOG.md](./CHANGELOG.md) 或仓库 [Releases](https://github.com/superIEN/antigravity-enhance-suite/releases) 页面。
 
@@ -53,9 +53,9 @@ python3 agy_suite.py install --hot-inject
      - **Site 19 (`(*AgentExecutor).transitionFromRunningToIdleOrClosed`)**：回落至 `Idle` 时强制重查 `messageTracker` 收件箱；
      - **Site 20 (`(*AgentExecutor).startMessageWatcherLocked.func2`)**：解除 `GetCascadeAutoRun()` 外层门控，确保 `NotifyCh()` 唤醒必扫描；
      - **Site 21 (`(*AgentExecutor).startMessageWatcherLocked.func2.1-range1`)**：穿透 `SubagentsAndTasksIdle` 与 `*prevIdle` 边沿锁，消除并发后台任务完成时的唤醒信号丢失。
-   - **多模态媒体压缩、流式 UTF-8 容错、15 槽位自动重试与 OAuth2 20m 预刷新（Sites 7–14, 17–18）**。
+   - **多模态媒体压缩、流式 UTF-8 容错、15/16 槽位自动重试与 OAuth2 20m 预刷新（Sites 7–14, 17–18）**。
 
-2. **Electron 宿主（`app.asar`）8 项受控生命周期加固（兼容 macOS & Windows `v2.24.0–v2.30.0+`）**
+2. **Electron 宿主（`app.asar`）8 项受控生命周期加固（兼容 macOS & Windows `v2.24.0–v2.31.1+`）**
    - **`v2.29.0–v2.30.0` `BaseWindow` + `WebContentsView` (`hubWcv`) 宿主适配**：全面兼容 `getHubWindows()`、`getHubWebContents(win)` 与 `resolveHubWindowFromWebContents(wc)`，并在Windows 在线安装遭遇 `app.asar` 独占锁（`[WinError 32]`）时自动拉起脱离 Job Object 的 **WMI 后台延迟原子换包守护（`deferred_asar_swapper.py`）**。
    - **`storage.js`**：原生兼容 `v2.30.0` 新增的 `this.writeChain` 串行写入队列、`.corrupt-*.bak` 损坏恢复与 `getItemsSync()` 同步读取接口（在旧版上提供完整写入队列补丁），默认注入 `contextUsageIndicatorEnabled: "true"`（尊重用户手动开关选择）。
    - **`languageServer.js`**：子进程局部句柄追踪、`timer` TDZ 修复、`child.kill('SIGKILL')` 有界终止、`stderr` 1500ms 有界排空与端口冲突自动回退动态端口 `0`。

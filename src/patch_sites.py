@@ -115,6 +115,13 @@ def _find_orig_or_patch(buf: bytes, orig: bytes, patch: bytes, start: int = 0) -
     return pos
 
 
+def _require_bytes(buf: bytes, needle: bytes) -> int:
+    pos = buf.find(needle)
+    if pos == -1:
+        raise RuntimeError(f"Required byte anchor not found in binary: {needle!r}")
+    return pos
+
+
 H2_PROTOCOLS_CTX = bytes.fromhex("4883b8c800000000")
 H2_PROTOCOLS_ORIG = bytes.fromhex("756e")
 H2_PROTOCOLS_PATCH = bytes.fromhex("9090")
@@ -728,7 +735,7 @@ def locate_stream_retry_sites(data: bytes, funcs: dict):
                 hdr_raw = macho_va_to_raw(sections, hdr_va)
                 if hdr_raw is not None and hdr_raw + 24 <= len(data):
                     cand_va, cand_len, cand_cap = struct.unpack_from("<QQQ", data, hdr_raw)
-                    if cand_len == cand_cap and cand_len in (7, 15):
+                    if cand_len == cand_cap and cand_len in (7, 15, 16):
                         cand_arr_raw = macho_va_to_raw(sections, cand_va)
                         if cand_arr_raw is not None:
                             arr_raw = cand_arr_raw
@@ -775,35 +782,58 @@ def locate_stream_retry_sites(data: bytes, funcs: dict):
             sites.append(
                 ("utils.IsRetryableAPIError (retryableSubstrings table expansion)", arr_raw, s14_orig, s14_patch)
             )
-        elif arr_raw is not None and arr_len == 15:
-            # v2.26.0+ / v2.29.0 ARM64: 15-slot lowercase table after strings.ToLower
-            entries = [list(struct.unpack_from("<QQ", data, arr_raw + i * 16)) for i in range(15)]
+        elif arr_raw is not None and arr_len in (15, 16):
+            # v2.26.0+ / v2.31.0+ ARM64: 15/16-slot lowercase table after strings.ToLower
+            entries = [list(struct.unpack_from("<QQ", data, arr_raw + i * 16)) for i in range(arr_len)]
             va0, _ = entries[0]
             va4, len4 = entries[4]
             orig_va4 = va4 if len4 == 32 else (va4 - 22)
+            va12, len12 = entries[12]
+            orig_va12 = va12 if len12 == 19 else (va12 - 10)
             va13, _ = entries[13]
-            orig_va5 = macho_raw_to_va(sections, data.find(b"connection reset by peer"))
-            va_sre = macho_raw_to_va(sections, data.find(b"stream reading error: %w"))
-            va_unauth_lower = macho_raw_to_va(sections, data.find(b"unauthenticated"))
+            va_last, len_last = entries[arr_len - 1]
+            orig_va_last = va_last if len_last == 11 else (va_last - 4)
+
+            orig_va5 = macho_raw_to_va(sections, _require_bytes(data, b"connection reset by peer"))
+            orig_va7 = macho_raw_to_va(sections, _require_bytes(data, b"software caused connection abort"))
+            orig_va11 = macho_raw_to_va(sections, _require_bytes(data, b"connection timed out"))
+            va_sre = macho_raw_to_va(sections, _require_bytes(data, b"stream reading error: %w"))
+            va_unauth_lower = macho_raw_to_va(sections, _require_bytes(data, b"unauthenticated"))
+            va_eof = macho_raw_to_va(sections, _require_bytes(data, b"oneof_index") + 2)
+            va_proxyconn = macho_raw_to_va(sections, _require_bytes(data, b"proxyconnect"))
+            va_deadline = macho_raw_to_va(sections, _require_bytes(data, b"context deadline exceeded") + 8)
 
             orig_entries = [list(e) for e in entries]
             orig_entries[0] = [va0, 7]
             orig_entries[1] = [va0 + 7, 7]
             orig_entries[4] = [orig_va4, 32]
             orig_entries[5] = [orig_va5, 24]
+            orig_entries[7] = [orig_va7, 32]
+            orig_entries[11] = [orig_va11, 20]
+            orig_entries[12] = [orig_va12, 19]
             orig_entries[13] = [va13, 29]
+            if arr_len == 16:
+                orig_va14 = macho_raw_to_va(sections, _require_bytes(data, b"http2: timeout awaiting response headers"))
+                orig_entries[14] = [orig_va14, 40]
+            orig_entries[arr_len - 1] = [orig_va_last, 11]
 
             patch_entries = [list(e) for e in entries]
-            patch_entries[0] = [va0, 3]
-            patch_entries[1] = [va_sre, 7]
-            patch_entries[4] = [orig_va4 + 22, 10]
-            patch_entries[5] = [va_unauth_lower, 15]
-            patch_entries[13] = [va13, 6]
+            patch_entries[0] = [va0, 3]                   # "wsa"
+            patch_entries[1] = [va_sre, 7]                # "stream "
+            patch_entries[4] = [orig_va4 + 22, 10]        # "connection"
+            patch_entries[5] = [va_unauth_lower, 15]      # "unauthenticated"
+            patch_entries[7] = [va_eof, 3]                # "eof"
+            patch_entries[11] = [va_proxyconn, 12]        # "proxyconnect"
+            patch_entries[12] = [orig_va12 + 10, 9]       # "timed out"
+            patch_entries[13] = [va13, 6]                 # "http2:"
+            if arr_len == 16:
+                patch_entries[14] = [va_deadline, 17]     # "deadline exceeded"
+            patch_entries[arr_len - 1] = [orig_va_last + 4, 7]  # "timeout" (covers TLS handshake timeout, i/o timeout)
 
             s14_26_orig = b"".join(struct.pack("<QQ", v, l) for v, l in orig_entries)
             s14_26_patch = b"".join(struct.pack("<QQ", v, l) for v, l in patch_entries)
             sites.append(
-                ("utils.IsRetryableAPIError (v2.26.0+ 15-slot retryableSubstrings expansion)", arr_raw, s14_26_orig, s14_26_patch)
+                (f"utils.IsRetryableAPIError (v2.26.0+ {arr_len}-slot retryableSubstrings expansion)", arr_raw, s14_26_orig, s14_26_patch)
             )
         return sites
 
@@ -876,35 +906,57 @@ def locate_stream_retry_sites(data: bytes, funcs: dict):
                     ]
                 )
                 sites.append(("utils.IsRetryableAPIError (retryableSubstrings table expansion)", arr_raw, s14_orig, s14_patch))
-            elif arr_raw is not None and arr_len == 15:
-                # v2.26.0: 15-slot lowercase table after strings.ToLower
-                entries = [list(struct.unpack_from("<QQ", data, arr_raw + i * 16)) for i in range(15)]
+            elif arr_raw is not None and arr_len in (15, 16):
+                # v2.26.0–v2.31.0+: 15/16-slot lowercase table after strings.ToLower
+                entries = [list(struct.unpack_from("<QQ", data, arr_raw + i * 16)) for i in range(arr_len)]
                 va0, _ = entries[0]
                 va4, len4 = entries[4]
                 orig_va4 = va4 if len4 == 32 else (va4 - 22)
+                va12, len12 = entries[12]
+                orig_va12 = va12 if len12 == 19 else (va12 - 10)
                 va13, _ = entries[13]
-                raw_crbp = data.find(b"connection reset by peer")
-                orig_va5 = image_base + raw_to_rva(sections, raw_crbp)
-                va_sre = image_base + raw_to_rva(sections, data.find(b"stream reading error: %w"))
-                va_unauth_lower = image_base + raw_to_rva(sections, data.find(b"unauthenticated"))
+                va_last, len_last = entries[arr_len - 1]
+                orig_va_last = va_last if len_last == 11 else (va_last - 4)
 
-                orig_entries = list(entries)
+                orig_va5 = image_base + raw_to_rva(sections, _require_bytes(data, b"connection reset by peer"))
+                orig_va7 = image_base + raw_to_rva(sections, _require_bytes(data, b"software caused connection abort"))
+                orig_va11 = image_base + raw_to_rva(sections, _require_bytes(data, b"connection timed out"))
+                va_sre = image_base + raw_to_rva(sections, _require_bytes(data, b"stream reading error: %w"))
+                va_unauth_lower = image_base + raw_to_rva(sections, _require_bytes(data, b"unauthenticated"))
+                va_eof = image_base + raw_to_rva(sections, _require_bytes(data, b"oneof_index") + 2)
+                va_proxyconn = image_base + raw_to_rva(sections, _require_bytes(data, b"proxyconnect"))
+                va_deadline = image_base + raw_to_rva(sections, _require_bytes(data, b"context deadline exceeded") + 8)
+
+                orig_entries = [list(e) for e in entries]
                 orig_entries[0] = [va0, 7]
                 orig_entries[1] = [va0 + 7, 7]
                 orig_entries[4] = [orig_va4, 32]
                 orig_entries[5] = [orig_va5, 24]
+                orig_entries[7] = [orig_va7, 32]
+                orig_entries[11] = [orig_va11, 20]
+                orig_entries[12] = [orig_va12, 19]
                 orig_entries[13] = [va13, 29]
+                if arr_len == 16:
+                    orig_va14 = image_base + raw_to_rva(sections, _require_bytes(data, b"http2: timeout awaiting response headers"))
+                    orig_entries[14] = [orig_va14, 40]
+                orig_entries[arr_len - 1] = [orig_va_last, 11]
 
-                patch_entries = list(entries)
-                patch_entries[0] = [va0, 3]
-                patch_entries[1] = [va_sre, 7]
-                patch_entries[4] = [orig_va4 + 22, 10]
-                patch_entries[5] = [va_unauth_lower, 15]
-                patch_entries[13] = [va13, 6]
+                patch_entries = [list(e) for e in entries]
+                patch_entries[0] = [va0, 3]                   # "wsa"
+                patch_entries[1] = [va_sre, 7]                # "stream "
+                patch_entries[4] = [orig_va4 + 22, 10]        # "connection"
+                patch_entries[5] = [va_unauth_lower, 15]      # "unauthenticated"
+                patch_entries[7] = [va_eof, 3]                # "eof"
+                patch_entries[11] = [va_proxyconn, 12]        # "proxyconnect"
+                patch_entries[12] = [orig_va12 + 10, 9]       # "timed out"
+                patch_entries[13] = [va13, 6]                 # "http2:"
+                if arr_len == 16:
+                    patch_entries[14] = [va_deadline, 17]     # "deadline exceeded"
+                patch_entries[arr_len - 1] = [orig_va_last + 4, 7]  # "timeout" (covers TLS handshake timeout, i/o timeout)
 
                 s14_26_orig = b"".join(struct.pack("<QQ", v, l) for v, l in orig_entries)
                 s14_26_patch = b"".join(struct.pack("<QQ", v, l) for v, l in patch_entries)
-                sites.append(("utils.IsRetryableAPIError (v2.26.0 15-slot retryableSubstrings expansion)", arr_raw, s14_26_orig, s14_26_patch))
+                sites.append((f"utils.IsRetryableAPIError (v2.26.0+ {arr_len}-slot retryableSubstrings expansion)", arr_raw, s14_26_orig, s14_26_patch))
 
     return sites
 
@@ -1147,11 +1199,21 @@ def locate_bg_task_timeout_sites(data: bytes, funcs: dict):
             "488b164885d2747e488b92980000004885d27472803a007464488b53384869d200ca9a3b"
             "4885d27f0931d2bb01000000eb5b4889d0"
         )
+        wib_orig_v231 = bytes.fromhex(
+            "488b8c2420020000488b59088403488b31807e4800740c31d2bb01000000e98d000000"
+            "488b164885d2747e488b92980000004885d27472803a007464488b53384869d200ca9a3b"
+            "4885d27f0931d2bb01000000eb5b4889d0"
+        )
         wib_patch = bytes.fromhex(
             "488b8c2420020000488b5908807b30000f8593000000488b53384885d27f09ba3c000000"
             "488953384869c200ca9a3beb27" + ("90" * 39)
         )
-        wib_orig = wib_orig_v230 if wib_orig_v230 in wib_bytes else wib_orig_v228
+        if wib_orig_v231 in wib_bytes:
+            wib_orig = wib_orig_v231
+        elif wib_orig_v230 in wib_bytes:
+            wib_orig = wib_orig_v230
+        else:
+            wib_orig = wib_orig_v228
         pos_wib = wib_bytes.find(wib_orig)
         if pos_wib == -1:
             pos_wib = wib_bytes.find(wib_patch)
@@ -1169,6 +1231,11 @@ def locate_bg_task_timeout_sites(data: bytes, funcs: dict):
         tr_off, tr_sz = funcs[tr_key]
         tr_bytes = data[tr_off : tr_off + tr_sz]
         tr_candidates = [
+            # v2.31.0+: mov r8, [rsp+0xd8]; cmp byte ptr [r8+0x1a], 0; nop dword ptr [rax]; jz +0xcb -> jmp +0xcc; nop
+            (
+                bytes.fromhex("4c8b8424d80000004180781a000f1f000f84cb000000"),
+                bytes.fromhex("4c8b8424d80000004180781a000f1f00e9cc00000090"),
+            ),
             # v2.30.0+: movzx r8d, byte ptr [rsp+0xca]; jz +0xcb -> jmp +0xcc; nop
             (
                 bytes.fromhex("440fb68424ca0000004584c00f84cb000000"),
@@ -1297,33 +1364,35 @@ def locate_oauth_token_sites(data: bytes, funcs: dict):
                     )
                 )
             elif total_imm_hits == 3:
-                # 2) v2.28-v2.30+ x64: 1x `movabs r8, imm64; mov [rdx+0x60], r8` + 2x `movabs rcx, imm64; mov [rax+0x20], rcx`
+                # 2) v2.28-v2.31+ x64: 1x `movabs r8, imm64; mov [rdx+0x60], r8` + 2x `movabs rcx, imm64; mov [rax+0x20], rcx`
                 r8_5m = b"\x49\xb8" + ns_5m + bytes.fromhex("4c894260")
                 r8_20m = b"\x49\xb8" + ns_20m + bytes.fromhex("4c894260")
-                rcx_5m = (
-                    b"\x48\xb9" + ns_5m + bytes.fromhex("48894820eb0e")
-                    + b"\x48\xb9" + ns_5m + bytes.fromhex("48894820")
-                )
-                rcx_20m = (
-                    b"\x48\xb9" + ns_20m + bytes.fromhex("48894820eb0e")
-                    + b"\x48\xb9" + ns_20m + bytes.fromhex("48894820")
-                )
                 p_r8 = _find_orig_or_patch(ca_bytes, r8_5m, r8_20m)
-                p_rcx = _find_orig_or_patch(ca_bytes, rcx_5m, rcx_20m)
-                if p_r8 != -1 and p_rcx != -1 and p_r8 < p_rcx:
-                    span_end = p_rcx + len(rcx_5m)
-                    span_orig = bytearray(ca_bytes[p_r8:span_end])
-                    span_patch = bytearray(ca_bytes[p_r8:span_end])
-                    span_orig[0 : len(r8_5m)] = r8_5m
-                    span_orig[p_rcx - p_r8 : span_end - p_r8] = rcx_5m
-                    span_patch[0 : len(r8_20m)] = r8_20m
-                    span_patch[p_rcx - p_r8 : span_end - p_r8] = rcx_20m
-                    sites.append(
-                        (
-                            "codeassistclient.RefreshingTokenSource (5m -> 20m)",
-                            ca_off + p_r8,
-                            bytes(span_orig),
-                            bytes(span_patch),
-                        )
+                for mid_nop_hex in ("6690", ""):
+                    rcx_5m = (
+                        b"\x48\xb9" + ns_5m + bytes.fromhex(f"48894820{mid_nop_hex}eb0e")
+                        + b"\x48\xb9" + ns_5m + bytes.fromhex("48894820")
                     )
+                    rcx_20m = (
+                        b"\x48\xb9" + ns_20m + bytes.fromhex(f"48894820{mid_nop_hex}eb0e")
+                        + b"\x48\xb9" + ns_20m + bytes.fromhex("48894820")
+                    )
+                    p_rcx = _find_orig_or_patch(ca_bytes, rcx_5m, rcx_20m)
+                    if p_r8 != -1 and p_rcx != -1 and p_r8 < p_rcx:
+                        span_end = p_rcx + len(rcx_5m)
+                        span_orig = bytearray(ca_bytes[p_r8:span_end])
+                        span_patch = bytearray(ca_bytes[p_r8:span_end])
+                        span_orig[0 : len(r8_5m)] = r8_5m
+                        span_orig[p_rcx - p_r8 : span_end - p_r8] = rcx_5m
+                        span_patch[0 : len(r8_20m)] = r8_20m
+                        span_patch[p_rcx - p_r8 : span_end - p_r8] = rcx_20m
+                        sites.append(
+                            (
+                                "codeassistclient.RefreshingTokenSource (5m -> 20m)",
+                                ca_off + p_r8,
+                                bytes(span_orig),
+                                bytes(span_patch),
+                            )
+                        )
+                        break
     return sites
