@@ -239,54 +239,38 @@ my_task_id = sys.argv[2]
 def sha256_file(p: Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
-class PROCESSENTRY32W(ctypes.Structure):
-    _fields_ = [
-        ("dwSize", wintypes.DWORD),
-        ("cntUsage", wintypes.DWORD),
-        ("th32ProcessID", wintypes.DWORD),
-        ("th32DefaultHeapID", ctypes.c_size_t),
-        ("th32ModuleID", wintypes.DWORD),
-        ("cntThreads", wintypes.DWORD),
-        ("th32ParentProcessID", wintypes.DWORD),
-        ("pcPriClassBase", ctypes.c_long),
-        ("dwFlags", wintypes.DWORD),
-        ("szExeFile", wintypes.WCHAR * 260),
-    ]
-
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-CreateToolhelp32Snapshot = kernel32.CreateToolhelp32Snapshot
-CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
-CreateToolhelp32Snapshot.restype = wintypes.HANDLE
-Process32FirstW = kernel32.Process32FirstW
-Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
-Process32FirstW.restype = wintypes.BOOL
-Process32NextW = kernel32.Process32NextW
-Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
-Process32NextW.restype = wintypes.BOOL
+CreateFileW = kernel32.CreateFileW
+CreateFileW.argtypes = [
+    wintypes.LPCWSTR,
+    wintypes.DWORD,
+    wintypes.DWORD,
+    wintypes.LPVOID,
+    wintypes.DWORD,
+    wintypes.DWORD,
+    wintypes.HANDLE,
+]
+CreateFileW.restype = wintypes.HANDLE
 CloseHandle = kernel32.CloseHandle
 CloseHandle.argtypes = [wintypes.HANDLE]
 CloseHandle.restype = wintypes.BOOL
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 
-def is_process_running(exe_name: str = "antigravity.exe"):
-    snap = CreateToolhelp32Snapshot(0x00000002, 0)
-    if snap == INVALID_HANDLE_VALUE or not snap:
+def probe_target_delete_ready(p: Path):
+    """Zero-read kernel share-mode probe on the exact target file (`DELETE` = 0x10000, `OPEN_EXISTING` = 3).
+    Returns True if no process holds a conflicting handle without FILE_SHARE_DELETE,
+    False if locked (`ERROR_SHARING_VIOLATION` = 32 / `ERROR_ACCESS_DENIED` = 5),
+    or None if the target file does not exist (`ERROR_FILE_NOT_FOUND` = 2 / `ERROR_PATH_NOT_FOUND` = 3).
+    """
+    ctypes.set_last_error(0)
+    h = CreateFileW(str(p), 0x00010000, 0x00000007, None, 3, 0x00000080, None)
+    if h != INVALID_HANDLE_VALUE and h:
+        CloseHandle(h)
+        return True
+    err = ctypes.get_last_error()
+    if err in (2, 3):
         return None
-    try:
-        pe = PROCESSENTRY32W()
-        pe.dwSize = ctypes.sizeof(PROCESSENTRY32W)
-        if not Process32FirstW(snap, ctypes.byref(pe)):
-            return None
-        target = exe_name.lower()
-        while True:
-            if pe.szExeFile.lower() == target:
-                return True
-            ctypes.set_last_error(0)
-            if not Process32NextW(snap, ctypes.byref(pe)):
-                err = ctypes.get_last_error()
-                return False if err in (0, 18) else None
-    finally:
-        CloseHandle(snap)
+    return False
 
 try:
     task = json.loads(task_file.read_text(encoding="utf-8"))
@@ -300,9 +284,10 @@ cand_asar = Path(task["cand_asar"])
 prod_asar = Path(task["prod_asar"])
 receipt_path = Path(task["receipt_path"])
 expected_orig_sha = task["expected_orig_sha256"]
+expected_live_sha = task.get("expected_live_sha256") or expected_orig_sha
 expected_cand_sha = task["candidate_sha256"]
+allowed_target_shas = {s for s in (expected_orig_sha, expected_live_sha) if s}
 restart_exe = Path(task["restart_exe"]) if task.get("restart_exe") else None
-target_exe_name = restart_exe.name if restart_exe else "Antigravity.exe"
 
 if not cand_asar.exists() or sha256_file(cand_asar) != expected_cand_sha:
     raise SystemExit(1)
@@ -321,17 +306,19 @@ swapped = False
 idle_ticks = 0
 try:
     while time.time() < deadline:
-        running = is_process_running(target_exe_name)
-        if running is not False:
+        ready = probe_target_delete_ready(prod_asar)
+        if ready is None:
+            break
+        if ready is False:
             idle_ticks += 1
-            if idle_ticks % 12 == 0:
+            if idle_ticks % 80 == 0:
                 try:
                     cur_task = json.loads(task_file.read_text(encoding="utf-8"))
                     if cur_task.get("task_id") != my_task_id:
                         break
                 except Exception:
                     break
-            time.sleep(2.5 if running is True else 0.5)
+            time.sleep(0.025)
             continue
 
         if not swap_tmp.exists() or not prod_asar.exists():
@@ -351,7 +338,7 @@ try:
                         cur_sha = sha256_file(prod_asar)
                         if cur_sha == expected_cand_sha:
                             swapped = True
-                        elif cur_sha != expected_orig_sha:
+                        elif cur_sha not in allowed_target_shas:
                             abort_worker = True
                         else:
                             st_now = prod_asar.stat()
@@ -365,14 +352,14 @@ try:
         except PermissionError:
             pass
         except OSError:
-            time.sleep(0.25)
+            time.sleep(0.05)
         except Exception:
             abort_worker = True
 
         if swapped or abort_worker:
             break
 
-        time.sleep(0.25)
+        time.sleep(0.025)
 finally:
     if swap_tmp.exists():
         try:
@@ -434,12 +421,17 @@ def spawn_windows_deferred_asar_swapper(
     agy_exe = prod_asar.parent.parent / "Antigravity.exe"
     task_file = runtime_dir / "deferred_asar_swap_task.json"
     lock_file = runtime_dir / "deferred_asar_swap.lock"
+    try:
+        live_prod_sha = sha256_file(prod_asar) if prod_asar.exists() else expected_orig_sha256
+    except OSError:
+        live_prod_sha = expected_orig_sha256
     task_payload = {
         "task_id": task_id,
         "cand_asar": str(cand_asar),
         "prod_asar": str(prod_asar),
         "receipt_path": str(receipt_path),
         "expected_orig_sha256": expected_orig_sha256,
+        "expected_live_sha256": live_prod_sha,
         "candidate_sha256": candidate_sha256,
         "restart_exe": str(agy_exe) if (restart_app and agy_exe.exists()) else "",
     }

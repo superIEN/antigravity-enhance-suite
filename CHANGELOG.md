@@ -15,7 +15,7 @@
     - **`main.js`**：适配 `v2.32.1` `getLocalHubWindows()` + `win.loadURL(newUrl)` 端口变更锚点，确保本机 `language_server` 重启换绑端口时仅通知和重载本机 Hub 窗口，绝不误刷新 SSH 远程窗口；
     - **`utils.js`、`preload.js` & `storage.js`**：识别 `--agy-backend=ssh` / `partition` / `isRemoteWindow` 与有限容量远端 `HostStores`（`maxBytes < Infinity`），防止本机 LS 端口改写污染 SSH 隧道端口、防止远端主机存储覆盖 `_defaultStorageManager` 或被注入本机默认配置，并阻止本机 `__AGY_BRIDGE__` 与特性开关渗入远端窗口；
   - **新增 12 条 `v2.32.1` SSH 远程连接界面中文词条（`src/agy-enhance-loader.js`）**：覆盖 `Connect to SSH Host`、`SSH Hosts`、`Recent SSH Hosts`、`Choose SSH Config File`、`Stop Remote Server`、`Open Local Window`、`Disconnected from SSH Host` 等完整远程连接交互文案，保持 `REVERSE_TO_EN` 双向无损可逆；
-  - **Windows 后台延迟换包守护（`DEFERRED_SWAP_SCRIPT`）Win32 进程快照降耗优化（`agy_suite.py`）**：通过 `CreateToolhelp32Snapshot`（`PROCESSENTRY32W`）低开销检测 `Antigravity.exe` 存活态，在宿主运行期间以 `2.5s` 静默休眠替代高频 `os.replace` 试探，消除常驻后台守护期间的无谓磁盘元数据轮询，并在宿主退出瞬间立即切入原子替换。
+  - **Windows 后台延迟换包守护（`DEFERRED_SWAP_SCRIPT`）句柄共享零读探测与原位升级加固（`agy_suite.py`）**：针对目标 `app.asar` 采用 Win32 `CreateFileW(DELETE)` 内核共享模式毫秒级探测（`25ms` 零磁盘读取，完整支持客户端内快速重启 `app.relaunch()` 且不受同机多套安装干扰），同时登记安装当下 `expected_live_sha256` 并以 `deferred_asar_swap.lock` 串行化替换前校验临界区，兼顾旧增强包原位升级与防误覆写保护。
 
 ---
 
