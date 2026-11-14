@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Antigravity Enhance Suite v3.6.3 — Unified CLI Installer, Inspector, Rollback, Live Hot-Injector, DB Upgrader & Media Guard (Windows & macOS).
+"""Antigravity Enhance Suite v3.6.4 — Unified CLI Installer, Inspector, Rollback, Live Hot-Injector, DB Upgrader & Media Guard (Windows & macOS).
 
 Usage:
     python3 agy_suite.py inspect [--agy-dir PATH]
@@ -221,8 +221,11 @@ def stage_and_sign_mac_bundle(
     return staged_app
 
 
-DEFERRED_SWAP_SCRIPT = r"""import hashlib
+DEFERRED_SWAP_SCRIPT = r"""import ctypes
+from ctypes import wintypes
+import hashlib
 import json
+import msvcrt
 import os
 import shutil
 import subprocess
@@ -236,6 +239,35 @@ my_task_id = sys.argv[2]
 def sha256_file(p: Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+CreateFileW = kernel32.CreateFileW
+CreateFileW.argtypes = [
+    wintypes.LPCWSTR,
+    wintypes.DWORD,
+    wintypes.DWORD,
+    wintypes.LPVOID,
+    wintypes.DWORD,
+    wintypes.DWORD,
+    wintypes.HANDLE,
+]
+CreateFileW.restype = wintypes.HANDLE
+CloseHandle = kernel32.CloseHandle
+CloseHandle.argtypes = [wintypes.HANDLE]
+CloseHandle.restype = wintypes.BOOL
+INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+def probe_target_delete_ready(p: Path):
+    # Zero-read kernel share-mode probe on the exact target file (DELETE=0x10000, OPEN_EXISTING=3)
+    ctypes.set_last_error(0)
+    h = CreateFileW(str(p), 0x00010000, 0x00000007, None, 3, 0x00000080, None)
+    if h != INVALID_HANDLE_VALUE and h:
+        CloseHandle(h)
+        return True
+    err = ctypes.get_last_error()
+    if err in (2, 3):
+        return None
+    return False
+
 try:
     task = json.loads(task_file.read_text(encoding="utf-8"))
 except Exception:
@@ -248,18 +280,16 @@ cand_asar = Path(task["cand_asar"])
 prod_asar = Path(task["prod_asar"])
 receipt_path = Path(task["receipt_path"])
 expected_orig_sha = task["expected_orig_sha256"]
+expected_live_sha = task.get("expected_live_sha256") or expected_orig_sha
 expected_cand_sha = task["candidate_sha256"]
+allowed_target_shas = {s for s in (expected_orig_sha, expected_live_sha) if s}
 restart_exe = Path(task["restart_exe"]) if task.get("restart_exe") else None
 
 if not cand_asar.exists() or sha256_file(cand_asar) != expected_cand_sha:
     raise SystemExit(1)
 
 swap_tmp = prod_asar.parent / f".app.asar.swap.{os.getpid()}.tmp"
-for stale_tmp in prod_asar.parent.glob(".app.asar.swap.*.tmp"):
-    try:
-        stale_tmp.unlink()
-    except OSError:
-        pass
+lock_file = task_file.with_name("deferred_asar_swap.lock")
 shutil.copy2(cand_asar, swap_tmp)
 try:
     with swap_tmp.open("r+b") as f:
@@ -269,38 +299,63 @@ except OSError:
 
 deadline = time.time() + 86400
 swapped = False
-iter_count = 0
+idle_ticks = 0
 try:
     while time.time() < deadline:
+        ready = probe_target_delete_ready(prod_asar)
+        if ready is None:
+            break
+        if ready is False:
+            idle_ticks += 1
+            if idle_ticks % 80 == 0:
+                try:
+                    cur_task = json.loads(task_file.read_text(encoding="utf-8"))
+                    if cur_task.get("task_id") != my_task_id:
+                        break
+                except Exception:
+                    break
+            time.sleep(0.025)
+            continue
+
+        if not swap_tmp.exists() or not prod_asar.exists():
+            break
+
+        abort_worker = False
         try:
-            os.replace(swap_tmp, prod_asar)
-            if sha256_file(prod_asar) == expected_cand_sha:
-                swapped = True
-                break
+            with lock_file.open("a+b") as lf:
+                lf.seek(0)
+                msvcrt.locking(lf.fileno(), msvcrt.LK_NBLCK, 1)
+                try:
+                    cur_task = json.loads(task_file.read_text(encoding="utf-8"))
+                    if cur_task.get("task_id") != my_task_id:
+                        abort_worker = True
+                    else:
+                        st_before = prod_asar.stat()
+                        cur_sha = sha256_file(prod_asar)
+                        if cur_sha == expected_cand_sha:
+                            swapped = True
+                        elif cur_sha not in allowed_target_shas:
+                            abort_worker = True
+                        else:
+                            st_now = prod_asar.stat()
+                            if (st_now.st_size, st_now.st_mtime_ns) == (st_before.st_size, st_before.st_mtime_ns):
+                                os.replace(swap_tmp, prod_asar)
+                                if sha256_file(prod_asar) == expected_cand_sha:
+                                    swapped = True
+                finally:
+                    lf.seek(0)
+                    msvcrt.locking(lf.fileno(), msvcrt.LK_UNLCK, 1)
         except PermissionError:
             pass
+        except OSError:
+            time.sleep(0.05)
         except Exception:
-            time.sleep(0.1)
+            abort_worker = True
 
-        if iter_count % 40 == 0:
-            try:
-                cur_task = json.loads(task_file.read_text(encoding="utf-8"))
-                if cur_task.get("task_id") != my_task_id:
-                    break
-            except Exception:
-                break
-            if prod_asar.exists():
-                try:
-                    cur_sha = sha256_file(prod_asar)
-                    if cur_sha == expected_cand_sha:
-                        swapped = True
-                        break
-                    if cur_sha != expected_orig_sha:
-                        break
-                except OSError:
-                    pass
-        iter_count += 1
-        time.sleep(0.02)
+        if swapped or abort_worker:
+            break
+
+        time.sleep(0.025)
 finally:
     if swap_tmp.exists():
         try:
@@ -361,16 +416,35 @@ def spawn_windows_deferred_asar_swapper(
     task_id = f"{int(datetime.datetime.now().timestamp() * 1000)}-{os.getpid()}"
     agy_exe = prod_asar.parent.parent / "Antigravity.exe"
     task_file = runtime_dir / "deferred_asar_swap_task.json"
+    lock_file = runtime_dir / "deferred_asar_swap.lock"
+    try:
+        live_prod_sha = sha256_file(prod_asar) if prod_asar.exists() else expected_orig_sha256
+    except OSError:
+        live_prod_sha = expected_orig_sha256
     task_payload = {
         "task_id": task_id,
         "cand_asar": str(cand_asar),
         "prod_asar": str(prod_asar),
         "receipt_path": str(receipt_path),
         "expected_orig_sha256": expected_orig_sha256,
+        "expected_live_sha256": live_prod_sha,
         "candidate_sha256": candidate_sha256,
         "restart_exe": str(agy_exe) if (restart_app and agy_exe.exists()) else "",
     }
-    task_file.write_text(json.dumps(task_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_task_file = runtime_dir / f"deferred_asar_swap_task.json.tmp.{os.getpid()}"
+    tmp_task_file.write_text(json.dumps(task_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if os.name == "nt":
+        import msvcrt
+        with lock_file.open("a+b") as lf:
+            lf.seek(0)
+            msvcrt.locking(lf.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                os.replace(tmp_task_file, task_file)
+            finally:
+                lf.seek(0)
+                msvcrt.locking(lf.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        os.replace(tmp_task_file, task_file)
 
     py_exe = sys.executable
     pyw_exe = Path(py_exe).with_name("pythonw.exe")
@@ -710,7 +784,7 @@ def cmd_hot_inject(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Antigravity Enhance Suite CLI (v3.6.3)")
+    parser = argparse.ArgumentParser(description="Antigravity Enhance Suite CLI (v3.6.4)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_ins = sub.add_parser("inspect", help="Inspect current Antigravity installation & patch sites")

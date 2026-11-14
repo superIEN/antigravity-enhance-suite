@@ -4,10 +4,26 @@
 
 ---
 
+## [v3.6.4] - 2026-11-14
+
+### 新增与优化 (Added & Changed)
+- **官方 Antigravity `v2.32.1`（`2.32.1-6001966350991360` · `go1.28-20261102-RC00`）全栈兼容适配与 SSH 远程窗口安全隔离（`src/patch_sites.py` · `src/build_asar.py` · `src/agy-enhance-loader.js`）**：
+  - **Go 语言服务端 `Site 5` 跨包迁移追踪与 21 处位点满编对齐（`src/patch_sites.py`）**：
+    - 适配官方 `v2.32.1`（新增内嵌 `run_workflow` Python 运行时，`+17.55 MB`）将原 `gateway.modelEntryToModelDetails` 迁移合并至 `codeassistclient.GatewayModelDetails`（`0x2833f11`）并将 `gateway.HydrateModelEntryDefaults` 统一收口至 `admincontrols.HydrateModelEntryDefaults`（`0x1a9302e`）的架构演进，同时在 macOS `ARM64` 分支支持任意目标寄存器 `movz/movk` 动态匹配，确保 Windows `x86_64`（21 处位点）与 macOS `ARM64`（28+ 处位点）100% 满编命中；
+  - **Electron 宿主 `v2.32.1` 锚点适配与 `--agy-backend=ssh` 远程窗口零串扰边界隔离（`src/build_asar.py`）**：
+    - **`ipcHandlers.js`**：适配 `v2.32.1` `getTargetHubWindow(event?.sender)` 标题栏染色锚点；在 `isTrustedAgySender` 中显式拦截 `remoteWindowSecurity.isRemoteContents`（确保 `agy:get-preferences`、`agy:update-preferences`、`agy:backup-legacy-flags` 严格限于本机窗口），同时允许 SSH 远程窗口主框架为自身窗口同步深浅色 `titleBarOverlay`，并在偏好广播时优先走 `getLocalHubWindows()`；
+    - **`main.js`**：适配 `v2.32.1` `getLocalHubWindows()` + `win.loadURL(newUrl)` 端口变更锚点，确保本机 `language_server` 重启换绑端口时仅通知和重载本机 Hub 窗口，绝不误刷新 SSH 远程窗口；
+    - **`utils.js`、`preload.js` & `storage.js`**：识别 `--agy-backend=ssh` / `partition` / `isRemoteWindow` 与有限容量远端 `HostStores`（`maxBytes < Infinity`），防止本机 LS 端口改写污染 SSH 隧道端口、防止远端主机存储覆盖 `_defaultStorageManager` 或被注入本机默认配置，并阻止本机 `__AGY_BRIDGE__` 与特性开关渗入远端窗口；
+  - **新增 12 条 `v2.32.1` SSH 远程连接界面中文词条（`src/agy-enhance-loader.js`）**：覆盖 `Connect to SSH Host`、`SSH Hosts`、`Recent SSH Hosts`、`Choose SSH Config File`、`Stop Remote Server`、`Open Local Window`、`Disconnected from SSH Host` 等完整远程连接交互文案，保持 `REVERSE_TO_EN` 双向无损可逆；
+  - **Windows 后台延迟换包守护（`DEFERRED_SWAP_SCRIPT`）句柄共享零读探测与原位升级加固（`agy_suite.py`）**：针对目标 `app.asar` 采用 Win32 `CreateFileW(DELETE)` 内核共享模式毫秒级探测（`25ms` 零磁盘读取，完整支持客户端内快速重启 `app.relaunch()` 且不受同机多套安装干扰），同时登记安装当下 `expected_live_sha256` 并以 `deferred_asar_swap.lock` 串行化替换前校验临界区，兼顾旧增强包原位升级与防误覆写保护。
+
+---
+
 ## [v3.6.3] - 2026-11-12
 
 ### 新增与优化 (Added & Changed)
-- **官方 Antigravity `v2.31.0` / `v2.31.1`（`2.31.0-6379060755038208` · `2.31.1-6044591015723008`）全栈兼容适配（`src/patch_sites.py` · `src/build_ls.py`）**：
+- **官方 Antigravity `v2.31.0` / `v2.31.1` / `v2.31.2`（`2.31.0-6379060755038208` · `2.31.1-6044591015723008` · `2.31.2-6470801290035200`）全栈兼容适配（`src/patch_sites.py` · `src/build_ls.py`）**：
+  - **`v2.31.2` 默认模型注册表（`Gemini4Carbon`）更新核验**：核验官方 `v2.31.2` 新增 `defaultmodels.Gemini4Carbon` 并扩展 `defaultmodels.init`（`+1` / `-0` / `~1` 符号，高地址段代码顺移 `+0x1a0`、只读数据段顺移 `+0x400` 至 `0xb876988`），Electron 宿主 `dist/*.js` 字节零改动，全套 21 处二进制位点与 8 个宿主模块 100% 原生兼容并幂等通过；
   - **`v2.31.1` 凭据存储热修核验**：核验官方 `v2.31.1` 针对 `codeassistclient.(*compositeTokenStorage)` 系统凭据环（Keyring）与本地文件迁移自愈逻辑重构引发的高地址段 `+0x26e0` 代码顺移与 `.rdata` `+0x4c40` 顺移（`0xb871948 -> 0xb876588`），全套 21 处二进制位点与 8 个 Electron 宿主模块经动态 `.gopclntab` 符号定位 100% 原生兼容并幂等通过；
   - **`Site 14 (utils.IsRetryableAPIError retryableSubstrings)`**：适配官方 `v2.31.0+` 新增第 16 槽并在 Windows `x86_64` 与 macOS `ARM64` 双端全面扩充瞬态代理断流重试词表——将末槽 `'i/o timeout'` 裁剪为 `'timeout'`（覆盖 **`net/http: TLS handshake timeout`**），将槽位 `12` 裁剪为 `'timed out'`，并复用已被 `'connection'` / `'http2:'` 包含的冗余槽位 `7`、`11`、`14` 注入全小写 `'eof'`（覆盖建连期裸 `EOF`）、`'proxyconnect'`（覆盖代理切节点瞬断）与 `'deadline exceeded'`（覆盖上游响应头超时）；
   - **`Site 16 ((*runningCommand).waitInBackground)`**：适配 `v2.31.0+` 中 `*RunCommandTool` 结构体字段编译偏移从 `+0x50`（`807e5000`）调整为 `+0x48`（`807e4800`），保持非守护后台命令默认 60s 超时主动唤醒补丁完整命中；

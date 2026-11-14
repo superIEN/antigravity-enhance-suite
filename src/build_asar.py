@@ -37,7 +37,7 @@ def patch_storage_js(code: str) -> str:
     new_ctor = (
         "this.emitter = new events_1.EventEmitter();\n"
         "        this._writeQueue = Promise.resolve();\n"
-        "        if (!this.defaults) {\n"
+        "        if (!this.defaults && (this.maxBytes === undefined || this.maxBytes === Infinity)) {\n"
         "            this.defaults = new Map();\n"
         "        }\n"
         "        if (this.defaults instanceof Map && !this.defaults.has('contextUsageIndicatorEnabled')) {\n"
@@ -197,11 +197,29 @@ def patch_ipc_handlers_js(code: str) -> str:
         }
     });"""
 
+    old_overlay_v232 = """    electron_1.ipcMain.handle('window:set-title-bar-overlay', async (event, options) => {
+        const win = getTargetHubWindow(event?.sender);
+        if (win && process.platform === 'win32') {
+            win.setTitleBarOverlay({
+                color: options.color,
+                symbolColor: options.symbolColor,
+                height: 30,
+            });
+        }
+    });"""
+
     new_overlay = """    const languageServer_agy_ipc = require('./languageServer');
 
     function isTrustedAgySender(_event) {
         if (!_event || !_event.sender || _event.sender.isDestroyed()) return null;
         if (_event.senderFrame !== _event.sender.mainFrame) return null;
+        if (
+            typeof remoteWindowSecurity_1 !== 'undefined' &&
+            typeof remoteWindowSecurity_1.isRemoteContents === 'function' &&
+            (0, remoteWindowSecurity_1.isRemoteContents)(_event.sender)
+        ) {
+            return null;
+        }
         const win = (typeof utils_1 !== 'undefined' && typeof utils_1.resolveHubWindowFromWebContents === 'function')
             ? (0, utils_1.resolveHubWindowFromWebContents)(_event.sender)
             : electron_1.BrowserWindow.fromWebContents(_event.sender);
@@ -231,7 +249,16 @@ def patch_ipc_handlers_js(code: str) -> str:
     }
 
     electron_1.ipcMain.handle('window:set-title-bar-overlay', async (_event, options) => {
-        const win = isTrustedAgySender(_event);
+        const win = isTrustedAgySender(_event) || (
+            typeof remoteWindowSecurity_1 !== 'undefined' &&
+            typeof remoteWindowSecurity_1.isRemoteContents === 'function' &&
+            (0, remoteWindowSecurity_1.isRemoteContents)(_event?.sender) &&
+            !_event?.senderFrame?.parent &&
+            (!_event?.senderFrame || !_event?.sender?.mainFrame || _event.senderFrame === _event.sender.mainFrame) &&
+            typeof getTargetHubWindow === 'function'
+                ? getTargetHubWindow(_event.sender)
+                : null
+        );
         if (
             win &&
             process.platform === 'win32' &&
@@ -389,9 +416,11 @@ def patch_ipc_handlers_js(code: str) -> str:
                     lsGeneration: global.__agyLsGeneration || 1,
                     global: agyPrefsState.global,
                 };
-                const allWins = (typeof utils_1 !== 'undefined' && typeof utils_1.getHubWindows === 'function')
-                    ? (0, utils_1.getHubWindows)()
-                    : electron_1.BrowserWindow.getAllWindows();
+                const allWins = (typeof utils_1 !== 'undefined' && typeof utils_1.getLocalHubWindows === 'function')
+                    ? (0, utils_1.getLocalHubWindows)()
+                    : ((typeof utils_1 !== 'undefined' && typeof utils_1.getHubWindows === 'function')
+                        ? (0, utils_1.getHubWindows)()
+                        : electron_1.BrowserWindow.getAllWindows());
                 for (const w of allWins) {
                     if (w && !w.isDestroyed?.()) {
                         const wc = (typeof utils_1 !== 'undefined' && typeof utils_1.getHubWebContents === 'function')
@@ -424,6 +453,8 @@ def patch_ipc_handlers_js(code: str) -> str:
         }
     });"""
 
+    if old_overlay_v232 in code:
+        return code.replace(old_overlay_v232, new_overlay, 1)
     if old_overlay_v227 in code:
         return code.replace(old_overlay_v227, new_overlay, 1)
     assert old_overlay_v226 in code, "ipcHandlers.js window:set-title-bar-overlay anchor not found"
@@ -433,6 +464,7 @@ def patch_ipc_handlers_js(code: str) -> str:
 def patch_preload_js(code: str) -> str:
     bridge_code = """
 // --- Antigravity Enhance Suite: Synchronous Pre-Main-World Flag & Indicator Bootstrap ---
+if (typeof isRemoteWindow === 'undefined' || !isRemoteWindow) {
 (function bootstrapAgyEnhanceFlagsSync() {
     const seedFlags = () => {
         try {
@@ -528,6 +560,7 @@ electron_1.contextBridge.exposeInMainWorld('__AGY_BRIDGE__', agyBridgeAPI);
 try {
     electron_1.contextBridge.exposeInIsolatedWorld(1004, '__AGY_BRIDGE__', agyBridgeAPI);
 } catch (e) {}
+}
 """
     assert "__agy_bootstrap_v1__" not in code, "preload.js should be clean original baseline"
     return code + "\n" + bridge_code
@@ -634,19 +667,29 @@ function attachControlledEnhancement(win) {{
 }}
 
 {create_sig}
-    if (storageManager) {{
-        _defaultStorageManager = storageManager;
-    }} else if (_defaultStorageManager) {{
-        storageManager = _defaultStorageManager;
-    }}
-    try {{
-        const livePort = (0, languageServer_agy.getLsPort)();
-        if (livePort > 0 && typeof url === 'string' && url.startsWith('https://127.0.0.1:')) {{
-            const parsedUrl = new URL(url);
-            parsedUrl.port = String(livePort);
-            url = parsedUrl.toString();
+    const _agyIsRemoteWin = Boolean(
+        (typeof options === 'object' && options !== null) && (
+            options.partition ||
+            options.builtInBrowser === false ||
+            (Array.isArray(options.additionalArguments) &&
+                options.additionalArguments.some((a) => typeof a === 'string' && a.startsWith('--agy-backend=')))
+        )
+    );
+    if (!_agyIsRemoteWin) {{
+        if (storageManager) {{
+            _defaultStorageManager = storageManager;
+        }} else if (_defaultStorageManager) {{
+            storageManager = _defaultStorageManager;
         }}
-    }} catch {{}}"""
+        try {{
+            const livePort = (0, languageServer_agy.getLsPort)();
+            if (livePort > 0 && typeof url === 'string' && url.startsWith('https://127.0.0.1:')) {{
+                const parsedUrl = new URL(url);
+                parsedUrl.port = String(livePort);
+                url = parsedUrl.toString();
+            }}
+        }} catch {{}}
+    }}"""
 
     code = code.replace(create_sig, new_create, 1)
 
@@ -659,13 +702,13 @@ function attachControlledEnhancement(win) {{
     if (!hubContents) {
         throw new Error('Failed to resolve Hub webContents for window');
     }
-    attachControlledEnhancement(win);
+    if (!_agyIsRemoteWin) attachControlledEnhancement(win);
     void hubContents.loadURL(url);"""
     if old_load_v229 in code:
         return code.replace(old_load_v229, new_load_v229, 1)
 
     old_load = "    void win.loadURL(url);"
-    new_load = "    attachControlledEnhancement(win);\n    void win.loadURL(url);"
+    new_load = "    if (!_agyIsRemoteWin) attachControlledEnhancement(win);\n    void win.loadURL(url);"
     assert old_load in code, "utils.js win.loadURL anchor not found"
     return code.replace(old_load, new_load, 1)
 
@@ -1041,6 +1084,11 @@ def patch_main_js(code: str) -> str:
         "const windows = (0, utils_1.getHubWindows)();",
     )
 
+    old_port_cb_v232 = old_port_cb_v226.replace(
+        "const windows = electron_1.BrowserWindow.getAllWindows();",
+        "const windows = (0, utils_1.getLocalHubWindows)();",
+    )
+
     old_port_cb_v229 = """            onPortChanged: (newPort) => {
                 const newUrl = `${constants_1.WINDOW_ORIGIN}:${newPort}/`;
                 console.log(`[Auto-Restart] Port changed! Reloading all windows with URL: ${newUrl}`);
@@ -1060,8 +1108,13 @@ def patch_main_js(code: str) -> str:
     new_port_cb = """            onPortChanged: (newPort) => {
                 (0, languageServer_1.setupLocalCertTrust)();
                 const lsGen = global.__agyLsGeneration || 1;
+                const getLocalWins = () => (typeof utils_1 !== 'undefined' && typeof utils_1.getLocalHubWindows === 'function')
+                    ? (0, utils_1.getLocalHubWindows)()
+                    : ((typeof utils_1 !== 'undefined' && typeof utils_1.getHubWindows === 'function')
+                        ? (0, utils_1.getHubWindows)()
+                        : electron_1.BrowserWindow.getAllWindows());
                 if (!HEADLESS) {
-                    const allWins = typeof utils_1 !== 'undefined' && typeof utils_1.getHubWindows === 'function' ? (0, utils_1.getHubWindows)() : electron_1.BrowserWindow.getAllWindows();
+                    const allWins = getLocalWins();
                     for (const w of allWins) {
                         if (w && !w.isDestroyed?.()) {
                             const wc = typeof utils_1 !== 'undefined' && typeof utils_1.getHubWebContents === 'function' ? (0, utils_1.getHubWebContents)(w) : w.webContents;
@@ -1078,7 +1131,7 @@ def patch_main_js(code: str) -> str:
                 global.__agyLastPort = newPort;
                 console.log(`[Auto-Restart] Port changed to ${newPort}! Updating registered AGY windows...`);
                 if (!HEADLESS) {
-                    const windows = typeof utils_1 !== 'undefined' && typeof utils_1.getHubWindows === 'function' ? (0, utils_1.getHubWindows)() : electron_1.BrowserWindow.getAllWindows();
+                    const windows = getLocalWins();
                     for (const win of windows) {
                         if (!win || win.isDestroyed?.()) continue;
                         try {
@@ -1100,6 +1153,8 @@ def patch_main_js(code: str) -> str:
                 }
             },"""
 
+    if old_port_cb_v232 in code:
+        return code.replace(old_port_cb_v232, new_port_cb, 1)
     if old_port_cb_v229 in code:
         return code.replace(old_port_cb_v229, new_port_cb, 1)
     if old_port_cb_v227 in code:
