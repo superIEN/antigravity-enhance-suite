@@ -225,6 +225,7 @@ DEFERRED_SWAP_SCRIPT = r"""import ctypes
 from ctypes import wintypes
 import hashlib
 import json
+import msvcrt
 import os
 import shutil
 import subprocess
@@ -280,9 +281,10 @@ def is_process_running(exe_name: str = "antigravity.exe"):
         while True:
             if pe.szExeFile.lower() == target:
                 return True
+            ctypes.set_last_error(0)
             if not Process32NextW(snap, ctypes.byref(pe)):
-                break
-        return False
+                err = ctypes.get_last_error()
+                return False if err in (0, 18) else None
     finally:
         CloseHandle(snap)
 
@@ -306,11 +308,7 @@ if not cand_asar.exists() or sha256_file(cand_asar) != expected_cand_sha:
     raise SystemExit(1)
 
 swap_tmp = prod_asar.parent / f".app.asar.swap.{os.getpid()}.tmp"
-for stale_tmp in prod_asar.parent.glob(".app.asar.swap.*.tmp"):
-    try:
-        stale_tmp.unlink()
-    except OSError:
-        pass
+lock_file = task_file.with_name("deferred_asar_swap.lock")
 shutil.copy2(cand_asar, swap_tmp)
 try:
     with swap_tmp.open("r+b") as f:
@@ -336,40 +334,43 @@ try:
             time.sleep(2.5 if running is True else 0.5)
             continue
 
-        try:
-            cur_task = json.loads(task_file.read_text(encoding="utf-8"))
-            if cur_task.get("task_id") != my_task_id:
-                break
-        except Exception:
-            break
-
         if not swap_tmp.exists() or not prod_asar.exists():
             break
 
+        abort_worker = False
         try:
-            cur_sha = sha256_file(prod_asar)
-        except PermissionError:
-            time.sleep(0.25)
-            continue
-        except OSError:
-            time.sleep(0.5)
-            continue
-
-        if cur_sha == expected_cand_sha:
-            swapped = True
-            break
-        if cur_sha != expected_orig_sha:
-            break
-
-        try:
-            os.replace(swap_tmp, prod_asar)
-            if sha256_file(prod_asar) == expected_cand_sha:
-                swapped = True
-                break
+            with lock_file.open("a+b") as lf:
+                lf.seek(0)
+                msvcrt.locking(lf.fileno(), msvcrt.LK_NBLCK, 1)
+                try:
+                    cur_task = json.loads(task_file.read_text(encoding="utf-8"))
+                    if cur_task.get("task_id") != my_task_id:
+                        abort_worker = True
+                    else:
+                        st_before = prod_asar.stat()
+                        cur_sha = sha256_file(prod_asar)
+                        if cur_sha == expected_cand_sha:
+                            swapped = True
+                        elif cur_sha != expected_orig_sha:
+                            abort_worker = True
+                        else:
+                            st_now = prod_asar.stat()
+                            if (st_now.st_size, st_now.st_mtime_ns) == (st_before.st_size, st_before.st_mtime_ns):
+                                os.replace(swap_tmp, prod_asar)
+                                if sha256_file(prod_asar) == expected_cand_sha:
+                                    swapped = True
+                finally:
+                    lf.seek(0)
+                    msvcrt.locking(lf.fileno(), msvcrt.LK_UNLCK, 1)
         except PermissionError:
             pass
+        except OSError:
+            time.sleep(0.25)
         except Exception:
-            time.sleep(0.5)
+            abort_worker = True
+
+        if swapped or abort_worker:
+            break
 
         time.sleep(0.25)
 finally:
@@ -432,6 +433,7 @@ def spawn_windows_deferred_asar_swapper(
     task_id = f"{int(datetime.datetime.now().timestamp() * 1000)}-{os.getpid()}"
     agy_exe = prod_asar.parent.parent / "Antigravity.exe"
     task_file = runtime_dir / "deferred_asar_swap_task.json"
+    lock_file = runtime_dir / "deferred_asar_swap.lock"
     task_payload = {
         "task_id": task_id,
         "cand_asar": str(cand_asar),
@@ -441,7 +443,20 @@ def spawn_windows_deferred_asar_swapper(
         "candidate_sha256": candidate_sha256,
         "restart_exe": str(agy_exe) if (restart_app and agy_exe.exists()) else "",
     }
-    task_file.write_text(json.dumps(task_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_task_file = runtime_dir / f"deferred_asar_swap_task.json.tmp.{os.getpid()}"
+    tmp_task_file.write_text(json.dumps(task_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if os.name == "nt":
+        import msvcrt
+        with lock_file.open("a+b") as lf:
+            lf.seek(0)
+            msvcrt.locking(lf.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                os.replace(tmp_task_file, task_file)
+            finally:
+                lf.seek(0)
+                msvcrt.locking(lf.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        os.replace(tmp_task_file, task_file)
 
     py_exe = sys.executable
     pyw_exe = Path(py_exe).with_name("pythonw.exe")
