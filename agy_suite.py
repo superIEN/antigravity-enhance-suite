@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Antigravity Enhance Suite v3.6.3 — Unified CLI Installer, Inspector, Rollback, Live Hot-Injector, DB Upgrader & Media Guard (Windows & macOS).
+"""Antigravity Enhance Suite v3.6.4 — Unified CLI Installer, Inspector, Rollback, Live Hot-Injector, DB Upgrader & Media Guard (Windows & macOS).
 
 Usage:
     python3 agy_suite.py inspect [--agy-dir PATH]
@@ -221,7 +221,9 @@ def stage_and_sign_mac_bundle(
     return staged_app
 
 
-DEFERRED_SWAP_SCRIPT = r"""import hashlib
+DEFERRED_SWAP_SCRIPT = r"""import ctypes
+from ctypes import wintypes
+import hashlib
 import json
 import os
 import shutil
@@ -235,6 +237,54 @@ my_task_id = sys.argv[2]
 
 def sha256_file(p: Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
+
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", wintypes.DWORD),
+        ("cntUsage", wintypes.DWORD),
+        ("th32ProcessID", wintypes.DWORD),
+        ("th32DefaultHeapID", ctypes.c_size_t),
+        ("th32ModuleID", wintypes.DWORD),
+        ("cntThreads", wintypes.DWORD),
+        ("th32ParentProcessID", wintypes.DWORD),
+        ("pcPriClassBase", ctypes.c_long),
+        ("dwFlags", wintypes.DWORD),
+        ("szExeFile", wintypes.WCHAR * 260),
+    ]
+
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+CreateToolhelp32Snapshot = kernel32.CreateToolhelp32Snapshot
+CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+Process32FirstW = kernel32.Process32FirstW
+Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+Process32FirstW.restype = wintypes.BOOL
+Process32NextW = kernel32.Process32NextW
+Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+Process32NextW.restype = wintypes.BOOL
+CloseHandle = kernel32.CloseHandle
+CloseHandle.argtypes = [wintypes.HANDLE]
+CloseHandle.restype = wintypes.BOOL
+INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+def is_process_running(exe_name: str = "antigravity.exe") -> bool:
+    snap = CreateToolhelp32Snapshot(0x00000002, 0)
+    if snap == INVALID_HANDLE_VALUE or not snap:
+        return False
+    try:
+        pe = PROCESSENTRY32W()
+        pe.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        if not Process32FirstW(snap, ctypes.byref(pe)):
+            return False
+        target = exe_name.lower()
+        while True:
+            if pe.szExeFile.lower() == target:
+                return True
+            if not Process32NextW(snap, ctypes.byref(pe)):
+                break
+        return False
+    finally:
+        CloseHandle(snap)
 
 try:
     task = json.loads(task_file.read_text(encoding="utf-8"))
@@ -250,6 +300,7 @@ receipt_path = Path(task["receipt_path"])
 expected_orig_sha = task["expected_orig_sha256"]
 expected_cand_sha = task["candidate_sha256"]
 restart_exe = Path(task["restart_exe"]) if task.get("restart_exe") else None
+target_exe_name = restart_exe.name if restart_exe else "Antigravity.exe"
 
 if not cand_asar.exists() or sha256_file(cand_asar) != expected_cand_sha:
     raise SystemExit(1)
@@ -269,9 +320,21 @@ except OSError:
 
 deadline = time.time() + 86400
 swapped = False
-iter_count = 0
+idle_ticks = 0
 try:
     while time.time() < deadline:
+        if is_process_running(target_exe_name):
+            idle_ticks += 1
+            if idle_ticks % 12 == 0:
+                try:
+                    cur_task = json.loads(task_file.read_text(encoding="utf-8"))
+                    if cur_task.get("task_id") != my_task_id:
+                        break
+                except Exception:
+                    break
+            time.sleep(2.5)
+            continue
+
         try:
             os.replace(swap_tmp, prod_asar)
             if sha256_file(prod_asar) == expected_cand_sha:
@@ -280,27 +343,25 @@ try:
         except PermissionError:
             pass
         except Exception:
-            time.sleep(0.1)
+            time.sleep(0.5)
 
-        if iter_count % 40 == 0:
-            try:
-                cur_task = json.loads(task_file.read_text(encoding="utf-8"))
-                if cur_task.get("task_id") != my_task_id:
-                    break
-            except Exception:
+        try:
+            cur_task = json.loads(task_file.read_text(encoding="utf-8"))
+            if cur_task.get("task_id") != my_task_id:
                 break
-            if prod_asar.exists():
-                try:
-                    cur_sha = sha256_file(prod_asar)
-                    if cur_sha == expected_cand_sha:
-                        swapped = True
-                        break
-                    if cur_sha != expected_orig_sha:
-                        break
-                except OSError:
-                    pass
-        iter_count += 1
-        time.sleep(0.02)
+        except Exception:
+            break
+        if prod_asar.exists():
+            try:
+                cur_sha = sha256_file(prod_asar)
+                if cur_sha == expected_cand_sha:
+                    swapped = True
+                    break
+                if cur_sha != expected_orig_sha:
+                    break
+            except OSError:
+                pass
+        time.sleep(0.25)
 finally:
     if swap_tmp.exists():
         try:
@@ -710,7 +771,7 @@ def cmd_hot_inject(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Antigravity Enhance Suite CLI (v3.6.3)")
+    parser = argparse.ArgumentParser(description="Antigravity Enhance Suite CLI (v3.6.4)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_ins = sub.add_parser("inspect", help="Inspect current Antigravity installation & patch sites")

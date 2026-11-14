@@ -276,7 +276,10 @@ def locate_1m_context_sites(data: bytes, funcs: dict):
         (k for k in funcs if k.endswith(".GetDefaultConversationalCascadeConfig") or k.endswith(".defaultConversationalCascadeConfig")),
         None,
     )
-    gw_key = next((k for k in funcs if k.endswith(".modelEntryToModelDetails")), None)
+    gw_key = next(
+        (k for k in funcs if k.endswith(".modelEntryToModelDetails") or k.endswith(".GatewayModelDetails")),
+        None,
+    )
     hyd_key = next((k for k in funcs if k.endswith(".HydrateModelEntryDefaults")), None)
 
     if is_macho_arm64(data):
@@ -325,6 +328,25 @@ def locate_1m_context_sites(data: bytes, funcs: dict):
             p_gw = _find_orig_or_patch(g_bytes, gw_orig, gw_patch)
             if p_gw != -1:
                 sites.append(("gateway.modelEntryToModelDetails (default input 200K -> 1M)", g_off + p_gw, gw_orig, gw_patch))
+            else:
+                for off4 in range(0, g_sz - 7, 4):
+                    w0, w1 = struct.unpack_from("<II", g_bytes, off4)
+                    rd = w0 & 0x1F
+                    if (w1 & 0x1F) == rd and (
+                        ((w0 & 0xFFFFFFE0) == 0xD281A800 and (w1 & 0xFFFFFFE0) == 0xF2A00060)
+                        or ((w0 & 0xFFFFFFE0) == 0xD2800000 and (w1 & 0xFFFFFFE0) == 0xF2A00200)
+                    ):
+                        dyn_gw_orig = struct.pack("<II", 0xD281A800 | rd, 0xF2A00060 | rd)
+                        dyn_gw_patch = struct.pack("<II", 0xD2800000 | rd, 0xF2A00200 | rd)
+                        sites.append(
+                            (
+                                "gateway.modelEntryToModelDetails (default input 200K -> 1M)",
+                                g_off + off4,
+                                dyn_gw_orig,
+                                dyn_gw_patch,
+                            )
+                        )
+                        break
 
         if hyd_key:
             h_off, h_sz = funcs[hyd_key]

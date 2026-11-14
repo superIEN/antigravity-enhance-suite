@@ -1,4 +1,4 @@
-"""Portable Language Server Binary Patcher & Verifier for Antigravity (Windows PE x86_64 & macOS Mach-O ARM64, v2.24.0–v2.28.0+)."""
+"""Portable Language Server Binary Patcher & Verifier for Antigravity (Windows PE x86_64 & macOS Mach-O ARM64, v2.24.0–v2.32.1+)."""
 from __future__ import annotations
 
 import hashlib

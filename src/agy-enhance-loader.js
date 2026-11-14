@@ -1186,7 +1186,20 @@
     'Copy sign-in link': '复制登录链接',
     'Reconnect microphone': '重新连接麦克风',
     'Open voice settings': '打开语音设置',
-    'Open appearance settings': '打开外观设置'
+    'Open appearance settings': '打开外观设置',
+    // --- v2.32.1 SSH 远程开发与工作流新增界面词条 ---
+    'Connect to SSH Host': '连接 SSH 远程主机',
+    'Connect to SSH...': '连接 SSH 远程主机…',
+    'Connect via SSH': '通过 SSH 远程连接',
+    'SSH Hosts': 'SSH 远程主机列表',
+    'Recent SSH Hosts': '最近连接的 SSH 主机',
+    'SSH Config File': 'SSH 配置文件',
+    'Choose SSH Config File': '选择 SSH 配置文件',
+    'Stop Remote Server': '停止远端服务',
+    'Open Local Window': '打开本机窗口',
+    'Disconnected from SSH Host': '已断开与 SSH 主机的连接',
+    'Reconnect': '重新连接',
+    "Couldn't connect to the SSH host. See the app log.": '无法连接至 SSH 远程主机，请查看应用日志。'
   };
 
   const REVERSE_TO_EN = {};
