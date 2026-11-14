@@ -257,11 +257,7 @@ CloseHandle.restype = wintypes.BOOL
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 
 def probe_target_delete_ready(p: Path):
-    """Zero-read kernel share-mode probe on the exact target file (`DELETE` = 0x10000, `OPEN_EXISTING` = 3).
-    Returns True if no process holds a conflicting handle without FILE_SHARE_DELETE,
-    False if locked (`ERROR_SHARING_VIOLATION` = 32 / `ERROR_ACCESS_DENIED` = 5),
-    or None if the target file does not exist (`ERROR_FILE_NOT_FOUND` = 2 / `ERROR_PATH_NOT_FOUND` = 3).
-    """
+    # Zero-read kernel share-mode probe on the exact target file (DELETE=0x10000, OPEN_EXISTING=3)
     ctypes.set_last_error(0)
     h = CreateFileW(str(p), 0x00010000, 0x00000007, None, 3, 0x00000080, None)
     if h != INVALID_HANDLE_VALUE and h:
