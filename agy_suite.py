@@ -267,15 +267,15 @@ CloseHandle.argtypes = [wintypes.HANDLE]
 CloseHandle.restype = wintypes.BOOL
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 
-def is_process_running(exe_name: str = "antigravity.exe") -> bool:
+def is_process_running(exe_name: str = "antigravity.exe"):
     snap = CreateToolhelp32Snapshot(0x00000002, 0)
     if snap == INVALID_HANDLE_VALUE or not snap:
-        return False
+        return None
     try:
         pe = PROCESSENTRY32W()
         pe.dwSize = ctypes.sizeof(PROCESSENTRY32W)
         if not Process32FirstW(snap, ctypes.byref(pe)):
-            return False
+            return None
         target = exe_name.lower()
         while True:
             if pe.szExeFile.lower() == target:
@@ -323,7 +323,8 @@ swapped = False
 idle_ticks = 0
 try:
     while time.time() < deadline:
-        if is_process_running(target_exe_name):
+        running = is_process_running(target_exe_name)
+        if running is not False:
             idle_ticks += 1
             if idle_ticks % 12 == 0:
                 try:
@@ -332,8 +333,33 @@ try:
                         break
                 except Exception:
                     break
-            time.sleep(2.5)
+            time.sleep(2.5 if running is True else 0.5)
             continue
+
+        try:
+            cur_task = json.loads(task_file.read_text(encoding="utf-8"))
+            if cur_task.get("task_id") != my_task_id:
+                break
+        except Exception:
+            break
+
+        if not swap_tmp.exists() or not prod_asar.exists():
+            break
+
+        try:
+            cur_sha = sha256_file(prod_asar)
+        except PermissionError:
+            time.sleep(0.25)
+            continue
+        except OSError:
+            time.sleep(0.5)
+            continue
+
+        if cur_sha == expected_cand_sha:
+            swapped = True
+            break
+        if cur_sha != expected_orig_sha:
+            break
 
         try:
             os.replace(swap_tmp, prod_asar)
@@ -345,22 +371,6 @@ try:
         except Exception:
             time.sleep(0.5)
 
-        try:
-            cur_task = json.loads(task_file.read_text(encoding="utf-8"))
-            if cur_task.get("task_id") != my_task_id:
-                break
-        except Exception:
-            break
-        if prod_asar.exists():
-            try:
-                cur_sha = sha256_file(prod_asar)
-                if cur_sha == expected_cand_sha:
-                    swapped = True
-                    break
-                if cur_sha != expected_orig_sha:
-                    break
-            except OSError:
-                pass
         time.sleep(0.25)
 finally:
     if swap_tmp.exists():

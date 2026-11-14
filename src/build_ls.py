@@ -70,6 +70,10 @@ def build_and_verify_ls(orig_ls_path: Path, candidate_ls_path: Path) -> dict:
             + p.locate_bg_task_timeout_sites(raw, funcs)
             + p.locate_oauth_token_sites(raw, funcs)
         )
+        if not any("modelEntryToModelDetails" in s[0] for s in all_sites):
+            raise RuntimeError("Site 5 (modelEntryToModelDetails / GatewayModelDetails) must be located on macOS ARM64")
+        if not any("HydrateModelEntryDefaults" in s[0] for s in all_sites):
+            raise RuntimeError("Site 6 (HydrateModelEntryDefaults) must be located on macOS ARM64")
         if not any("Site 23" in s[0] for s in all_sites):
             raise RuntimeError("Site 23 (TruncationDecorator.truncateIfTooLarge) must be located on macOS ARM64")
         min_arm64_sites = 29 if media_sites else 27
@@ -159,6 +163,10 @@ def build_and_verify_ls(orig_ls_path: Path, candidate_ls_path: Path) -> dict:
     expected_base_counts = (15, 16) if media_sites else (13, 14)
     if len(base_sites) not in expected_base_counts:
         raise RuntimeError(f"Expected {expected_base_counts} base sites, got {len(base_sites)}")
+    if not any("modelEntryToModelDetails" in s[0] for s in base_sites):
+        raise RuntimeError("Site 5 (modelEntryToModelDetails / GatewayModelDetails) must be located on Windows PE")
+    if not any("HydrateModelEntryDefaults" in s[0] for s in base_sites):
+        raise RuntimeError("Site 6 (HydrateModelEntryDefaults) must be located on Windows PE")
     if not any("Site 22" in s[0] for s in base_sites):
         raise RuntimeError("Site 22 (ClampCheckpointConfigForModelInfo) must be located on Windows PE")
     if not any("Site 23" in s[0] for s in base_sites):
