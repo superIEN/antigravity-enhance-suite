@@ -413,7 +413,7 @@ def locate_1m_context_sites(data: bytes, funcs: dict):
                         struct.pack_into("<I", td_orig, off4, 0x52A03200 | rd)
                         struct.pack_into("<I", td_patch, off4, 0x52A20000 | rd)
                         arm_hits += 1
-                if arm_hits > 0 and (td_sz < 512 or arm_hits in (4, 6)):
+                if arm_hits > 0 and (td_sz < 512 or arm_hits in (3, 4, 5, 6)):
                     sites.append(
                         (
                             "Site 23 (*TruncationDecorator).truncateIfTooLarge (trajectory byte cap 25MB -> 256MB)",
@@ -1125,7 +1125,21 @@ def locate_bg_task_timeout_sites(data: bytes, funcs: dict):
                 "64c0403904040035641c40f99f0000f16c000054840780d2641c00f9054099d24573a7f2"
                 "837c059b44a04039c4020037" + ("1f2003d5" * 8)
             )
-            pos_wib = _find_orig_or_patch(wib_bytes, wib_arm_orig, wib_arm_patch)
+            # RunCommandTool's feature flag moved from +0x28 to +0x50 (v2.30)
+            # and +0x48 (v2.31). The surrounding 80-byte control flow is unchanged.
+            wib_arm_candidates = [
+                (
+                    wib_arm_orig.replace(bytes.fromhex("44a04039"), bytes.fromhex(flag_load)),
+                    wib_arm_patch.replace(bytes.fromhex("44a04039"), bytes.fromhex(flag_load)),
+                )
+                for flag_load in ("44204139", "44404139", "44a04039")
+            ]
+            pos_wib = -1
+            for candidate_orig, candidate_patch in wib_arm_candidates:
+                pos_wib = _find_orig_or_patch(wib_bytes, candidate_orig, candidate_patch)
+                if pos_wib != -1:
+                    wib_arm_orig, wib_arm_patch = candidate_orig, candidate_patch
+                    break
             if pos_wib != -1:
                 sites.append(
                     (
@@ -1141,18 +1155,30 @@ def locate_bg_task_timeout_sites(data: bytes, funcs: dict):
         if tr_key:
             tr_off, tr_sz = funcs[tr_key]
             tr_bytes = data[tr_off : tr_off + tr_sz]
-            tr_arm_orig = bytes.fromhex("e167433981050036a4144ba9")
-            tr_arm_patch = bytes.fromhex("e16743392c000014a4144ba9")
-            pos_tr = _find_orig_or_patch(tr_bytes, tr_arm_orig, tr_arm_patch)
-            if pos_tr != -1:
-                sites.append(
-                    (
-                        "Site 19 (*AgentExecutor).transitionFromRunningToIdleOrClosed (always recheck inbox)",
-                        tr_off + pos_tr,
-                        tr_arm_orig,
-                        tr_arm_patch,
+            tr_arm_candidates = [
+                # v2.31+: PostInvocationEvaluator arguments at [sp, #0xe0];
+                # ldrb w7, [x6, #0x1a]; tbz w7 -> b (same target, +0xb0).
+                (
+                    bytes.fromhex("e67340f9c768403987050036a4144ba9"),
+                    bytes.fromhex("e67340f9c76840392c000014a4144ba9"),
+                ),
+                (
+                    bytes.fromhex("e167433981050036a4144ba9"),
+                    bytes.fromhex("e16743392c000014a4144ba9"),
+                ),
+            ]
+            for tr_arm_orig, tr_arm_patch in tr_arm_candidates:
+                pos_tr = _find_orig_or_patch(tr_bytes, tr_arm_orig, tr_arm_patch)
+                if pos_tr != -1:
+                    sites.append(
+                        (
+                            "Site 19 (*AgentExecutor).transitionFromRunningToIdleOrClosed (always recheck inbox)",
+                            tr_off + pos_tr,
+                            tr_arm_orig,
+                            tr_arm_patch,
+                        )
                     )
-                )
+                    break
 
         # Site 20 (ARM64): (*AgentExecutor).startMessageWatcherLocked.func2
         mw2_key = next((k for k in funcs if k.endswith("/agentexecutor.(*AgentExecutor).startMessageWatcherLocked.func2")), None)
