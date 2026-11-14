@@ -54,8 +54,11 @@ ENTITLEMENTS_XML = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 SUITE_SRC = Path(__file__).resolve().parent
+FALLBACK_SUITE_SRC = Path.home() / ".gemini" / "agy-enhance" / "antigravity-enhance-suite" / "src"
 if str(SUITE_SRC) not in sys.path:
     sys.path.insert(0, str(SUITE_SRC))
+if str(FALLBACK_SUITE_SRC) not in sys.path:
+    sys.path.append(str(FALLBACK_SUITE_SRC))
 
 try:
     from . import patch_sites as base_patcher  # type: ignore[no-redef]

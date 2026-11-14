@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Antigravity Enhance Suite v3.6.4 — Unified CLI Installer, Inspector, Rollback, Live Hot-Injector, DB Upgrader & Media Guard (Windows & macOS).
+"""Antigravity Enhance Suite v3.6.5 — Unified CLI Installer, Inspector, Rollback, Live Hot-Injector, DB Upgrader & Media Guard (Windows & macOS).
 
 Usage:
     python3 agy_suite.py inspect [--agy-dir PATH]
@@ -784,7 +784,7 @@ def cmd_hot_inject(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Antigravity Enhance Suite CLI (v3.6.4)")
+    parser = argparse.ArgumentParser(description="Antigravity Enhance Suite CLI (v3.6.5)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_ins = sub.add_parser("inspect", help="Inspect current Antigravity installation & patch sites")

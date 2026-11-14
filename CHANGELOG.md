@@ -4,6 +4,19 @@
 
 ---
 
+## [v3.6.5] - 2026-11-14
+
+### 新增与优化 (Added & Changed)
+- **macOS Apple Silicon (`darwin-arm64`) `v2.30.0+` / `v2.31.x+` 真机二进制布局适配与多代编译验签（`src/patch_sites.py` · `src/build_ls.py` · `src/patch_sites_macos_v36.py`）**：
+  - **合入 [PR #8](https://github.com/superIEN/antigravity-enhance-suite/pull/8) `Site 23` ARM64 寄存器复用适配**：`(*TruncationDecorator).truncateIfTooLarge` 在保留指令边界与函数体内扫描的前提下支持 `3 / 4 / 5 / 6` 处 `movz` 立即数，兼容 macOS `ARM64` 循环退出分支复用寄存器产生的 `3` 处（`v2.25.0`，函数体 `1,152` B）与 `5` 处（`v2.29.0+`，函数体 `1,440` B）布局，并补充原厂、已补丁与混合态回归断言；`src/patch_sites_macos_v36.py` 补充 `~/.gemini/agy-enhance/antigravity-enhance-suite/src` 独立运行路径兜底。
+  - **新增 `Site 16` 与 `Site 19` 的 `v2.30.0+` / `v2.31.x+` ARM64 候选模式**：
+    - **`Site 16 ((*runningCommand).waitInBackground)`**：80 字节控制流块同步支持 `*RunCommandTool` 特性标志字段在 `+0x28`（`44a04039`）、`+0x50`（`44404139`）与 `+0x48`（`44204139`，`v2.31.0+`）三代偏移，并在补丁产物中保留对应版本的原标志加载指令，确保二次构建 100% 幂等识别；
+    - **`Site 19 ((*AgentExecutor).transitionFromRunningToIdleOrClosed)`**：适配 `v2.31.0+` ARM64 下 `PostInvocationEvaluator` 结构体指针布局（`ldr x6, [sp, #0xe0]; ldrb w7, [x6, #0x1a]; tbz w7, #0, +0xb0 -> b +0xb0`），保留旧版布局兼容；
+    - **`src/build_ls.py` 具名必中守卫扩容**：在 macOS `ARM64` 构建路径上显式强制要求 `Sites 5, 6, 15, 16, 19, 20, 21, 22, 23` 全部具名命中，新增 `Arm64BackgroundWakeupTests`（单测总数扩充至 15 项）。
+  - **Apple Silicon 真机多版本编译与严格代码签名验证**：在 macOS `arm64` 真机上对 `2.25.0`（31 处位点）、`2.29.0`（29 处位点）与 `2.31.1`（29 处位点）原厂基线完成离线构建、Hardened Runtime + `com.apple.security.cs.allow-jit` 签名、完整 `.app` 离线克隆（精确更新 `Info.plist` `ElectronAsarIntegrity`、注入 Google Team `EQHXZ8M8AV` 库加载约束）与 `/usr/bin/codesign --verify --deep --strict` 严格验签，二次构建 SHA-256 100% 字节一致，15 项 Python 护栏单测与 9 大项 Node.js 沙盒验证全部通过。
+
+---
+
 ## [v3.6.4] - 2026-11-14
 
 ### 新增与优化 (Added & Changed)

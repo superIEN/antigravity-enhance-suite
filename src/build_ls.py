@@ -76,6 +76,16 @@ def build_and_verify_ls(orig_ls_path: Path, candidate_ls_path: Path) -> dict:
             raise RuntimeError("Site 6 (HydrateModelEntryDefaults) must be located on macOS ARM64")
         if not any("Site 23" in s[0] for s in all_sites):
             raise RuntimeError("Site 23 (TruncationDecorator.truncateIfTooLarge) must be located on macOS ARM64")
+        for required, alternatives in (
+            ("Site 15", ("runTaskListeners",)),
+            ("Site 16", ("RunCommandTool.runCommand", "runningCommand.waitInBackground")),
+            ("Site 19", ("Site 19",)),
+            ("Site 20", ("Site 20",)),
+            ("Site 21", ("Site 21",)),
+            ("Site 22", ("Site 22",)),
+        ):
+            if not any(label in site[0] for site in all_sites for label in alternatives):
+                raise RuntimeError(f"{required} must be located on macOS ARM64")
         min_arm64_sites = 29 if media_sites else 27
         assert len(all_sites) >= min_arm64_sites, f"Expected >={min_arm64_sites} Mach-O ARM64 sites, got {len(all_sites)}"
         for name, off, before, after in all_sites:

@@ -522,6 +522,73 @@ class TestGuardrail3SubstanceVerifier(unittest.TestCase):
             self.assertTrue(hyg_ok["passed"])
 
 
+class Arm64BackgroundWakeupTests(unittest.TestCase):
+    """Real ARM64 v2.31 layouts must retain timeout and Idle wakeup patches."""
+
+    def test_named_site16_is_mandatory_despite_high_total_count(self) -> None:
+        from unittest.mock import patch
+        from src import build_ls, patch_sites
+
+        labels = ["modelEntryToModelDetails", "HydrateModelEntryDefaults", "Site 23", "runTaskListeners",
+                  "Site 19", "Site 20", "Site 21", "Site 22"] + [f"other-{i}" for i in range(24)]
+        sites = [(label, 32, b"\x1f\x20\x03\xd5", b"\x1f\x20\x03\xd5") for label in labels]
+        with tempfile.TemporaryDirectory(prefix="mandatory-s16-") as td:
+            source = Path(td) / "input"
+            source.write_bytes(bytes.fromhex("cffaedfe") + b"\x00" * 28 + b"\x1f\x20\x03\xd5")
+            with (
+                patch.object(patch_sites, "parse_gopclntab", return_value={}),
+                patch.object(patch_sites, "locate_h2ping_sites", return_value=sites),
+                patch.object(patch_sites, "locate_1m_context_sites", return_value=[]),
+                patch.object(patch_sites, "locate_media_compression_sites", return_value=[]),
+                patch.object(patch_sites, "locate_utf8_and_uri_sites", return_value=[]),
+                patch.object(patch_sites, "locate_stream_retry_sites", return_value=[]),
+                patch.object(patch_sites, "locate_bg_task_timeout_sites", return_value=[]),
+                patch.object(patch_sites, "locate_oauth_token_sites", return_value=[]),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Site 16"):
+                    build_ls.build_and_verify_ls(source, Path(td) / "output")
+
+    def test_wait_in_background_feature_flag_offsets_and_idempotence(self) -> None:
+        from src import patch_sites
+
+        symbol = "google3/third_party/oneharness/internal/tools/tools.(*runningCommand).waitInBackground"
+        head = bytes.fromhex("cffaedfe") + b"\x00" * 28
+        for flag_load in ("44a04039", "44404139", "44204139"):
+            body = bytes.fromhex(
+                "631c40f9044099d24473a7f2637c049b" + flag_load +
+                "84000036e2031faae30340b21e000014420040f9420300b4424c40f9"
+                "020300b442004039620200367f0000f18c000054e2031faae30340b213000014"
+            )
+            sites = patch_sites.locate_bg_task_timeout_sites(head + body, {symbol: (32, len(body))})
+            self.assertEqual(len(sites), 1)
+            name, off, before, after = sites[0]
+            self.assertIn("waitInBackground", name)
+            self.assertEqual((off, before, len(after)), (32, body, len(body)))
+            self.assertIn(bytes.fromhex("840780d2641c00f9"), after)  # mov x4, #60; str x4, [x3, #0x38]
+            self.assertIn(bytes.fromhex(flag_load + "c4020037"), after)  # retain this version's feature flag
+            repeated = patch_sites.locate_bg_task_timeout_sites(head + after, {symbol: (32, len(body))})
+            self.assertEqual([(s[0], s[1], s[3]) for s in repeated], [(name, off, after)])
+
+    def test_post_invocation_evaluator_branch_target_and_idempotence(self) -> None:
+        import struct
+        from src import patch_sites
+
+        symbol = "google3/third_party/gemini_coder/framework/executor/agentexecutor/agentexecutor.(*AgentExecutor).transitionFromRunningToIdleOrClosed"
+        head = bytes.fromhex("cffaedfe") + b"\x00" * 28
+        body = bytes.fromhex("e67340f9c768403987050036a4144ba9")
+        sites = patch_sites.locate_bg_task_timeout_sites(head + body, {symbol: (32, len(body))})
+        self.assertEqual(len(sites), 1)
+        name, off, before, after = sites[0]
+        self.assertIn("Site 19", name)
+        self.assertEqual((off, before), (32, body))
+        old_branch = struct.unpack_from("<I", before, 8)[0]
+        new_branch = struct.unpack_from("<I", after, 8)[0]
+        self.assertEqual(new_branch >> 26, 0b000101)  # unconditional B
+        self.assertEqual(((old_branch >> 5) & 0x3fff) * 4, (new_branch & 0x3ffffff) * 4)
+        self.assertEqual(after[:8] + after[12:], before[:8] + before[12:])
+        self.assertEqual(patch_sites.locate_bg_task_timeout_sites(head + after, {symbol: (32, len(body))}), sites)
+
+
 class Site23TrajectoryCapTests(unittest.TestCase):
     """Tests for Site 23 (*TruncationDecorator).truncateIfTooLarge 25MB -> 256MB binary patcher."""
 
@@ -578,8 +645,30 @@ class Site23TrajectoryCapTests(unittest.TestCase):
                 self.assertEqual(s_orig[0][1:], (32, orig, patched))
                 self.assertEqual(s_patch[0][1:], (32, orig, patched))
 
+        # Real Mach-O function sizes: register reuse yields 3 or 5 MOVZ sites.
+        for fn_sz, hits in ((1152, 3), (1440, 5)):
+            body_orig = bytearray(bytes.fromhex("1f2003d5") * (fn_sz // 4))
+            body_patched = bytearray(body_orig)
+            for i in range(hits):
+                off = 64 + i * 128
+                struct.pack_into("<I", body_orig, off, 0xD2A03200 | (i + 3))
+                struct.pack_into("<I", body_patched, off, 0xD2A20000 | (i + 3))
+            body_mixed = bytearray(body_orig)
+            body_mixed[64:68] = body_patched[64:68]
+            for body in (body_orig, body_patched, body_mixed):
+                with self.subTest(fn_sz=fn_sz, hits=hits, body=body == body_orig):
+                    sites = patch_sites.locate_1m_context_sites(
+                        arm_head + body, {self.SYMBOL: (32, fn_sz)}
+                    )
+                    self.assertEqual(len(sites), 1)
+                    name, off, before, after = sites[0]
+                    self.assertEqual((off, before, after), (32, bytes(body_orig), bytes(body_patched)))
+                    self.assertTrue(build_ls._is_valid_site_state(name, bytes(body), before, after))
+
         # Verify macOS build_ls and patch_sites_macos_v36 fail closed when Site 23 is missing
         dummy_sites = [(f"legacy-{i}", 32 + 4 * i, b"\x1f\x20\x03\xd5", b"\x1f\x20\x03\xd5") for i in range(28)]
+        dummy_sites[0] = ("modelEntryToModelDetails", *dummy_sites[0][1:])
+        dummy_sites[1] = ("HydrateModelEntryDefaults", *dummy_sites[1][1:])
         raw_macho = arm_head + (b"\x1f\x20\x03\xd5" * 32)
         with (
             patch.object(patch_sites, "parse_gopclntab", return_value={}),
@@ -595,9 +684,9 @@ class Site23TrajectoryCapTests(unittest.TestCase):
                 in_p = Path(td) / "in_ls"
                 out_p = Path(td) / "out_ls"
                 in_p.write_bytes(raw_macho)
-                with self.assertRaises(RuntimeError):
+                with self.assertRaisesRegex(RuntimeError, "Site 23"):
                     build_ls.build_and_verify_ls(in_p, out_p)
-                with self.assertRaises(RuntimeError):
+                with self.assertRaisesRegex(RuntimeError, "Site 23"):
                     patch_sites_macos_v36.inspect_v36_sites(raw_macho)
 
 
