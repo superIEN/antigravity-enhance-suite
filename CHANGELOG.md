@@ -4,6 +4,16 @@
 
 ---
 
+## [v3.6.6] - 2026-11-19
+
+### 新增与优化 (Added & Changed)
+- **`Site 22 (utils.ClampCheckpointConfigForModelInfo)` 云端 `512K` 实验覆写拦截与 `983,040` 解锁（`src/patch_sites.py` · `src/upgrade_db_context_limit.py`）**：
+  - **背景与根因**：在官方 Antigravity `v2.32.1` 运行中，云端 FeatureProvider（`applyFeatureProviderCheckpointOverrideConfig` / `selectCheckpointExperimentKey`）将实验覆写的 `CheckpointConfig.MaxTokenLimit` 从早期的 `256,000`（`0x3e800`）上调至 `512,000`（`0x7d000`）。原 `Site 22` 补丁仅在 `MaxTokenLimit == 0` 或 `== 256,000`（`cmp edx, 0x3e800; jne +0x13`，即 `81fa00e803007513`）时触发重算，导致收到 `512,000` 时直接跳过重算、1M 模型被限制在 `512,000` Tokens；
+  - **二进制位点升级（`src/patch_sites.py`）**：将 Windows `x86_64` `Site 22` 的阈值比较从 `cmp edx, 0x3e800; jne +0x13`（`81fa00e803007513`）原地升级为 `cmp edx, 0x7d000; jg +0x13`（`81fa00d007007f13`），使 `MaxTokenLimit <= 512,000`（含 `0`、`256,000`、`512,000`）全部进入模型窗口重算分支：对 `1,048,576`（1M）模型精确解锁至 **`983,040` Tokens**（`1,048,576 - 65,536`），对 `200,000`（200k）模型通过 `cmp word ptr [rbx+0x16], 4; jle` 100% 保持 **`200,000` Tokens** 零回退，并保留对 v1 补丁态（`00e803007513`）的幂等识别与原地升级；
+  - **会话数据库无损升级器扩展（`src/upgrade_db_context_limit.py`）**：将 `executor_metadata`（`$.10.2.5`）与 `gen_metadata`（`$.1.9.10.4`）的 3 字节 Varint 升级条件从单独的 `256,000`（`80 d0 0f`）扩展为同时覆盖 `256,000` 与 `512,000`（`80 a0 1f`），在排除 200k 模型的前提下等长无损升级至 `983,040`（`80 80 3c`）。
+
+---
+
 ## [v3.6.5] - 2026-11-14
 
 ### 新增与优化 (Added & Changed)

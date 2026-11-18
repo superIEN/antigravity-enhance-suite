@@ -221,7 +221,7 @@ def inspect_or_upgrade_db(db_path: Path, upgrade_to: int | None = None) -> dict[
                         is_200k_model = True
                 row_modified = False
                 for sp in spans:
-                    if sp.value == 256_000 and not is_200k_model:
+                    if sp.value in (256_000, 512_000) and not is_200k_model:
                         if upgrade_to is not None and new_varint is not None:
                             if sp.val_end - sp.val_start != 3:
                                 raise ValueError(

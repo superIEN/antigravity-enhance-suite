@@ -495,20 +495,25 @@ def locate_1m_context_sites(data: bytes, funcs: dict):
         if pos_hyd != -1:
             sites.append(("gateway.HydrateModelEntryDefaults (v2.25.0 default input 200K -> 1M)", h_off + pos_hyd, hyd_orig, hyd_patch))
 
-    # Site 22 (x64): utils.ClampCheckpointConfigForModelInfo (983,040 for 1M, preserves 200,000 for 200k under MaxTokenLimit in {0, 256000})
+    # Site 22 (x64): utils.ClampCheckpointConfigForModelInfo (983,040 for 1M, preserves 200,000 for 200k under MaxTokenLimit <= 512,000)
     clamp_key = next((k for k in funcs if k.endswith("/utils.ClampCheckpointConfigForModelInfo")), None)
     if clamp_key:
         cl_off, cl_sz = funcs[clamp_key]
         cl_bytes = data[cl_off : cl_off + cl_sz]
         cl_x64_orig = bytes.fromhex("83780c00751c486353144881fa409c00007f0531d290eb074881c2c063ffff89500c")
-        cl_x64_patch = bytes.fromhex("8b500c85d2740881fa00e8030075138b531466837b16047e0681ea0000010089500c")
+        cl_x64_patch_v1 = bytes.fromhex("8b500c85d2740881fa00e8030075138b531466837b16047e0681ea0000010089500c")
+        cl_x64_patch = bytes.fromhex("8b500c85d2740881fa00d007007f138b531466837b16047e0681ea0000010089500c")
         pos_cl = _find_orig_or_patch(cl_bytes, cl_x64_orig, cl_x64_patch)
+        if pos_cl == -1:
+            pos_cl = cl_bytes.find(cl_x64_patch_v1)
         if pos_cl != -1:
+            cur_cl = bytes(cl_bytes[pos_cl : pos_cl + len(cl_x64_orig)])
+            before_cl = cl_x64_patch_v1 if cur_cl == cl_x64_patch_v1 else cl_x64_orig
             sites.append(
                 (
                     "Site 22 utils.ClampCheckpointConfigForModelInfo (983,040 for 1M, preserves 200k)",
                     cl_off + pos_cl,
-                    cl_x64_orig,
+                    before_cl,
                     cl_x64_patch,
                 )
             )
