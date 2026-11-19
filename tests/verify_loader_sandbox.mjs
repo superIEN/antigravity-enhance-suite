@@ -1596,17 +1596,23 @@ async function runVerification() {
   );
 
   // -------------------------------------------------------------------------
-  // Verification 9: Inline Context Guard Chip (#agy-ctx-guard) & One-Click Handoff Filler
+  // Verification 9: Option 3 Context Guard Chip in Mission HUD Top-Right (#agy-ctx-guard) & One-Click Handoff Filler
   // -------------------------------------------------------------------------
-  // 9a. Inline mount inside footer (never document.body, never position: fixed)
-  const guardChip = doc.getElementById('agy-ctx-guard');
-  assert.ok(guardChip, '#agy-ctx-guard must be mounted inline');
-  assert.notEqual(guardChip.parentElement, doc.body, '#agy-ctx-guard must NOT be mounted under document.body');
-  assert.equal(guardChip.parentElement, rightGroup, '#agy-ctx-guard must mount inline inside footer rightGroup');
+  // 9a. Option 3 mounts inside Mission HUD Shadow DOM top-right (zero footer footprint, never document.body, never position: fixed)
+  const hudHost9 = doc.getElementById('agy-mission-hud-host');
+  assert.ok(hudHost9 && hudHost9.shadowRoot, '#agy-mission-hud-host must be mounted for Option 3');
+  assert.equal(doc.getElementById('agy-ctx-guard'), null, 'Option 3 must NOT mount #agy-ctx-guard inside composer footer');
+  const guardChip = hudHost9.shadowRoot.getElementById('agy-ctx-guard');
+  const guardText = hudHost9.shadowRoot.getElementById('agy-ctx-guard-text');
+  const guardBtn = hudHost9.shadowRoot.getElementById('agy-ctx-guard-btn');
+  const hudBox9 = hudHost9.shadowRoot.getElementById('m-box');
+  const hudTop9 = hudHost9.shadowRoot.getElementById('m-top');
+  assert.ok(guardChip && guardText && guardBtn, '#agy-ctx-guard chip, text and button must live in Mission HUD shadowRoot');
+  assert.equal(guardChip.style.display, 'inline-flex', 'Option 3 guard chip must be visible in HUD top-right');
   assert.doesNotMatch(
-    scopedStyle.textContent.slice(scopedStyle.textContent.indexOf('#agy-ctx-guard')),
+    hudHost9.shadowRoot.innerHTML.slice(hudHost9.shadowRoot.innerHTML.indexOf('.ctx-guard')),
     /position\s*:\s*fixed/i,
-    '#agy-ctx-guard CSS must never use position: fixed'
+    'Option 3 HUD guard CSS must never use position: fixed'
   );
 
   // 9b. Threshold colors & text for 499,999 (normal), 500,000 (amber), 650,000 (red) + compaction count (2 steep drops)
@@ -1625,37 +1631,39 @@ async function runVerification() {
   };
   setFiberTokens(499999);
   assert.equal(guardChip.getAttribute('data-level'), 'normal', '499,999 tokens must stay normal');
-  assert.match(guardChip.querySelector('#agy-ctx-guard-text').textContent, /500K \/ 1000K · 压2/);
+  assert.match(guardText.textContent, /500K \/ 1000K · 压2/);
 
   setFiberTokens(500000);
   assert.equal(guardChip.getAttribute('data-level'), 'amber', '500,000 tokens must turn amber');
 
   setFiberTokens(650000);
   assert.equal(guardChip.getAttribute('data-level'), 'red', '650,000 tokens must turn red');
-  assert.match(guardChip.querySelector('#agy-ctx-guard-text').textContent, /650K \/ 1000K · 压2/);
+  assert.match(guardText.textContent, /650K \/ 1000K · 压2/);
   context.__asu = prevAsu;
 
-  // 9c. Coexistence: when official context-usage-indicator is present, #agy-ctx-guard stays visible inline right before it
+  // 9c. Coexistence: official indicator & backup ring keep full uncluttered composer footer; clicking guard button never toggles HUD collapse
   const indInFooter = doc.createElement('button');
   indInFooter.setAttribute('data-testid', 'context-usage-indicator');
   indInFooter._rect = { left: 660, top: 684, right: 690, bottom: 708, width: 30, height: 24 };
   rightGroup.insertBefore(indInFooter, turboBtn);
   win.dispatchEvent({ type: 'resize' });
-  assert.equal(guardChip.style.display, 'inline-flex', '#agy-ctx-guard must remain visible alongside official indicator');
-  assert.equal(guardChip.nextElementSibling, indInFooter, '#agy-ctx-guard must sit immediately before official indicator');
+  assert.equal(guardChip.style.display, 'inline-flex', 'Option 3 guard chip must remain visible alongside official footer indicator');
+  assert.equal(doc.getElementById('agy-ctx-guard'), null, 'Footer must stay completely free of #agy-ctx-guard');
   indInFooter.remove();
 
-  // 9d. Click handoff button: fills textarea, fills contenteditable, protects non-empty draft via clipboard, NEVER auto-sends
+  ringPill._rect = { left: 0, top: 0, right: 92, bottom: 24, width: 92, height: 24 };
+  win.dispatchEvent({ type: 'resize' });
+  assert.equal(ringPill.style.display, 'inline-flex', 'Backup ring pill must enjoy uncluttered footer space in Option 3');
+
+  // 9d. Click handoff button: fills textarea, protects non-empty draft via clipboard, NEVER auto-sends, NEVER collapses Mission HUD
   const copiedTexts = [];
   win.navigator.clipboard = {
     writeText: async (t) => {
       copiedTexts.push(t);
     }
   };
-  const guardBtn = guardChip.querySelector('#agy-ctx-guard-btn');
-  assert.ok(guardBtn, '#agy-ctx-guard-btn must exist');
 
-  // Case 1: textarea editor
+  // Case 1: textarea editor + HUD collapse-isolation check
   const mockTa = doc.createElement('textarea');
   mockTa.value = '';
   mockTa._rect = { left: 120, top: 610, right: 860, bottom: 670, width: 740, height: 60 };
@@ -1665,7 +1673,17 @@ async function runVerification() {
   mockTa.addEventListener('keydown', () => { taKeydownEvents += 1; });
   agentInputBox.insertBefore(mockTa, footerEl);
 
-  guardBtn.dispatchEvent({ type: 'click', preventDefault: () => {}, stopPropagation: () => {} });
+  const collapsedBeforeClick = hudBox9.classList.contains('collapsed');
+  let stoppedProp = false;
+  guardBtn.dispatchEvent({
+    type: 'click',
+    preventDefault: () => {},
+    stopPropagation: () => { stoppedProp = true; }
+  });
+  assert.equal(stoppedProp, true, 'Guard button click must call stopPropagation to avoid toggling Mission HUD');
+  // Even if an event targets guardBtn on #m-top directly, #m-top guard must refuse to collapse HUD
+  hudTop9.dispatchEvent({ type: 'click', target: guardBtn, preventDefault: () => {}, stopPropagation: () => {} });
+  assert.equal(hudBox9.classList.contains('collapsed'), collapsedBeforeClick, 'Clicking guard button must NEVER toggle Mission HUD collapse state');
   assert.match(mockTa.value, /存档换窗/, 'Textarea must be filled with handoff prompt');
   assert.equal(taInputEvents, 1, 'Textarea fill must dispatch input event');
   assert.equal(taKeydownEvents, 0, 'Handoff button must NEVER synthesize Enter/send keydown');
@@ -1705,42 +1723,6 @@ async function runVerification() {
   mockTa.removeEventListener('input', tailTruncHandler);
   mockTa.remove();
 
-  // Case 2d: Backup ring pill must NOT be squeezed out when #agy-ctx-guard sits left of turboBtn
-  ringPill._rect = { left: 0, top: 0, right: 92, bottom: 24, width: 92, height: 24 };
-  guardChip._rect = { left: 540, top: 684, right: 696, bottom: 708, width: 156, height: 24 };
-  win.dispatchEvent({ type: 'resize' });
-  assert.equal(ringPill.style.display, 'inline-flex', 'Backup ring pill must still show left of #agy-ctx-guard when gap suffices');
-  assert.ok(parseInt(ringPill.style.left, 10) <= 540 - 92 - 6, 'Backup ring pill must position left of #agy-ctx-guard without overlapping');
-
-  // Case 2e: Hidden-ancestor official indicator (including deep 26-level ancestor) must NOT capture #agy-ctx-guard
-  const hiddenWrap = doc.createElement('div');
-  hiddenWrap.style.visibility = 'hidden';
-  const hiddenInd = doc.createElement('button');
-  hiddenInd.setAttribute('data-testid', 'context-usage-indicator');
-  hiddenInd._rect = { left: 600, top: 684, right: 630, bottom: 708, width: 30, height: 24 };
-  hiddenWrap.appendChild(hiddenInd);
-  rightGroup.insertBefore(hiddenWrap, turboBtn);
-  win.dispatchEvent({ type: 'resize' });
-  assert.notEqual(guardChip.parentElement, hiddenWrap, '#agy-ctx-guard must skip official indicator inside visibility:hidden ancestor');
-  hiddenWrap.remove();
-
-  const deepHiddenRoot = doc.createElement('div');
-  deepHiddenRoot.style.opacity = '0.04';
-  let deepCur = deepHiddenRoot;
-  for (let d = 0; d < 26; d++) {
-    const nest = doc.createElement('div');
-    deepCur.appendChild(nest);
-    deepCur = nest;
-  }
-  const deepInd = doc.createElement('button');
-  deepInd.setAttribute('data-testid', 'context-usage-indicator');
-  deepInd._rect = { left: 600, top: 684, right: 630, bottom: 708, width: 30, height: 24 };
-  deepCur.appendChild(deepInd);
-  rightGroup.insertBefore(deepHiddenRoot, turboBtn);
-  win.dispatchEvent({ type: 'resize' });
-  assert.notEqual(guardChip.parentElement, deepCur, '#agy-ctx-guard must skip official indicator under 26-level opacity:0.04 ancestor');
-  deepHiddenRoot.remove();
-
   // Case 2f: Fallback compaction count must honor final retryInfos usage and deduplicate repeated responseId
   const prevFetchMeta = bridgeMock.fetchGeneratorMetadata;
   bridgeMock.fetchGeneratorMetadata = async ({ generatorMetadataOffset }) => {
@@ -1777,12 +1759,26 @@ async function runVerification() {
   await new Promise((r) => setTimeout(r, 25));
   win.dispatchEvent({ type: 'resize' });
   assert.match(
-    guardChip.querySelector('#agy-ctx-guard-text').textContent,
+    guardText.textContent,
     /压0/,
     'Fallback compaction count must pick final retry usage and skip duplicate responseId (no false 压1)'
   );
   context.__asu = prevAsu2f;
   bridgeMock.fetchGeneratorMetadata = prevFetchMeta;
+
+  // Case 2g: Pure chat session with zero task steps still keeps HUD top bar visible with Option 3 guard chip
+  const savedSteps = liveAgentState.trajectorySlice.stepsInSlice;
+  const savedTotalSteps = liveAgentState.trajectorySlice.totalStepsLength;
+  const savedStorageCache = storageMap.get('agy.v3.llmMissionCache.v1');
+  liveAgentState.trajectorySlice.stepsInSlice = [];
+  liveAgentState.trajectorySlice.totalStepsLength = 0;
+  win.dispatchEvent({ type: 'resize' });
+  assert.equal(hudHost9.style.display, 'block', 'Option 3 must keep HUD top bar visible whenever token usage exists even without task steps');
+  assert.equal(guardChip.style.display, 'inline-flex', 'Option 3 guard chip must stay visible when session has no task list');
+  liveAgentState.trajectorySlice.stepsInSlice = savedSteps;
+  liveAgentState.trajectorySlice.totalStepsLength = savedTotalSteps;
+  if (savedStorageCache !== undefined) storageMap.set('agy.v3.llmMissionCache.v1', savedStorageCache);
+  win.dispatchEvent({ type: 'resize' });
 
   // Case 3: contenteditable editor via execCommand('insertText')
   const mockCe = doc.createElement('div');
@@ -1801,15 +1797,16 @@ async function runVerification() {
   assert.match(mockCe.textContent, /存档换窗/, 'ContentEditable must be filled via execCommand(insertText)');
   mockCe.remove();
 
-  console.log('  [PASS 9] 行内上下文护航条 (#agy-ctx-guard) 阈值变色、压次计数、官方共存与防误发填词守卫 100% 通过');
+  console.log('  [PASS 9] 方案三任务顶栏右上角上下文护航条 (#agy-ctx-guard) 零底栏占位、防误折叠与填词守卫 100% 通过');
 
   // Cleanly dispose loader and verify restoration
   win.__AGY_V3__.dispose();
   assert.equal(win.__AGY_V3__.isDisposed(), true, 'Loader must report disposed=true after dispose()');
-  assert.equal(doc.getElementById('agy-ctx-guard'), null, 'dispose() must cleanly remove #agy-ctx-guard');
+  assert.equal(doc.getElementById('agy-mission-hud-host'), null, 'dispose() must cleanly remove #agy-mission-hud-host');
+  assert.equal(doc.getElementById('agy-ctx-guard'), null, 'dispose() must leave zero #agy-ctx-guard residue');
   assert.equal(uiBtnText.nodeValue, 'New Conversation', 'dispose() must restore original English text');
   console.log('  [PASS 10] Mode C 挂起与无损卸载还原 (dispose) 核验通过');
-  console.log('\n✅ 全部 10 大项（含 Grok 4.7 xhigh 审计与上下文护航条边界断言）100% 通过！');
+  console.log('\n✅ 全部 10 大项（含 Grok 4.7 xhigh 审计与方案三上下文护航条边界断言）100% 通过！');
 }
 
 runVerification().catch((err) => {

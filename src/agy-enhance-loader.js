@@ -2621,8 +2621,8 @@
     '2. 按 line-state-ops 做一次原子存档，恢复卡写清做到哪、下一步、未决事项；\n' +
     '3. 把唤醒词单独贴给我。存档完成前不开新活。';
 
-  // Layout mode: 'footer-always' (方案一) | 'footer-threshold' (方案二) | 'hud-top' (方案三)
-  let ctxGuardLayout = 'footer-always';
+  // Layout mode: 'hud-top' (方案三·默认，收在输入框顶部任务条右上角) | 'footer-always' (方案一) | 'footer-threshold' (方案二)
+  let ctxGuardLayout = 'hud-top';
   let ctxGuardEl = null;
   let ctxGuardTextEl = null;
   let ctxGuardBtnEl = null;
@@ -2988,7 +2988,55 @@
     return ctxGuardEl;
   }
 
+  function syncHudContextGuard(gs) {
+    const hudChip = missionHudRefs.ctxGuard;
+    const hudText = missionHudRefs.ctxGuardText;
+    const hudBtn = missionHudRefs.ctxGuardBtn;
+    if (!hudChip) return;
+
+    if (ctxGuardLayout !== 'hud-top' || disposed || !globalPrefs.enabled || !gs) {
+      hudChip.style.display = 'none';
+      return;
+    }
+
+    ctxGuardEl = hudChip;
+    ctxGuardTextEl = hudText || null;
+    ctxGuardBtnEl = hudBtn || null;
+
+    hudChip.style.display = 'inline-flex';
+    if (hudChip.getAttribute('data-level') !== gs.level) {
+      hudChip.setAttribute('data-level', gs.level);
+    }
+    if (hudText && hudText.textContent !== gs.label) {
+      hudText.textContent = gs.label;
+    }
+    if (hudBtn) {
+      hudBtn.style.display = 'inline-block';
+    }
+  }
+
   function updateContextGuardChip() {
+    if (ctxGuardLayout === 'hud-top') {
+      const staleFooterChip = document.getElementById('agy-ctx-guard');
+      if (staleFooterChip) staleFooterChip.remove();
+      if (disposed || !globalPrefs.enabled || globalPrefs.lang === 'en' || globalPrefs.bossMode) {
+        syncHudContextGuard(null);
+        return;
+      }
+      const cid = getActiveConversationId();
+      const gs = computeGuardState(cid);
+      if (!gs) {
+        syncHudContextGuard(null);
+        return;
+      }
+      if (!missionHudHost || !missionHudRefs.ctxGuard || missionHudHost.style.display === 'none') {
+        updateMissionHud();
+      }
+      syncHudContextGuard(gs);
+      return;
+    }
+
+    syncHudContextGuard(null);
     if (disposed || !globalPrefs.enabled) {
       if (ctxGuardEl) ctxGuardEl.style.display = 'none';
       return;
@@ -5000,6 +5048,93 @@
           color: #93c5fd;
           background: rgba(147, 197, 253, 0.12);
         }
+        /* Option 3: 1M Context Guard Chip embedded in Mission HUD top-right (zero footer footprint) */
+        .ctx-guard {
+          display: none;
+          align-items: center;
+          gap: 5px;
+          height: 22px;
+          padding: 0 6px;
+          border-radius: 6px;
+          font-family: "JetBrains Mono", "SF Mono", "Consolas", "PingFang SC", "Microsoft YaHei", monospace, system-ui;
+          font-size: 11px;
+          font-weight: 500;
+          line-height: 1;
+          white-space: nowrap;
+          flex-shrink: 0;
+          cursor: default;
+          background: #f4f4f5;
+          color: #52525b;
+          border: 1px solid #e4e4e7;
+        }
+        .mission-box.dark .ctx-guard {
+          background: rgba(255, 255, 255, 0.05);
+          color: #a1a1aa;
+          border-color: rgba(255, 255, 255, 0.10);
+        }
+        .ctx-guard[data-level="amber"] {
+          background: #fffbeb;
+          color: #b45309;
+          border-color: #f59e0b;
+        }
+        .mission-box.dark .ctx-guard[data-level="amber"] {
+          background: rgba(245, 158, 11, 0.15);
+          color: #fbbf24;
+          border-color: rgba(245, 158, 11, 0.45);
+        }
+        .ctx-guard[data-level="red"] {
+          background: #fef2f2;
+          color: #b91c1c;
+          border-color: #ef4444;
+        }
+        .mission-box.dark .ctx-guard[data-level="red"] {
+          background: rgba(239, 68, 68, 0.16);
+          color: #f87171;
+          border-color: rgba(239, 68, 68, 0.48);
+        }
+        .ctx-guard-btn {
+          appearance: none;
+          border: 1px solid #d4d4d8;
+          background: #ffffff;
+          color: #27272a;
+          border-radius: 4px;
+          padding: 2px 6px;
+          font-size: 10.5px;
+          font-weight: 600;
+          line-height: 1.1;
+          cursor: pointer;
+          font-family: inherit;
+          white-space: nowrap;
+          transition: opacity 0.12s ease, background 0.12s ease;
+        }
+        .mission-box.dark .ctx-guard-btn {
+          border-color: rgba(255, 255, 255, 0.16);
+          background: rgba(255, 255, 255, 0.09);
+          color: #e4e4e7;
+        }
+        .ctx-guard-btn:hover {
+          opacity: 0.9;
+        }
+        .ctx-guard[data-level="amber"] .ctx-guard-btn {
+          background: #f59e0b;
+          color: #ffffff;
+          border-color: #d97706;
+        }
+        .mission-box.dark .ctx-guard[data-level="amber"] .ctx-guard-btn {
+          background: #d97706;
+          color: #ffffff;
+          border-color: #f59e0b;
+        }
+        .ctx-guard[data-level="red"] .ctx-guard-btn {
+          background: #ef4444;
+          color: #ffffff;
+          border-color: #dc2626;
+        }
+        .mission-box.dark .ctx-guard[data-level="red"] .ctx-guard-btn {
+          background: #dc2626;
+          color: #ffffff;
+          border-color: #ef4444;
+        }
       </style>
       <div class="mission-box" id="m-box">
         <div class="mission-top" id="m-top" title="点击收起或展开阶段任务清单">
@@ -5010,6 +5145,10 @@
           <div class="top-right">
             <span id="m-wd" class="wd-pill" hidden></span>
             <span id="m-phase"></span>
+            <span id="agy-ctx-guard" class="ctx-guard" data-level="normal">
+              <span id="agy-ctx-guard-text" class="ctx-guard-text"></span>
+              <button id="agy-ctx-guard-btn" class="ctx-guard-btn" type="button" title="仅填入交接提示词到输入框，绝不自动发送">存档换窗</button>
+            </span>
             <span id="m-fold">▾</span>
           </div>
         </div>
@@ -5029,14 +5168,45 @@
       wd: missionHudShadow.getElementById('m-wd'),
       phase: missionHudShadow.getElementById('m-phase'),
       fold: missionHudShadow.getElementById('m-fold'),
+      ctxGuard: missionHudShadow.getElementById('agy-ctx-guard'),
+      ctxGuardText: missionHudShadow.getElementById('agy-ctx-guard-text'),
+      ctxGuardBtn: missionHudShadow.getElementById('agy-ctx-guard-btn'),
       taskList: missionHudShadow.getElementById('m-task-list'),
       rtBar: missionHudShadow.getElementById('m-rt-bar'),
       rtText: missionHudShadow.getElementById('m-rt-text'),
       rtStatus: missionHudShadow.getElementById('m-rt-status')
     };
 
+    if (missionHudRefs.ctxGuard) {
+      missionHudRefs.ctxGuard.setAttribute('data-level', 'normal');
+      missionHudRefs.ctxGuard.style.display = 'none';
+      missionHudRefs.ctxGuard.addEventListener('click', (e) => {
+        if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+      });
+    }
+    if (missionHudRefs.ctxGuardBtn) {
+      missionHudRefs.ctxGuardBtn.textContent = '存档换窗';
+      missionHudRefs.ctxGuardBtn.addEventListener('click', (e) => {
+        if (e && typeof e.preventDefault === 'function') e.preventDefault();
+        if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+        fillComposerWithHandoffPrompt();
+      });
+    }
     if (missionHudRefs.top) {
-      missionHudRefs.top.addEventListener('click', () => {
+      missionHudRefs.top.addEventListener('click', (e) => {
+        const t = e && e.target;
+        if (
+          t &&
+          (t === missionHudRefs.ctxGuard ||
+            t === missionHudRefs.ctxGuardText ||
+            t === missionHudRefs.ctxGuardBtn ||
+            (typeof t.closest === 'function' && t.closest('#agy-ctx-guard')))
+        ) {
+          return;
+        }
+        if (missionHudRefs.fold && !missionHudRefs.fold.textContent) {
+          return;
+        }
         missionHudCollapsed = !missionHudCollapsed;
         updateMissionHud();
       });
@@ -5095,7 +5265,9 @@
     }
 
     const state = collectLiveSessionMissionState();
-    if (!state.hasData) {
+    const cid = getActiveConversationId();
+    const guardState = ctxGuardLayout === 'hud-top' ? computeGuardState(cid) : null;
+    if (!state.hasData && !guardState) {
       hideMissionHud();
       return;
     }
@@ -5110,19 +5282,23 @@
     missionHudRefs.box.classList.toggle('dark', !isLight);
     missionHudRefs.box.classList.toggle('collapsed', effectiveCollapsed);
     if (missionHudRefs.dot) {
-      missionHudRefs.dot.classList.toggle('running', state.isRunning || totalTasks === 0);
+      missionHudRefs.dot.classList.toggle('running', state.isRunning || (state.hasData && totalTasks === 0));
     }
     if (missionHudRefs.fold) {
       missionHudRefs.fold.textContent = totalTasks === 0 ? '' : (missionHudCollapsed ? '展开 ▴' : '收起 ▾');
     }
+    if (missionHudRefs.top) {
+      missionHudRefs.top.style.cursor = totalTasks > 0 ? 'pointer' : 'default';
+    }
     if (missionHudRefs.goal) {
-      missionHudRefs.goal.textContent = state.globalGoal;
+      missionHudRefs.goal.textContent = state.hasData ? state.globalGoal : '1M 上下文护航';
     }
 
     if (missionHudRefs.phase) {
       missionHudRefs.phase.textContent = totalTasks > 0 ? `${doneTasks} / ${totalTasks}` : '';
     }
     syncMissionHudWatchdogPill();
+    syncHudContextGuard(guardState);
 
     if (missionHudRefs.taskList) {
       const taskHtml = state.tasks
