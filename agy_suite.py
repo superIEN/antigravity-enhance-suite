@@ -231,13 +231,35 @@ import shutil
 import subprocess
 import sys
 import time
+try:
+    import winreg
+except ImportError:
+    winreg = None
 from pathlib import Path
 
 task_file = Path(sys.argv[1])
 my_task_id = sys.argv[2]
+RUNONCE_SUBKEY = r"Software\Microsoft\Windows\CurrentVersion\RunOnce"
+RUNONCE_VALUE = "AgyDeferredAsarSwap"
 
 def sha256_file(p: Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
+
+def clear_runonce_if_owner():
+    if winreg is None:
+        return
+    try:
+        if task_file.exists():
+            cur = json.loads(task_file.read_text(encoding="utf-8"))
+            if cur.get("task_id") != my_task_id:
+                return
+    except Exception:
+        pass
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUNONCE_SUBKEY, 0, winreg.KEY_SET_VALUE) as k:
+            winreg.DeleteValue(k, RUNONCE_VALUE)
+    except OSError:
+        pass
 
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 CreateFileW = kernel32.CreateFileW
@@ -364,6 +386,7 @@ finally:
             pass
 
 if swapped:
+    clear_runonce_if_owner()
     for old_f in list(prod_asar.parent.glob("*.old.*")) + list((prod_asar.parent / "bin").glob("*.old.*")):
         try:
             old_f.unlink()
@@ -386,7 +409,53 @@ if swapped:
             creationflags=0x00000008 | 0x00000200,
             close_fds=True,
         )
+else:
+    clear_runonce_if_owner()
 """
+
+
+def resolve_windows_swapper_runner(agy_install_root: Path) -> str:
+    """Pick a standalone Windows pythonw/python outside Antigravity install root, skipping WindowsApps stubs."""
+    def _is_usable(p: Path) -> bool:
+        if not p.is_file():
+            return False
+        s = str(p).lower()
+        if "windowsapps" in s:
+            return False
+        try:
+            p.resolve().relative_to(agy_install_root.resolve())
+            return False
+        except Exception:
+            return True
+
+    candidates: list[Path] = []
+    cur_py = Path(sys.executable)
+    candidates.extend([cur_py.with_name("pythonw.exe"), cur_py])
+    for path_dir in os.environ.get("PATH", "").split(os.pathsep):
+        if not path_dir:
+            continue
+        d = Path(path_dir)
+        candidates.append(d / "pythonw.exe")
+        candidates.append(d / "python.exe")
+    for cand in candidates:
+        if _is_usable(cand):
+            return str(cand)
+    pyw = cur_py.with_name("pythonw.exe")
+    return str(pyw if pyw.exists() else cur_py)
+
+
+def register_windows_runonce_swap(cmd_str: str) -> bool:
+    """Register HKCU RunOnce fallback so deferred swap still completes even if the PC reboots before closing Antigravity."""
+    if os.name != "nt":
+        return False
+    try:
+        import winreg
+        subkey = r"Software\Microsoft\Windows\CurrentVersion\RunOnce"
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, subkey, 0, winreg.KEY_SET_VALUE) as k:
+            winreg.SetValueEx(k, "AgyDeferredAsarSwap", 0, winreg.REG_SZ, cmd_str)
+        return True
+    except OSError:
+        return False
 
 
 def cleanup_stale_old_binaries(prod_asar: Path):
@@ -446,15 +515,14 @@ def spawn_windows_deferred_asar_swapper(
     else:
         os.replace(tmp_task_file, task_file)
 
-    py_exe = sys.executable
-    pyw_exe = Path(py_exe).with_name("pythonw.exe")
-    runner = str(pyw_exe if pyw_exe.exists() else py_exe)
+    runner = resolve_windows_swapper_runner(prod_asar.parent.parent)
     CREATE_NO_WINDOW = 0x08000000
+    cmd_str = f'"{runner}" "{swapper_py}" "{task_file}" "{task_id}"'
+    register_windows_runonce_swap(cmd_str)
 
     pid = None
     # Prefer WMI Win32_Process.Create so the swapper is parented to WmiPrvSE.exe and escapes Job Object termination
     try:
-        cmd_str = f'"{runner}" "{swapper_py}" "{task_file}" "{task_id}"'
         ps_cmd = (
             f"$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
             f"-Arguments @{{CommandLine='{cmd_str}'}}; "

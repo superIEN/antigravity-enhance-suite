@@ -690,5 +690,67 @@ class Site23TrajectoryCapTests(unittest.TestCase):
                     patch_sites_macos_v36.inspect_v36_sites(raw_macho)
 
 
+class V233AdaptationTests(unittest.TestCase):
+    """Regression tests for Antigravity v2.33.0 x64 binary sites & main.js onPortChanged preservation."""
+
+    def test_v233_site22_37b_and_site20_idempotence(self) -> None:
+        from src import patch_sites
+
+        clamp_sym = "google3/third_party/jetski/cortex/utils/utils.ClampCheckpointConfigForModelInfo"
+        orig_s22 = bytes.fromhex("83790c00751f486357140f1f40004881fa409c00007f0431d2eb074881c2c063ffff89510c")
+        patch_s22 = bytes.fromhex("8b510c85d2740881fa00e8030075168b571466837f16047e0681ea0000010089510c0f1f00")
+        self.assertEqual(len(orig_s22), 37)
+        self.assertEqual(len(patch_s22), 37)
+        for body in (orig_s22, patch_s22):
+            found = patch_sites.locate_1m_context_sites(b"\x00" * 32 + body, {clamp_sym: (32, len(body))})
+            self.assertEqual(len(found), 1)
+            self.assertIn("Site 22", found[0][0])
+            self.assertEqual(found[0][1:], (32, orig_s22, patch_s22))
+
+        mw2_sym = "google3/third_party/gemini_coder/framework/executor/agentexecutor/agentexecutor.(*AgentExecutor).startMessageWatcherLocked.func2"
+        orig_s20 = bytes.fromhex("0fb654243284d27453488b8424b0000000")
+        patch_s20 = bytes.fromhex("0fb654243284d29090488b8424b0000000")
+        for body in (orig_s20, patch_s20):
+            found = patch_sites.locate_bg_task_timeout_sites(b"\x00" * 32 + body, {mw2_sym: (32, len(body))})
+            self.assertEqual(len(found), 1)
+            self.assertIn("startMessageWatcherLocked.func2", found[0][0])
+            self.assertEqual(found[0][1:], (32, orig_s20, patch_s20))
+
+    def test_v233_main_js_preserves_mendel_and_actuator_port_sync(self) -> None:
+        from src import build_asar
+
+        sample_main = """
+            onPortChanged: (newPort) => {
+                lsExited = false;
+                mendelFlagSync?.onPortChanged(newPort);
+                const newUrl = `${constants_1.WINDOW_ORIGIN}:${newPort}/`;
+                console.log(`[Auto-Restart] Port changed! Reloading all windows with URL: ${newUrl}`);
+                // Apply cert trust
+                (0, languageServer_1.setupLocalCertTrust)();
+                // Main-process ActuatorService streams follow the LS to its new port.
+                (0, mainClient_1.mainActuatorClientPortChanged)(newPort);
+                if (!HEADLESS) {
+                    // Hub windows only: the desktop HUD keeps its own page.
+                    const windows = (0, utils_1.getLocalHubWindows)();
+                    for (const win of windows) {
+                        void win.loadURL(newUrl);
+                    }
+                }
+            },
+        """
+        patched = build_asar.patch_main_js(sample_main)
+        self.assertIn("lsExited = false;", patched)
+        self.assertIn("mendelFlagSync?.onPortChanged(newPort);", patched)
+        self.assertIn("(0, mainClient_1.mainActuatorClientPortChanged)(newPort);", patched)
+        self.assertIn("global.__agyLastPort === newPort", patched)
+
+    def test_deferred_swap_script_compiles_with_runonce_cleanup(self) -> None:
+        import agy_suite
+
+        compile(agy_suite.DEFERRED_SWAP_SCRIPT, "<DEFERRED_SWAP_SCRIPT>", "exec")
+        self.assertIn("clear_runonce_if_owner", agy_suite.DEFERRED_SWAP_SCRIPT)
+        self.assertIn("AgyDeferredAsarSwap", agy_suite.DEFERRED_SWAP_SCRIPT)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

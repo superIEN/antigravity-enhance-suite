@@ -4,7 +4,7 @@
  *
  * 完整实测验证以下 8 大核心验收条件：
  * 1. 界面中文化与动态流状态翻译（含 trackedTextNodes / lastWritten 防 MutationObserver 死循环守卫 + Alt+L 无损还原）；
- * 2. 宽屏排版（html[data-agy-widescreen="1"]）与阅读舒适度样式（#agy-enhance-scoped-style）；
+ * 2. 原生宽度零覆盖守卫（停用宽屏 CSS 接管）与基础样式挂载（#agy-enhance-scoped-style）；
  * 3. 真实步骤轨迹 HUD（#agy-mission-hud-host Shadow DOM，基于实际 stepsInSlice 轨迹与 GetModelResponse）；
  * 4. <subagent_message> / Ahmad 等子 Agent 唤醒裸标签与内部包装文本清洗；
  * 5. 前端响应式唤醒看门狗（evaluateReactiveWakeupWatchdog / triggerNativeSystemWakeupRpc / getWakeupWatchdogState 三大触发条件与 45s 冷却守卫）；
@@ -879,16 +879,20 @@ async function runVerification() {
   );
 
   // -------------------------------------------------------------------------
-  // Verification 2: Widescreen Typography & Comfort CSS (including CSS backslash fix)
+  // Verification 2: Native Width Preservation (No Widescreen Override) & Scoped CSS
   // -------------------------------------------------------------------------
   assert.equal(
     htmlEl.getAttribute('data-agy-widescreen'),
-    '1',
-    'html[data-agy-widescreen="1"] must be enabled by default'
+    null,
+    'html[data-agy-widescreen] must stay unset even when legacy prefs carry widescreen=true'
   );
   const scopedStyle = doc.getElementById('agy-enhance-scoped-style');
   assert.ok(scopedStyle, '#agy-enhance-scoped-style must be mounted');
-  assert.match(scopedStyle.textContent, /--max-conversation-width:\s*min\(92vw,\s*1480px\)/);
+  assert.doesNotMatch(
+    scopedStyle.textContent,
+    /--max-conversation-width|data-agy-widescreen/,
+    'Widescreen override CSS rules must not be injected'
+  );
   assert.match(scopedStyle.textContent, /PingFang SC/);
   assert.ok(
     scopedStyle.textContent.includes('[title*="\\\\AppData\\\\Local\\\\Temp\\\\agy_"]'),
@@ -898,7 +902,7 @@ async function runVerification() {
     scopedStyle.textContent.includes('[title*="AppData/Local/Temp/agy_"]'),
     'CSS selector must also include forward-slash Windows temp path selector'
   );
-  console.log('  [PASS 2] 宽屏学术排版 (data-agy-widescreen="1")、macOS 字体栈与 CSS 反斜杠转义核验通过');
+  console.log('  [PASS 2] 原生宽度零覆盖（已摘除宽屏补丁）、macOS 字体栈与 CSS 反斜杠转义核验通过');
 
   // -------------------------------------------------------------------------
   // Verification 3: Real Step Trajectory Mission HUD (#agy-mission-hud-host)
@@ -1557,11 +1561,30 @@ async function runVerification() {
     'setWindowTitleBarColors must skip setTitleBarOverlay on macOS (MacIntel)'
   );
   currentPlatform = 'Win32';
+  let altWPrevented = false;
   win.dispatchEvent({
     type: 'keydown',
     altKey: true,
     key: 'w',
     code: 'KeyW',
+    preventDefault: () => {
+      altWPrevented = true;
+    }
+  });
+  assert.equal(altWPrevented, false, 'Alt+W widescreen hotkey must stay removed');
+  assert.equal(htmlEl.getAttribute('data-agy-widescreen'), null, 'Alt+W must not re-enable data-agy-widescreen');
+  win.dispatchEvent({
+    type: 'keydown',
+    altKey: true,
+    key: 'l',
+    code: 'KeyL',
+    preventDefault: () => {}
+  });
+  win.dispatchEvent({
+    type: 'keydown',
+    altKey: true,
+    key: 'l',
+    code: 'KeyL',
     preventDefault: () => {}
   });
   assert.ok(

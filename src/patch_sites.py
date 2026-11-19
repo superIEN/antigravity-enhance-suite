@@ -500,18 +500,30 @@ def locate_1m_context_sites(data: bytes, funcs: dict):
     if clamp_key:
         cl_off, cl_sz = funcs[clamp_key]
         cl_bytes = data[cl_off : cl_off + cl_sz]
-        cl_x64_orig = bytes.fromhex("83780c00751c486353144881fa409c00007f0531d290eb074881c2c063ffff89500c")
-        cl_x64_patch = bytes.fromhex("8b500c85d2740881fa00e8030075138b531466837b16047e0681ea0000010089500c")
-        pos_cl = _find_orig_or_patch(cl_bytes, cl_x64_orig, cl_x64_patch)
-        if pos_cl != -1:
-            sites.append(
-                (
-                    "Site 22 utils.ClampCheckpointConfigForModelInfo (983,040 for 1M, preserves 200k)",
-                    cl_off + pos_cl,
-                    cl_x64_orig,
-                    cl_x64_patch,
+        cl_x64_candidates = [
+            # v2.33.0+: 37-byte block (rcx=cfg, rdi=modelInfo, 4B alignment nop inside orig, 3B trailing nop in patch)
+            (
+                bytes.fromhex("83790c00751f486357140f1f40004881fa409c00007f0431d2eb074881c2c063ffff89510c"),
+                bytes.fromhex("8b510c85d2740881fa00e8030075168b571466837f16047e0681ea0000010089510c0f1f00"),
+            ),
+            # v2.25.0-v2.32.2: 34-byte block (rax=cfg, rbx=modelInfo)
+            (
+                bytes.fromhex("83780c00751c486353144881fa409c00007f0531d290eb074881c2c063ffff89500c"),
+                bytes.fromhex("8b500c85d2740881fa00e8030075138b531466837b16047e0681ea0000010089500c"),
+            ),
+        ]
+        for cl_x64_orig, cl_x64_patch in cl_x64_candidates:
+            pos_cl = _find_orig_or_patch(cl_bytes, cl_x64_orig, cl_x64_patch)
+            if pos_cl != -1:
+                sites.append(
+                    (
+                        "Site 22 utils.ClampCheckpointConfigForModelInfo (983,040 for 1M, preserves 200k)",
+                        cl_off + pos_cl,
+                        cl_x64_orig,
+                        cl_x64_patch,
+                    )
                 )
-            )
+                break
 
     # Site 23 (x64): (*TruncationDecorator).truncateIfTooLarge trajectory byte cap (25MB 0x01900000 -> 256MB 0x10000000)
     td_key = next((k for k in funcs if k.endswith("(*TruncationDecorator).truncateIfTooLarge")), None)
@@ -757,7 +769,7 @@ def locate_stream_retry_sites(data: bytes, funcs: dict):
                 hdr_raw = macho_va_to_raw(sections, hdr_va)
                 if hdr_raw is not None and hdr_raw + 24 <= len(data):
                     cand_va, cand_len, cand_cap = struct.unpack_from("<QQQ", data, hdr_raw)
-                    if cand_len == cand_cap and cand_len in (7, 15, 16):
+                    if cand_len == cand_cap and cand_len in (7, 15, 16, 17):
                         cand_arr_raw = macho_va_to_raw(sections, cand_va)
                         if cand_arr_raw is not None:
                             arr_raw = cand_arr_raw
@@ -804,8 +816,8 @@ def locate_stream_retry_sites(data: bytes, funcs: dict):
             sites.append(
                 ("utils.IsRetryableAPIError (retryableSubstrings table expansion)", arr_raw, s14_orig, s14_patch)
             )
-        elif arr_raw is not None and arr_len in (15, 16):
-            # v2.26.0+ / v2.31.0+ ARM64: 15/16-slot lowercase table after strings.ToLower
+        elif arr_raw is not None and arr_len in (15, 16, 17):
+            # v2.26.0+ / v2.31.0+ / v2.33.0+ ARM64: 15/16/17-slot lowercase table after strings.ToLower
             entries = [list(struct.unpack_from("<QQ", data, arr_raw + i * 16)) for i in range(arr_len)]
             va0, _ = entries[0]
             va4, len4 = entries[4]
@@ -834,9 +846,9 @@ def locate_stream_retry_sites(data: bytes, funcs: dict):
             orig_entries[11] = [orig_va11, 20]
             orig_entries[12] = [orig_va12, 19]
             orig_entries[13] = [va13, 29]
-            if arr_len == 16:
-                orig_va14 = macho_raw_to_va(sections, _require_bytes(data, b"http2: timeout awaiting response headers"))
-                orig_entries[14] = [orig_va14, 40]
+            if arr_len in (16, 17):
+                orig_va_hdr = macho_raw_to_va(sections, _require_bytes(data, b"http2: timeout awaiting response headers"))
+                orig_entries[arr_len - 2] = [orig_va_hdr, 40]
             orig_entries[arr_len - 1] = [orig_va_last, 11]
 
             patch_entries = [list(e) for e in entries]
@@ -848,8 +860,8 @@ def locate_stream_retry_sites(data: bytes, funcs: dict):
             patch_entries[11] = [va_proxyconn, 12]        # "proxyconnect"
             patch_entries[12] = [orig_va12 + 10, 9]       # "timed out"
             patch_entries[13] = [va13, 6]                 # "http2:"
-            if arr_len == 16:
-                patch_entries[14] = [va_deadline, 17]     # "deadline exceeded"
+            if arr_len in (16, 17):
+                patch_entries[arr_len - 2] = [va_deadline, 17]  # "deadline exceeded"
             patch_entries[arr_len - 1] = [orig_va_last + 4, 7]  # "timeout" (covers TLS handshake timeout, i/o timeout)
 
             s14_26_orig = b"".join(struct.pack("<QQ", v, l) for v, l in orig_entries)
@@ -862,8 +874,15 @@ def locate_stream_retry_sites(data: bytes, funcs: dict):
     image_base, sections = parse_pe_sections(data)
 
     # Site 13: utils.IsRetryableAPIError ("incomplete envelope: unexpected EOF" len 35 -> "unexpected EOF" len 14)
-    s13_ctx = bytes.fromhex("488b8c2448010000488b4918488b842450010000ffd1488d0d")
-    idx13 = ir_bytes.find(s13_ctx)
+    s13_candidates = (
+        bytes.fromhex("488b8c2440010000488b4918488b842448010000ffd1488d0d"),  # v2.33.0+
+        bytes.fromhex("488b8c2448010000488b4918488b842450010000ffd1488d0d"),  # v2.24.0-v2.32.2
+    )
+    idx13 = -1
+    for s13_ctx in s13_candidates:
+        idx13 = ir_bytes.find(s13_ctx)
+        if idx13 != -1:
+            break
     if idx13 != -1:
         site13_off = ir_off + idx13 + 22
         disp_val = struct.unpack_from("<i", data, site13_off + 3)[0]
@@ -875,13 +894,23 @@ def locate_stream_retry_sites(data: bytes, funcs: dict):
         else:
             orig_disp = None
         if orig_disp is not None:
-            s13_orig = b"\x48\x8d\x0d" + struct.pack("<i", orig_disp) + b"\xbf\x23\x00\x00\x00"
-            s13_patch = b"\x48\x8d\x0d" + struct.pack("<i", orig_disp + 21) + b"\xbf\x0e\x00\x00\x00"
-            sites.append(("utils.IsRetryableAPIError ('unexpected EOF' mid-stream auto-retry)", site13_off, s13_orig, s13_patch))
+            str_rva = raw_to_rva(sections, site13_off) + 7 + orig_disp
+            str_raw = rva_to_raw(sections, str_rva)
+            if str_raw is not None and data[str_raw : str_raw + 35] == b"incomplete envelope: unexpected EOF":
+                s13_orig = b"\x48\x8d\x0d" + struct.pack("<i", orig_disp) + b"\xbf\x23\x00\x00\x00"
+                s13_patch = b"\x48\x8d\x0d" + struct.pack("<i", orig_disp + 21) + b"\xbf\x0e\x00\x00\x00"
+                sites.append(("utils.IsRetryableAPIError ('unexpected EOF' mid-stream auto-retry)", site13_off, s13_orig, s13_patch))
 
     # Site 14: utils.IsRetryableAPIError retryableSubstrings .data table expansion
-    s14_ctx = bytes.fromhex("48898424d000000048895c2468488b0d")
-    idx14 = ir_bytes.find(s14_ctx)
+    s14_candidates = (
+        bytes.fromhex("48898424c800000048895c2468488b0d"),  # v2.33.0+
+        bytes.fromhex("48898424d000000048895c2468488b0d"),  # v2.24.0-v2.32.2
+    )
+    idx14 = -1
+    for s14_ctx in s14_candidates:
+        idx14 = ir_bytes.find(s14_ctx)
+        if idx14 != -1:
+            break
     if idx14 != -1:
         lea_pos = ir_off + idx14 + 13
         disp14 = struct.unpack_from("<i", data, lea_pos + 3)[0]
@@ -928,8 +957,8 @@ def locate_stream_retry_sites(data: bytes, funcs: dict):
                     ]
                 )
                 sites.append(("utils.IsRetryableAPIError (retryableSubstrings table expansion)", arr_raw, s14_orig, s14_patch))
-            elif arr_raw is not None and arr_len in (15, 16):
-                # v2.26.0–v2.31.0+: 15/16-slot lowercase table after strings.ToLower
+            elif arr_raw is not None and arr_len in (15, 16, 17):
+                # v2.26.0–v2.33.0+: 15/16/17-slot lowercase table after strings.ToLower
                 entries = [list(struct.unpack_from("<QQ", data, arr_raw + i * 16)) for i in range(arr_len)]
                 va0, _ = entries[0]
                 va4, len4 = entries[4]
@@ -958,9 +987,9 @@ def locate_stream_retry_sites(data: bytes, funcs: dict):
                 orig_entries[11] = [orig_va11, 20]
                 orig_entries[12] = [orig_va12, 19]
                 orig_entries[13] = [va13, 29]
-                if arr_len == 16:
-                    orig_va14 = image_base + raw_to_rva(sections, _require_bytes(data, b"http2: timeout awaiting response headers"))
-                    orig_entries[14] = [orig_va14, 40]
+                if arr_len in (16, 17):
+                    orig_va_hdr = image_base + raw_to_rva(sections, _require_bytes(data, b"http2: timeout awaiting response headers"))
+                    orig_entries[arr_len - 2] = [orig_va_hdr, 40]
                 orig_entries[arr_len - 1] = [orig_va_last, 11]
 
                 patch_entries = [list(e) for e in entries]
@@ -972,8 +1001,8 @@ def locate_stream_retry_sites(data: bytes, funcs: dict):
                 patch_entries[11] = [va_proxyconn, 12]        # "proxyconnect"
                 patch_entries[12] = [orig_va12 + 10, 9]       # "timed out"
                 patch_entries[13] = [va13, 6]                 # "http2:"
-                if arr_len == 16:
-                    patch_entries[14] = [va_deadline, 17]     # "deadline exceeded"
+                if arr_len in (16, 17):
+                    patch_entries[arr_len - 2] = [va_deadline, 17]  # "deadline exceeded"
                 patch_entries[arr_len - 1] = [orig_va_last + 4, 7]  # "timeout" (covers TLS handshake timeout, i/o timeout)
 
                 s14_26_orig = b"".join(struct.pack("<QQ", v, l) for v, l in orig_entries)
@@ -1317,7 +1346,12 @@ def locate_bg_task_timeout_sites(data: bytes, funcs: dict):
         mw2_off, mw2_sz = funcs[mw2_key]
         mw2_bytes = data[mw2_off : mw2_off + mw2_sz]
         mw2_candidates = [
-            # v2.29.0+: movzx edx, byte ptr [rsp+0x33]; test dl, dl; jz +0x41; mov rax, [rsp+0xa8]
+            # v2.33.0+: movzx edx, byte ptr [rsp+0x32]; test dl, dl; jz +0x53; mov rax, [rsp+0xb0]
+            (
+                bytes.fromhex("0fb654243284d27453488b8424b0000000"),
+                bytes.fromhex("0fb654243284d29090488b8424b0000000"),
+            ),
+            # v2.29.0-v2.32.2: movzx edx, byte ptr [rsp+0x33]; test dl, dl; jz +0x41; mov rax, [rsp+0xa8]
             (
                 bytes.fromhex("0fb654243384d27441488b8424a8000000"),
                 bytes.fromhex("0fb654243384d29090488b8424a8000000"),

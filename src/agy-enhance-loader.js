@@ -5,7 +5,7 @@
  * - MutationObserver strictly filters out all [id^="agy-"] self-mutations (zero ring self-trigger loop).
  * - True multi-page generatorMetadata pagination (reachedTail only on batch.length === 0) + global concurrency cap.
  * - Native CortexStepStatus enum mapping (DONE=3, INVALID=4, CANCELED=6, ERROR=7, INTERRUPTED=12) via stepsUpdate.steps.
- * - Native Settings integration (Settings -> Appearance: Interface Language & Widescreen Academic Typography).
+ * - Native Settings integration (Settings -> Appearance: Interface Language).
  */
 (function () {
   const VERSION = '3.6.0-macos-merged';
@@ -40,7 +40,7 @@
     enabled: true,
     theme: 'native',
     lang: 'zh-std',
-    widescreen: true
+    widescreen: false
   };
 
   let localRevision = 0;
@@ -1722,24 +1722,6 @@
       document.head.appendChild(styleEl);
     }
     styleEl.textContent = `
-      html[data-agy-widescreen="1"] {
-        --max-conversation-width: min(92vw, 1480px) !important;
-      }
-      html[data-agy-widescreen="1"] .max-w-3xl,
-      html[data-agy-widescreen="1"] .max-w-2xl,
-      html[data-agy-widescreen="1"] .max-w-4xl {
-        max-width: min(92vw, 1480px) !important;
-      }
-      html[data-agy-widescreen="1"] .prose {
-        max-width: 100% !important;
-        line-height: 1.78 !important;
-        letter-spacing: 0.012em !important;
-      }
-      html[data-agy-widescreen="1"] .prose table {
-        display: table !important;
-        width: 100% !important;
-      }
-
       body:has([data-testid="context-usage-indicator"]) #agy-ctx-ring-pill {
         display: none !important;
       }
@@ -4677,7 +4659,7 @@
   }
 
   // ---------------------------------------------------------------------------
-  // 8. Native Settings Modal Integration (Language & Widescreen Controls)
+  // 8. Native Settings Modal Integration (Language Controls)
   // ---------------------------------------------------------------------------
   function syncSettingsEnhancementRowsState() {
     const zhBtn = document.getElementById('agy-settings-lang-zh');
@@ -4696,16 +4678,6 @@
         zhBtn.setAttribute('aria-pressed', 'false');
       }
     }
-
-    const wideSwitch = document.getElementById('agy-settings-wide-switch');
-    const wideKnob = document.getElementById('agy-settings-wide-knob');
-    const isWide = Boolean(globalPrefs.widescreen);
-    if (wideSwitch && wideKnob) {
-      wideSwitch.setAttribute('aria-checked', isWide ? 'true' : 'false');
-      wideSwitch.classList.toggle('bg-primary', isWide);
-      wideSwitch.classList.toggle('bg-secondary', !isWide);
-      wideKnob.style.transform = isWide ? 'translateX(24px)' : 'translateX(4px)';
-    }
   }
 
   function ensureSettingsEnhancementRowsMounted() {
@@ -4719,7 +4691,8 @@
     if (!themeCard) return;
 
     let langRow = document.getElementById('agy-settings-lang-row');
-    let wideRow = document.getElementById('agy-settings-wide-row');
+    const staleWideRow = document.getElementById('agy-settings-wide-row');
+    if (staleWideRow) staleWideRow.remove();
 
     if (!langRow || !themeCard.contains(langRow)) {
       if (langRow) langRow.remove();
@@ -4753,35 +4726,6 @@
       if (enBtn) {
         enBtn.addEventListener('click', () => {
           patchGlobalPrefs({ lang: 'en' });
-          applyAllStates();
-        });
-      }
-    }
-
-    if (!wideRow || !themeCard.contains(wideRow)) {
-      if (wideRow) wideRow.remove();
-      wideRow = document.createElement('div');
-      wideRow.id = 'agy-settings-wide-row';
-      wideRow.className = 'py-2 px-3 w-full bg-transparent flex justify-between gap-4 items-center';
-      wideRow.innerHTML = `
-        <div class="flex-1 flex flex-col gap-0.5">
-          <div class="flex items-center gap-1.5">
-            <span class="text-sm">宽屏学术排版</span>
-          </div>
-          <span class="text-xs text-muted-foreground whitespace-pre-wrap">突破默认宽度限制，将会话阅读区与表格扩展至 92% 视口宽度（上限 1480px）。</span>
-        </div>
-        <div class="shrink-0">
-          <button type="button" role="switch" id="agy-settings-wide-switch" aria-checked="false" class="relative inline-flex items-center rounded-full transition-colors duration-200 ease-in-out shrink-0 h-6 w-11 bg-secondary cursor-pointer">
-            <span id="agy-settings-wide-knob" class="inline-block rounded-full bg-white transition-transform duration-200 ease-in-out shadow-sm h-4 w-4" style="transform: translateX(4px);"></span>
-          </button>
-        </div>
-      `;
-      themeCard.appendChild(wideRow);
-
-      const wideSwitch = wideRow.querySelector('#agy-settings-wide-switch');
-      if (wideSwitch) {
-        wideSwitch.addEventListener('click', () => {
-          patchGlobalPrefs({ widescreen: !globalPrefs.widescreen });
           applyAllStates();
         });
       }
@@ -4964,11 +4908,7 @@
     sanitizeWorkspaceAndGoogleCorpClutter();
     restoreNativeTitleBarOverlay();
 
-    if (globalPrefs.widescreen) {
-      document.documentElement.setAttribute('data-agy-widescreen', '1');
-    } else {
-      document.documentElement.removeAttribute('data-agy-widescreen');
-    }
+    document.documentElement.removeAttribute('data-agy-widescreen');
 
     applyLocalizationToSubtree(document.body);
     ensureSettingsEnhancementRowsMounted();
@@ -4991,10 +4931,6 @@
     if (e.altKey && (e.key === 'l' || e.key === 'L' || e.code === 'KeyL')) {
       e.preventDefault();
       patchGlobalPrefs({ lang: globalPrefs.lang === 'en' ? 'zh-std' : 'en' });
-      applyAllStates();
-    } else if (e.altKey && (e.key === 'w' || e.key === 'W' || e.code === 'KeyW')) {
-      e.preventDefault();
-      patchGlobalPrefs({ widescreen: !globalPrefs.widescreen });
       applyAllStates();
     }
   }

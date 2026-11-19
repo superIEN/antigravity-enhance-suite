@@ -291,7 +291,7 @@ def patch_ipc_handlers_js(code: str) -> str:
             enabled: true,
             theme: 'native',
             lang: 'zh-std',
-            widescreen: true,
+            widescreen: false,
         },
         windowDefaults: {},
     };
@@ -307,7 +307,7 @@ def patch_ipc_handlers_js(code: str) -> str:
                         enabled: typeof loaded.global.enabled === 'boolean' ? loaded.global.enabled : true,
                         theme: 'native',
                         lang: loaded.global.lang === 'en' ? 'en' : 'zh-std',
-                        widescreen: typeof loaded.global.widescreen === 'boolean' ? loaded.global.widescreen : true,
+                        widescreen: typeof loaded.global.widescreen === 'boolean' ? loaded.global.widescreen : false,
                     },
                     windowDefaults: (loaded.windowDefaults && typeof loaded.windowDefaults === 'object') ? loaded.windowDefaults : {},
                 };
@@ -1084,6 +1084,24 @@ def patch_main_js(code: str) -> str:
         "const windows = (0, utils_1.getHubWindows)();",
     )
 
+    old_port_cb_v233 = """            onPortChanged: (newPort) => {
+                lsExited = false;
+                mendelFlagSync?.onPortChanged(newPort);
+                const newUrl = `${constants_1.WINDOW_ORIGIN}:${newPort}/`;
+                console.log(`[Auto-Restart] Port changed! Reloading all windows with URL: ${newUrl}`);
+                // Apply cert trust
+                (0, languageServer_1.setupLocalCertTrust)();
+                // Main-process ActuatorService streams follow the LS to its new port.
+                (0, mainClient_1.mainActuatorClientPortChanged)(newPort);
+                if (!HEADLESS) {
+                    // Hub windows only: the desktop HUD keeps its own page.
+                    const windows = (0, utils_1.getLocalHubWindows)();
+                    for (const win of windows) {
+                        void win.loadURL(newUrl);
+                    }
+                }
+            },"""
+
     old_port_cb_v232 = old_port_cb_v226.replace(
         "const windows = electron_1.BrowserWindow.getAllWindows();",
         "const windows = (0, utils_1.getLocalHubWindows)();",
@@ -1153,6 +1171,20 @@ def patch_main_js(code: str) -> str:
                 }
             },"""
 
+    new_port_cb_v233 = new_port_cb.replace(
+        """            onPortChanged: (newPort) => {
+                (0, languageServer_1.setupLocalCertTrust)();""",
+        """            onPortChanged: (newPort) => {
+                lsExited = false;
+                mendelFlagSync?.onPortChanged(newPort);
+                (0, languageServer_1.setupLocalCertTrust)();
+                // Main-process ActuatorService streams follow the LS to its new port.
+                (0, mainClient_1.mainActuatorClientPortChanged)(newPort);""",
+        1,
+    )
+
+    if old_port_cb_v233 in code:
+        return code.replace(old_port_cb_v233, new_port_cb_v233, 1)
     if old_port_cb_v232 in code:
         return code.replace(old_port_cb_v232, new_port_cb, 1)
     if old_port_cb_v229 in code:
