@@ -1684,7 +1684,7 @@ async function runVerification() {
   await new Promise((r) => setTimeout(r, 10));
   assert.match(guardBtn.textContent, /复制失败/, 'Rejected clipboard must show 复制失败, not 已复制');
 
-  // Case 2c: Partial single-line acceptance by editor must fall back to clipboard (not falsely report filled)
+  // Case 2c: Partial single-line acceptance OR tail truncation by editor must fall back to clipboard (not falsely report filled)
   win.navigator.clipboard = { writeText: async (t) => { copiedTexts.push(t); } };
   mockTa.value = '';
   const truncateHandler = () => { mockTa.value = '请现在收尾并存档换窗：'; };
@@ -1693,6 +1693,16 @@ async function runVerification() {
   await new Promise((r) => setTimeout(r, 10));
   assert.equal(copiedTexts.length, 2, 'Truncated single-line prompt must trigger clipboard fallback');
   mockTa.removeEventListener('input', truncateHandler);
+
+  mockTa.value = '';
+  const tailTruncHandler = () => {
+    mockTa.value = mockTa.value.replace(/存档完成前不开新活。$/, '').trim();
+  };
+  mockTa.addEventListener('input', tailTruncHandler);
+  guardBtn.dispatchEvent({ type: 'click', preventDefault: () => {}, stopPropagation: () => {} });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(copiedTexts.length, 3, 'Tail-truncated prompt (missing final clause) must trigger clipboard fallback');
+  mockTa.removeEventListener('input', tailTruncHandler);
   mockTa.remove();
 
   // Case 2d: Backup ring pill must NOT be squeezed out when #agy-ctx-guard sits left of turboBtn
@@ -1702,7 +1712,7 @@ async function runVerification() {
   assert.equal(ringPill.style.display, 'inline-flex', 'Backup ring pill must still show left of #agy-ctx-guard when gap suffices');
   assert.ok(parseInt(ringPill.style.left, 10) <= 540 - 92 - 6, 'Backup ring pill must position left of #agy-ctx-guard without overlapping');
 
-  // Case 2e: Hidden-ancestor official indicator must NOT capture #agy-ctx-guard
+  // Case 2e: Hidden-ancestor official indicator (including deep 26-level ancestor) must NOT capture #agy-ctx-guard
   const hiddenWrap = doc.createElement('div');
   hiddenWrap.style.visibility = 'hidden';
   const hiddenInd = doc.createElement('button');
@@ -1713,6 +1723,66 @@ async function runVerification() {
   win.dispatchEvent({ type: 'resize' });
   assert.notEqual(guardChip.parentElement, hiddenWrap, '#agy-ctx-guard must skip official indicator inside visibility:hidden ancestor');
   hiddenWrap.remove();
+
+  const deepHiddenRoot = doc.createElement('div');
+  deepHiddenRoot.style.opacity = '0.04';
+  let deepCur = deepHiddenRoot;
+  for (let d = 0; d < 26; d++) {
+    const nest = doc.createElement('div');
+    deepCur.appendChild(nest);
+    deepCur = nest;
+  }
+  const deepInd = doc.createElement('button');
+  deepInd.setAttribute('data-testid', 'context-usage-indicator');
+  deepInd._rect = { left: 600, top: 684, right: 630, bottom: 708, width: 30, height: 24 };
+  deepCur.appendChild(deepInd);
+  rightGroup.insertBefore(deepHiddenRoot, turboBtn);
+  win.dispatchEvent({ type: 'resize' });
+  assert.notEqual(guardChip.parentElement, deepCur, '#agy-ctx-guard must skip official indicator under 26-level opacity:0.04 ancestor');
+  deepHiddenRoot.remove();
+
+  // Case 2f: Fallback compaction count must honor final retryInfos usage and deduplicate repeated responseId
+  const prevFetchMeta = bridgeMock.fetchGeneratorMetadata;
+  bridgeMock.fetchGeneratorMetadata = async ({ generatorMetadataOffset }) => {
+    if (generatorMetadataOffset === 0) {
+      return {
+        generatorMetadata: [
+          {
+            chatModel: {
+              usage: { inputTokens: 1000, cacheReadTokens: 499000, outputTokens: 0, responseId: 'resp-A' }
+            }
+          },
+          {
+            chatModel: {
+              usage: { inputTokens: 1000, cacheReadTokens: 99000, outputTokens: 0, responseId: 'resp-B-init' },
+              retryInfos: [
+                { usage: { inputTokens: 1000, cacheReadTokens: 509000, outputTokens: 0, responseId: 'resp-B-final' } }
+              ]
+            }
+          },
+          {
+            chatModel: {
+              usage: { inputTokens: 1000, cacheReadTokens: 99000, outputTokens: 0, responseId: 'resp-A' }
+            }
+          }
+        ]
+      };
+    }
+    return {};
+  };
+  const prevAsu2f = context.__asu;
+  context.__asu = {};
+  currentNowMs += 5000;
+  doc.dispatchEvent({ type: 'visibilitychange' });
+  await new Promise((r) => setTimeout(r, 25));
+  win.dispatchEvent({ type: 'resize' });
+  assert.match(
+    guardChip.querySelector('#agy-ctx-guard-text').textContent,
+    /压0/,
+    'Fallback compaction count must pick final retry usage and skip duplicate responseId (no false 压1)'
+  );
+  context.__asu = prevAsu2f;
+  bridgeMock.fetchGeneratorMetadata = prevFetchMeta;
 
   // Case 3: contenteditable editor via execCommand('insertText')
   const mockCe = doc.createElement('div');

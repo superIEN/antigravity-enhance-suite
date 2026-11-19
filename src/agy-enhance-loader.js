@@ -2660,10 +2660,11 @@
       }
     } catch (_) {}
 
-    // 2. Steep-drop count across tokenCacheByConvo pagination history using effective retry usage (prev > 200K && next < prev * 0.5)
+    // 2. Steep-drop count across tokenCacheByConvo pagination history using effective retry usage & responseId dedup (prev > 200K && next < prev * 0.5)
     try {
       if (tokenState && tokenState.entriesByIndex instanceof Map && tokenState.entriesByIndex.size >= 2) {
         const keys = Array.from(tokenState.entriesByIndex.keys()).sort((a, b) => a - b);
+        const seenRespIds = new Set();
         let prevTok = null;
         let drops = 0;
         for (const k of keys) {
@@ -2673,8 +2674,20 @@
             typeof prepareChatModelMetadataForNormalize === 'function'
               ? prepareChatModelMetadataForNormalize(item.chatModel)
               : item.chatModel;
-          const u = prepared?.usage || item.chatModel.usage;
+          let u = prepared?.usage || item.chatModel.usage;
+          const retries = prepared?.retryInfos ?? item.chatModel.retryInfos ?? [];
+          for (let i = retries.length - 1; i >= 0; --i) {
+            if (retries[i]?.usage) {
+              u = retries[i].usage;
+              break;
+            }
+          }
           if (!u) continue;
+          const respId = String(u.responseId || u.messageId || '');
+          if (respId) {
+            if (seenRespIds.has(respId)) continue;
+            seenRespIds.add(respId);
+          }
           const total = Number(u.inputTokens || 0) + Number(u.cacheReadTokens || 0) + Number(u.outputTokens || 0);
           if (!Number.isFinite(total) || total <= 0) continue;
           if (prevTok !== null && prevTok > 200000 && total < prevTok * 0.5) {
@@ -2813,14 +2826,18 @@
     return 'clipboard-failed';
   }
 
+  function normalizePromptForCompare(text) {
+    return String(text || '')
+      .replace(/\r\n/g, '\n')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n{2,}/g, '\n')
+      .trim();
+  }
+
   function isCompleteHandoffDraft(text) {
-    if (!text) return false;
-    return (
-      text.includes('存档换窗') &&
-      text.includes('按路径白名单') &&
-      text.includes('line-state-ops') &&
-      text.includes('唤醒词单独贴给我')
-    );
+    const actual = normalizePromptForCompare(text);
+    const expected = normalizePromptForCompare(CTX_GUARD_HANDOFF_PROMPT);
+    return Boolean(actual) && actual === expected;
   }
 
   function fillComposerWithHandoffPrompt() {
@@ -2889,7 +2906,9 @@
     const r = el.getBoundingClientRect ? el.getBoundingClientRect() : { width: el.offsetWidth || 0, height: el.offsetHeight || 0 };
     if (r.width <= 0 || r.height <= 0) return false;
     let cur = el;
-    for (let depth = 0; cur && depth < 24; depth++) {
+    const seen = new Set();
+    while (cur && !seen.has(cur)) {
+      seen.add(cur);
       if (cur.hidden) return false;
       if (cur.getAttribute && cur.getAttribute('aria-hidden') === 'true') return false;
       if (typeof getComputedStyle === 'function') {
