@@ -10,6 +10,8 @@ Verified Protobuf Field Paths & 3-Byte Varints:
 - `executor_metadata.data`: field path `(10, 2, 5)` (`tag = 0x28`) = `checkpoint_config.max_token_limit`
 - `gen_metadata.data`:      field path `(1, 9, 10, 4)` (`tag = 0x20`) = `ContextWindowMetadata.max_context_tokens`
 - `256,000`   (`0x03e800`) -> varint `80 d0 0f` (3 bytes)
+- `512,000`   (`0x07d000`) -> varint `80 a0 1f` (3 bytes, remote feature-flag cap since v2.32/v2.33)
+- `786,432`   (`0x0c0000`) -> varint `80 80 30` (3 bytes, 75% remote cap)
 - `983,040`   (`0x0f0000`) -> varint `80 80 3c` (3 bytes, default target matching Site 22: 1,048,576 - 65,536)
 - `1,008,576` (`0x0f63c0`) -> varint `c0 c7 3d` (3 bytes)
 - `1,048,576` (`0x100000`) -> varint `80 80 40` (3 bytes)
@@ -32,6 +34,84 @@ TARGET_PATHS: dict[str, tuple[int, ...]] = {
     "executor_metadata": (10, 2, 5),
     "gen_metadata": (1, 9, 10, 4),
 }
+
+CAPPED_1M_VALUES: frozenset[int] = frozenset((256_000, 512_000, 786_432))
+
+# Explicit model-name paths verified on Antigravity v2.29–v2.33 protobuf blobs:
+# - executor_metadata: (10, 1, 28) -> requested model slug (e.g. "gemini-4-neon-xhigh" / "claude-opus-5-5-high")
+# - gen_metadata:      (1, 19), (1, 21), (3, 28) -> actual model slug / display name
+MODEL_NAME_PATHS: dict[str, tuple[tuple[int, ...], ...]] = {
+    "executor_metadata": ((10, 1, 28),),
+    "gen_metadata": ((1, 19), (1, 21), (3, 28)),
+}
+
+
+def find_strings_at_path(
+    buf: bytes | bytearray,
+    target_path: tuple[int, ...],
+    start: int = 0,
+    end: int | None = None,
+    prefix: tuple[int, ...] = (),
+) -> list[str]:
+    """Walks a protobuf wire-format message and returns UTF-8 strings matching `target_path`."""
+    if end is None:
+        end = len(buf)
+    out: list[str] = []
+    pos = start
+    target_depth = len(target_path)
+    cur_depth = len(prefix)
+
+    while pos < end:
+        tag_val, pos = decode_varint(buf, pos, end)
+        field_num = tag_val >> 3
+        wire_type = tag_val & 0x07
+        cur_path = prefix + (field_num,)
+
+        if wire_type == 0:
+            _, pos = decode_varint(buf, pos, end)
+        elif wire_type == 1:
+            pos += 8
+            if pos > end:
+                raise ValueError("Truncated fixed64")
+        elif wire_type == 2:
+            length, pos = decode_varint(buf, pos, end)
+            sub_start = pos
+            sub_end = pos + length
+            if sub_end > end:
+                raise ValueError("Truncated length-delimited field")
+            if cur_path == target_path:
+                try:
+                    s = bytes(buf[sub_start:sub_end]).decode("utf-8").strip()
+                    if s:
+                        out.append(s)
+                except UnicodeDecodeError:
+                    pass
+            elif cur_depth < target_depth - 1 and cur_path == target_path[: cur_depth + 1]:
+                out.extend(find_strings_at_path(buf, target_path, sub_start, sub_end, cur_path))
+            pos = sub_end
+        elif wire_type == 5:
+            pos += 4
+            if pos > end:
+                raise ValueError("Truncated fixed32")
+        else:
+            raise ValueError(f"Unsupported wire type {wire_type}")
+
+    return out
+
+
+def _classify_model_names(names: list[str]) -> bool:
+    """Return True (protected / non-1M) unless an explicit 1M Gemini model name is present and no 200k token matches."""
+    if not names:
+        return True
+    lows = [n.lower() for n in names]
+    # Fail-safe: any Claude / GPT-OSS / explicit 200k indicator is treated as 200k-protected
+    if any(tok in s for s in lows for tok in ("claude", "opus", "sonnet", "haiku", "gpt-oss", "200k")):
+        return True
+    # Only explicitly known 1M Gemini families qualify as 1M
+    if any(tok in s for s in lows for tok in ("gemini-4", "gemini 4", "gemini-3", "gemini 3", "gemini-pro-orchestrator")):
+        return False
+    # Unknown model name: fail-safe protect
+    return True
 
 
 def encode_varint(value: int) -> bytes:
@@ -161,36 +241,13 @@ def inspect_or_upgrade_db(db_path: Path, upgrade_to: int | None = None) -> dict[
         ]
         summary: list[dict[str, object]] = []
 
-        db_has_any_200k = False
-        if "executor_metadata" in tables:
-            em_rows = cur.execute("SELECT data FROM executor_metadata").fetchall()
-            row_is_200k_flags: list[bool] = []
-            for (em_val,) in em_rows:
-                em_blob = (
-                    bytearray(em_val)
-                    if isinstance(em_val, bytes)
-                    else (bytearray.fromhex(em_val) if isinstance(em_val, str) else None)
-                )
-                if em_blob is None:
-                    continue
-                row_vals = [
-                    cs.value
-                    for cs in (
-                        find_varints_at_path(em_blob, (10, 1, 13, 2, 22))
-                        + find_varints_at_path(em_blob, (10, 1, 32, 3))
-                    )
-                    if cs.value > 0
-                ]
-                if row_vals:
-                    row_is_200k_flags.append(all(v <= 262_144 for v in row_vals))
-            if row_is_200k_flags and any(row_is_200k_flags):
-                db_has_any_200k = True
-
         for tbl, target_path in TARGET_PATHS.items():
             if tbl not in tables:
                 continue
             rows = cur.execute(f"SELECT rowid, data FROM {tbl}").fetchall()
             hits_256k = 0
+            hits_512k = 0
+            hits_786k = 0
             hits_983k = 0
             hits_1008k = 0
             hits_other = 0
@@ -207,22 +264,14 @@ def inspect_or_upgrade_db(db_path: Path, upgrade_to: int | None = None) -> dict[
                     continue
 
                 spans = find_varints_at_path(blob, target_path)
-                is_200k_model = db_has_any_200k if tbl == "gen_metadata" else False
-                if tbl == "executor_metadata":
-                    ctx_vals = [
-                        cs.value
-                        for cs in (
-                            find_varints_at_path(blob, (10, 1, 13, 2, 22))
-                            + find_varints_at_path(blob, (10, 1, 32, 3))
-                        )
-                        if cs.value > 0
-                    ]
-                    if ctx_vals and all(v <= 262_144 for v in ctx_vals):
-                        is_200k_model = True
+                row_names: list[str] = []
+                for np in MODEL_NAME_PATHS.get(tbl, ()):
+                    row_names.extend(find_strings_at_path(blob, np))
+                is_200k_model = _classify_model_names(row_names)
                 row_modified = False
                 for sp in spans:
-                    if sp.value == 256_000 and not is_200k_model:
-                        if upgrade_to is not None and new_varint is not None:
+                    if sp.value in CAPPED_1M_VALUES and not is_200k_model:
+                        if upgrade_to is not None and new_varint is not None and sp.value < upgrade_to:
                             if sp.val_end - sp.val_start != 3:
                                 raise ValueError(
                                     f"Expected 3-byte varint at {sp.path}, got {sp.val_end - sp.val_start}"
@@ -237,7 +286,12 @@ def inspect_or_upgrade_db(db_path: Path, upgrade_to: int | None = None) -> dict[
                             else:
                                 hits_other += 1
                         else:
-                            hits_256k += 1
+                            if sp.value == 256_000:
+                                hits_256k += 1
+                            elif sp.value == 512_000:
+                                hits_512k += 1
+                            elif sp.value == 786_432:
+                                hits_786k += 1
                     elif sp.value == 983_040:
                         hits_983k += 1
                     elif sp.value == 1_008_576:
@@ -255,6 +309,8 @@ def inspect_or_upgrade_db(db_path: Path, upgrade_to: int | None = None) -> dict[
                     "rows": len(rows),
                     "path": "." + ".".join(str(x) for x in target_path),
                     "hits_256k": hits_256k,
+                    "hits_512k": hits_512k,
+                    "hits_786k": hits_786k,
                     "hits_983k": hits_983k,
                     "hits_1008k": hits_1008k,
                     "hits_other": hits_other,
@@ -337,8 +393,9 @@ def main() -> int:
         for b in info["entries"]:
             print(
                 f"  {b['table']:18s} (rows={b['rows']:3d}, path=${b['path']}) | "
-                f"256k={b['hits_256k']:3d} | 983k={b['hits_983k']:3d} | "
-                f"1008k={b['hits_1008k']:3d} | other={b['hits_other']:3d} | replaced={b['replaced']}"
+                f"256k={b['hits_256k']:3d} | 512k={b['hits_512k']:3d} | 786k={b['hits_786k']:3d} | "
+                f"983k={b['hits_983k']:3d} | 1008k={b['hits_1008k']:3d} | other={b['hits_other']:3d} | "
+                f"replaced={b['replaced']}"
             )
     return 1 if skipped > 0 else 0
 

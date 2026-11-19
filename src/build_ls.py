@@ -33,6 +33,8 @@ def sha256_bytes(data: bytes) -> str:
 def _is_valid_site_state(name: str, cur: bytes, before: bytes, after: bytes) -> bool:
     if cur in (before, after):
         return True
+    if "ClampCheckpointConfigForModelInfo" in name and len(cur) == len(after) and cur in p.SITE22_PREV_PATCHES:
+        return True
     if "truncateIfTooLarge" not in name or len(cur) != len(before) or len(before) != len(after):
         return False
     i = 0

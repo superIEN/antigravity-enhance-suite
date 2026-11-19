@@ -269,6 +269,33 @@ def locate_h2ping_sites(data: bytes, funcs: dict):
     return sites
 
 
+SITE22_PREV_PATCHES: frozenset[bytes] = frozenset(
+    bytes.fromhex(h)
+    for h in (
+        # ARM64 pre-v2.26 (#0x10): v3.6.0 & v3.6.1-v3.6.5 (only matched {0, 256k})
+        "65f84051bf0020716418407ac1000054241480b9844040d19f00036b4d000054041000b9",
+        "65f84051bf0020716418407ac1000054241480b9854040d19f004171a4c0841a041000b9",
+        # ARM64 v2.26+ (#0x0c): v3.6.1-v3.6.5 (only matched {0, 256k})
+        "65f84051bf0020716418407ac1000054241480b9854040d19f004171a4c0841a040c00b9",
+        # x64 v2.33.0+ (37B): v3.6.6-pre (only matched {0, 256k})
+        "8b510c85d2740881fa00e8030075168b571466837f16047e0681ea0000010089510c0f1f00",
+        # x64 v2.25.0-v2.32.2 (34B): v3.4.0-v3.6.5 (only matched {0, 256k})
+        "8b500c85d2740881fa00e8030075138b531466837b16047e0681ea0000010089500c",
+    )
+)
+
+
+def _find_orig_patch_or_prev(buf: bytes, orig: bytes, patch: bytes, prevs: tuple[bytes, ...]) -> int:
+    pos = _find_orig_or_patch(buf, orig, patch)
+    if pos != -1:
+        return pos
+    for prev in prevs:
+        pos = buf.find(prev)
+        if pos != -1:
+            return pos
+    return -1
+
+
 def locate_1m_context_sites(data: bytes, funcs: dict):
     sites = []
     chk_key = next((k for k in funcs if k.endswith("/utils.GetCheckpointConfig")), None)
@@ -357,40 +384,44 @@ def locate_1m_context_sites(data: bytes, funcs: dict):
             if p_hyd != -1:
                 sites.append(("gateway.HydrateModelEntryDefaults (default input 200K -> 1M)", h_off + p_hyd, hyd_orig, hyd_patch))
 
-        # Site 22: utils.ClampCheckpointConfigForModelInfo (983,040 for 1M, preserves 200,000 for 200k under w3 in {0, 256000})
+        # Site 22 (ARM64): utils.ClampCheckpointConfigForModelInfo
+        # Raises any 1M-class model (>262,144) cap < (MaxInputTokens - 65,536) to MaxInputTokens - 65,536 (983,040 for 1M),
+        # defeating remote feature-flag caps (256k / 512k / 768k), while preserving <=262,144 (200k) models.
         clamp_key = next((k for k in funcs if k.endswith("/utils.ClampCheckpointConfigForModelInfo")), None)
         if clamp_key:
             cl_off, cl_sz = funcs[clamp_key]
             cl_bytes = data[cl_off : cl_off + cl_sz]
-            cl_orig = bytes.fromhex("23010035231480b9048893d27f0004eb6c000054e3031faa02000014630004cb031000b9")
-            cl_prev_v360 = bytes.fromhex("65f84051bf0020716418407ac1000054241480b9844040d19f00036b4d000054041000b9")
-            cl_patch = bytes.fromhex("65f84051bf0020716418407ac1000054241480b9854040d19f004171a4c0841a041000b9")
-            p_cl = _find_orig_or_patch(cl_bytes, cl_orig, cl_patch)
-            if p_cl == -1:
-                p_cl = cl_bytes.find(cl_prev_v360)
-            if p_cl != -1:
-                sites.append(
+            cl_arm_candidates = [
+                (
+                    # pre-v2.26 ARM64: MaxTokenLimit field offset [x0, #0x10]
+                    bytes.fromhex("23010035231480b9048893d27f0004eb6c000054e3031faa02000014630004cb031000b9"),
+                    bytes.fromhex("241480b99f0041716c000054c300003504000014854040517f00056b6420851a041000b9"),
                     (
-                        "Site 22 utils.ClampCheckpointConfigForModelInfo (983,040 for 1M, preserves 200k)",
-                        cl_off + p_cl,
-                        cl_orig,
-                        cl_patch,
-                    )
-                )
-            else:
-                # v2.26.0+ / v2.29.0 ARM64: MaxTokenLimit field offset is [x0, #0xc] (str w3/w4, [x0, #0xc])
-                cl29_orig = bytes.fromhex("23010035231480b9048893d27f0004eb6c000054e3031faa02000014630004cb030c00b9")
-                cl29_patch = bytes.fromhex("65f84051bf0020716418407ac1000054241480b9854040d19f004171a4c0841a040c00b9")
-                p_cl29 = _find_orig_or_patch(cl_bytes, cl29_orig, cl29_patch)
-                if p_cl29 != -1:
+                        bytes.fromhex("65f84051bf0020716418407ac1000054241480b9844040d19f00036b4d000054041000b9"),
+                        bytes.fromhex("65f84051bf0020716418407ac1000054241480b9854040d19f004171a4c0841a041000b9"),
+                    ),
+                ),
+                (
+                    # v2.26.0+ / v2.29.0+ / v2.33.0+ ARM64: MaxTokenLimit field offset [x0, #0xc]
+                    bytes.fromhex("23010035231480b9048893d27f0004eb6c000054e3031faa02000014630004cb030c00b9"),
+                    bytes.fromhex("241480b99f0041716c000054c300003504000014854040517f00056b6420851a040c00b9"),
+                    (
+                        bytes.fromhex("65f84051bf0020716418407ac1000054241480b9854040d19f004171a4c0841a040c00b9"),
+                    ),
+                ),
+            ]
+            for cl_orig, cl_patch, cl_prevs in cl_arm_candidates:
+                p_cl = _find_orig_patch_or_prev(cl_bytes, cl_orig, cl_patch, cl_prevs)
+                if p_cl != -1:
                     sites.append(
                         (
-                            "Site 22 utils.ClampCheckpointConfigForModelInfo (983,040 for 1M, preserves 200k)",
-                            cl_off + p_cl29,
-                            cl29_orig,
-                            cl29_patch,
+                            "Site 22 utils.ClampCheckpointConfigForModelInfo (floor 983,040 for 1M+, preserves 200k)",
+                            cl_off + p_cl,
+                            cl_orig,
+                            cl_patch,
                         )
                     )
+                    break
 
         # Site 23 (ARM64): (*TruncationDecorator).truncateIfTooLarge trajectory byte cap (25MB 0x01900000 -> 256MB 0x10000000)
         td_key = next((k for k in funcs if k.endswith("(*TruncationDecorator).truncateIfTooLarge")), None)
@@ -495,29 +526,37 @@ def locate_1m_context_sites(data: bytes, funcs: dict):
         if pos_hyd != -1:
             sites.append(("gateway.HydrateModelEntryDefaults (v2.25.0 default input 200K -> 1M)", h_off + pos_hyd, hyd_orig, hyd_patch))
 
-    # Site 22 (x64): utils.ClampCheckpointConfigForModelInfo (983,040 for 1M, preserves 200,000 for 200k under MaxTokenLimit in {0, 256000})
+    # Site 22 (x64): utils.ClampCheckpointConfigForModelInfo
+    # Raises any 1M-class model (>262,144) cap < (MaxInputTokens - 65,536) to MaxInputTokens - 65,536 (983,040 for 1M),
+    # defeating remote feature-flag caps (256k / 512k / 768k), while preserving <=262,144 (200k) models.
     clamp_key = next((k for k in funcs if k.endswith("/utils.ClampCheckpointConfigForModelInfo")), None)
     if clamp_key:
         cl_off, cl_sz = funcs[clamp_key]
         cl_bytes = data[cl_off : cl_off + cl_sz]
         cl_x64_candidates = [
-            # v2.33.0+: 37-byte block (rcx=cfg, rdi=modelInfo, 4B alignment nop inside orig, 3B trailing nop in patch)
+            # v2.33.0+: 37-byte block (rcx=cfg, rdi=modelInfo; unsigned jae for uint32 MaxTokenLimit)
             (
                 bytes.fromhex("83790c00751f486357140f1f40004881fa409c00007f0431d2eb074881c2c063ffff89510c"),
-                bytes.fromhex("8b510c85d2740881fa00e8030075168b571466837f16047e0681ea0000010089510c0f1f00"),
+                bytes.fromhex("8b571481fa000004007f0883790c007510eb0b81ea0000010039510c730389510c0f1f4000"),
+                (
+                    bytes.fromhex("8b510c85d2740881fa00e8030075168b571466837f16047e0681ea0000010089510c0f1f00"),
+                ),
             ),
-            # v2.25.0-v2.32.2: 34-byte block (rax=cfg, rbx=modelInfo)
+            # v2.25.0-v2.32.2: 34-byte block (rax=cfg, rbx=modelInfo; unsigned jae for uint32 MaxTokenLimit)
             (
                 bytes.fromhex("83780c00751c486353144881fa409c00007f0531d290eb074881c2c063ffff89500c"),
-                bytes.fromhex("8b500c85d2740881fa00e8030075138b531466837b16047e0681ea0000010089500c"),
+                bytes.fromhex("8b531481fa000004007f0883780c007510eb0b81ea0000010039500c730389500c90"),
+                (
+                    bytes.fromhex("8b500c85d2740881fa00e8030075138b531466837b16047e0681ea0000010089500c"),
+                ),
             ),
         ]
-        for cl_x64_orig, cl_x64_patch in cl_x64_candidates:
-            pos_cl = _find_orig_or_patch(cl_bytes, cl_x64_orig, cl_x64_patch)
+        for cl_x64_orig, cl_x64_patch, cl_x64_prevs in cl_x64_candidates:
+            pos_cl = _find_orig_patch_or_prev(cl_bytes, cl_x64_orig, cl_x64_patch, cl_x64_prevs)
             if pos_cl != -1:
                 sites.append(
                     (
-                        "Site 22 utils.ClampCheckpointConfigForModelInfo (983,040 for 1M, preserves 200k)",
+                        "Site 22 utils.ClampCheckpointConfigForModelInfo (floor 983,040 for 1M+, preserves 200k)",
                         cl_off + pos_cl,
                         cl_x64_orig,
                         cl_x64_patch,
