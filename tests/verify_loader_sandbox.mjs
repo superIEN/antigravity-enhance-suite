@@ -799,8 +799,8 @@ async function runVerification() {
     __AGY_BRIDGE__: bridgeMock,
     getComputedStyle: (el) => ({
       display: el?.style?.getPropertyValue('display') || 'block',
-      visibility: 'visible',
-      opacity: '1',
+      visibility: el?.style?.getPropertyValue('visibility') || 'visible',
+      opacity: el?.style?.getPropertyValue('opacity') || '1',
       color: 'rgb(240, 240, 240)',
       getPropertyValue: (prop) => (prop === '--background' ? '#131313' : '#131313')
     }),

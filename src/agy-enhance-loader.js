@@ -2889,12 +2889,18 @@
     const r = el.getBoundingClientRect ? el.getBoundingClientRect() : { width: el.offsetWidth || 0, height: el.offsetHeight || 0 };
     if (r.width <= 0 || r.height <= 0) return false;
     let cur = el;
-    for (let depth = 0; cur && depth < 6; depth++) {
+    for (let depth = 0; cur && depth < 24; depth++) {
+      if (cur.hidden) return false;
       if (cur.getAttribute && cur.getAttribute('aria-hidden') === 'true') return false;
       if (typeof getComputedStyle === 'function') {
         try {
           const st = getComputedStyle(cur);
-          if (st.display === 'none' || st.visibility === 'hidden' || parseFloat(st.opacity) <= 0.05) {
+          if (
+            st.display === 'none' ||
+            st.visibility === 'hidden' ||
+            st.visibility === 'collapse' ||
+            parseFloat(st.opacity) <= 0.05
+          ) {
             return false;
           }
         } catch (_) {}
