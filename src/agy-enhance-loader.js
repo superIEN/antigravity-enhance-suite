@@ -1775,6 +1775,102 @@
         flex-shrink: 0;
       }
 
+      /* Inline 1M Context Guard Chip & Handoff Button (never position: fixed) */
+      #agy-ctx-guard {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        height: 22px;
+        padding: 0 6px;
+        margin-right: 4px;
+        border-radius: 6px;
+        font-family: "JetBrains Mono", "SF Mono", "Consolas", "PingFang SC", "Microsoft YaHei", monospace, system-ui;
+        font-size: 11px;
+        font-weight: 500;
+        line-height: 1;
+        white-space: nowrap;
+        user-select: none;
+        flex-shrink: 0;
+        background: rgba(255, 255, 255, 0.05);
+        color: var(--muted-foreground, #a1a1aa);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      html[data-agy-color-mode="light"] #agy-ctx-guard,
+      body.theme-light #agy-ctx-guard {
+        background: #f4f4f5;
+        color: #52525b;
+        border-color: #e4e4e7;
+      }
+      #agy-ctx-guard[data-level="amber"] {
+        background: rgba(245, 158, 11, 0.16);
+        color: #fbbf24;
+        border-color: rgba(245, 158, 11, 0.38);
+      }
+      html[data-agy-color-mode="light"] #agy-ctx-guard[data-level="amber"],
+      body.theme-light #agy-ctx-guard[data-level="amber"] {
+        background: #fffbeb;
+        color: #b45309;
+        border-color: #fcd34d;
+      }
+      #agy-ctx-guard[data-level="red"] {
+        background: rgba(239, 68, 68, 0.18);
+        color: #f87171;
+        border-color: rgba(239, 68, 68, 0.45);
+      }
+      html[data-agy-color-mode="light"] #agy-ctx-guard[data-level="red"],
+      body.theme-light #agy-ctx-guard[data-level="red"] {
+        background: #fef2f2;
+        color: #b91c1c;
+        border-color: #fca5a5;
+      }
+      #agy-ctx-guard-btn {
+        font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-size: 10.5px;
+        font-weight: 600;
+        line-height: 1.4;
+        padding: 1px 6px;
+        border-radius: 4px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(255, 255, 255, 0.08);
+        color: inherit;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      html[data-agy-color-mode="light"] #agy-ctx-guard-btn,
+      body.theme-light #agy-ctx-guard-btn {
+        background: #ffffff;
+        border-color: #d4d4d8;
+        color: #3f3f46;
+      }
+      #agy-ctx-guard[data-level="amber"] #agy-ctx-guard-btn {
+        background: rgba(245, 158, 11, 0.28);
+        border-color: rgba(251, 191, 36, 0.55);
+        color: #fef3c7;
+      }
+      html[data-agy-color-mode="light"] #agy-ctx-guard[data-level="amber"] #agy-ctx-guard-btn,
+      body.theme-light #agy-ctx-guard[data-level="amber"] #agy-ctx-guard-btn {
+        background: #f59e0b;
+        border-color: #d97706;
+        color: #ffffff;
+      }
+      #agy-ctx-guard[data-level="red"] #agy-ctx-guard-btn {
+        background: rgba(239, 68, 68, 0.34);
+        border-color: rgba(248, 113, 113, 0.60);
+        color: #fee2e2;
+      }
+      html[data-agy-color-mode="light"] #agy-ctx-guard[data-level="red"] #agy-ctx-guard-btn,
+      body.theme-light #agy-ctx-guard[data-level="red"] #agy-ctx-guard-btn {
+        background: #dc2626;
+        border-color: #b91c1c;
+        color: #ffffff;
+      }
+      #agy-ctx-guard.compact-btn-only #agy-ctx-guard-text {
+        display: none;
+      }
+      #agy-ctx-guard.compact-num-only #agy-ctx-guard-btn {
+        display: none;
+      }
+
       /* Stream Qualitative UX Inline Enhancements (Minimalist Codex-like Style) */
       button[data-testid="thinking-collapsible-trigger"] + div,
       button[data-testid="tool-group-collapsible"] + div {
@@ -2232,6 +2328,7 @@
         }
         globalMetadataInFlight = false;
         updateFloatingContextRing();
+        updateContextGuardChip();
       }
     })();
   }
@@ -2438,7 +2535,7 @@
       }
       if (turboBtn.parentElement) {
         for (const sib of turboBtn.parentElement.children) {
-          if (sib === turboBtn || sib.id === 'agy-ctx-ring-pill') continue;
+          if (sib === turboBtn || sib.id === 'agy-ctx-ring-pill' || sib.id === 'agy-ctx-guard') continue;
           const sr = sib.getBoundingClientRect();
           if (sr.width > 0 && sr.right <= tRect.left + 2) {
             maxLeftControlRight = Math.max(maxLeftControlRight, sr.right);
@@ -2447,7 +2544,15 @@
       }
     }
 
-    const availableGap = tRect.left - maxLeftControlRight;
+    let anchorLeft = tRect.left;
+    if (ctxGuardEl && ctxGuardEl.parentElement === turboBtn.parentElement && ctxGuardEl.style.display !== 'none') {
+      const gr = ctxGuardEl.getBoundingClientRect();
+      if (gr.width > 0 && gr.left < anchorLeft) {
+        anchorLeft = gr.left;
+      }
+    }
+
+    const availableGap = anchorLeft - maxLeftControlRight;
     if (availableGap < 30) {
       ctxRingPill.style.display = 'none';
       return;
@@ -2503,8 +2608,386 @@
       ctxRingPill.style.display = 'none';
       return;
     }
-    ctxRingPill.style.left = `${Math.round(tRect.left - actualPillWidth - 6)}px`;
+    ctxRingPill.style.left = `${Math.round(anchorLeft - actualPillWidth - 6)}px`;
     ctxRingPill.style.top = `${Math.round(tRect.top + (tRect.height - 24) / 2)}px`;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 6b. Inline Context Guard Chip (#agy-ctx-guard) & One-Click Handoff Filler
+  // ---------------------------------------------------------------------------
+  const CTX_GUARD_HANDOFF_PROMPT =
+    '请现在收尾并存档换窗：\n' +
+    '1. 提交已完成的改动，按路径白名单，不推送；\n' +
+    '2. 按 line-state-ops 做一次原子存档，恢复卡写清做到哪、下一步、未决事项；\n' +
+    '3. 把唤醒词单独贴给我。存档完成前不开新活。';
+
+  // Layout mode: 'footer-always' (方案一) | 'footer-threshold' (方案二) | 'hud-top' (方案三)
+  let ctxGuardLayout = 'footer-always';
+  let ctxGuardEl = null;
+  let ctxGuardTextEl = null;
+  let ctxGuardBtnEl = null;
+  let ctxGuardResetTimer = null;
+  let composerComposing = false;
+
+  function onCompositionStart() {
+    composerComposing = true;
+  }
+  function onCompositionEnd() {
+    composerComposing = false;
+  }
+
+  function formatKCompact(tokens) {
+    if (!Number.isFinite(tokens) || tokens <= 0) return '--';
+    const k = tokens / 1000;
+    return k >= 100 ? `${Math.round(k)}K` : `${k.toFixed(1).replace(/\.0$/, '')}K`;
+  }
+
+  function deriveCompactionCount(cid, tokenState) {
+    // 1. Authoritative compactionInfo.compactedAtStepIndices from buffered AgentStateUpdate
+    try {
+      const records = cid && (globalThis.__asu?.conversations?.get?.(cid) || globalThis.__asu?.[cid]);
+      if (Array.isArray(records)) {
+        let best = null;
+        for (let i = records.length - 1; i >= 0; i--) {
+          const u = records[i]?.update || records[i];
+          const idxs = u?.compactionInfo?.compactedAtStepIndices;
+          if (Array.isArray(idxs)) {
+            best = idxs.length;
+            break;
+          }
+        }
+        if (typeof best === 'number') return best;
+      }
+    } catch (_) {}
+
+    // 2. Steep-drop count across tokenCacheByConvo pagination history using effective retry usage (prev > 200K && next < prev * 0.5)
+    try {
+      if (tokenState && tokenState.entriesByIndex instanceof Map && tokenState.entriesByIndex.size >= 2) {
+        const keys = Array.from(tokenState.entriesByIndex.keys()).sort((a, b) => a - b);
+        let prevTok = null;
+        let drops = 0;
+        for (const k of keys) {
+          const item = tokenState.entriesByIndex.get(k);
+          if (!item?.chatModel) continue;
+          const prepared =
+            typeof prepareChatModelMetadataForNormalize === 'function'
+              ? prepareChatModelMetadataForNormalize(item.chatModel)
+              : item.chatModel;
+          const u = prepared?.usage || item.chatModel.usage;
+          if (!u) continue;
+          const total = Number(u.inputTokens || 0) + Number(u.cacheReadTokens || 0) + Number(u.outputTokens || 0);
+          if (!Number.isFinite(total) || total <= 0) continue;
+          if (prevTok !== null && prevTok > 200000 && total < prevTok * 0.5) {
+            drops += 1;
+          }
+          prevTok = total;
+        }
+        return drops;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function deriveSessionDurationLabel(cid) {
+    try {
+      const records = cid && (globalThis.__asu?.conversations?.get?.(cid) || globalThis.__asu?.[cid]);
+      if (!Array.isArray(records) || records.length === 0) return '';
+      let earliestMs = null;
+      for (const rec of records) {
+        const u = rec?.update || rec;
+        const steps = u?.mainTrajectoryUpdate?.stepsUpdate?.steps;
+        if (Array.isArray(steps)) {
+          for (const s of steps) {
+            const rawTs = s?.metadata?.createdAt || s?.createdAt;
+            if (!rawTs) continue;
+            let ms = null;
+            if (typeof rawTs === 'string') {
+              const parsed = Date.parse(rawTs);
+              if (Number.isFinite(parsed)) ms = parsed;
+            } else if (typeof rawTs === 'object' && typeof rawTs.seconds === 'number') {
+              ms = rawTs.seconds * 1000;
+            }
+            if (ms !== null && (earliestMs === null || ms < earliestMs)) {
+              earliestMs = ms;
+            }
+          }
+        }
+      }
+      if (earliestMs === null) return '';
+      const mins = Math.max(0, Math.floor((Date.now() - earliestMs) / 60000));
+      if (mins < 60) return `${mins}m`;
+      return `${Math.floor(mins / 60)}h`;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function computeGuardState(cid) {
+    const tokenState = cid ? tokenCacheByConvo.get(cid) : null;
+    let norm = tokenState?.normalized || { kind: 'unknown', usedTokens: null, maxTokens: null };
+    const liveNorm = extractRealtimeFiberUsage(cid);
+    if (liveNorm && liveNorm.usedTokens !== null) {
+      norm = liveNorm;
+    }
+    const used = Number(norm?.usedTokens || 0);
+    const max = Number(norm?.maxTokens || 983040) || 983040;
+    if (!Number.isFinite(used) || used <= 0) {
+      return null;
+    }
+
+    const amberLine = max >= 900000 ? 500000 : Math.round(max * 0.51);
+    const redLine = max >= 900000 ? 650000 : Math.round(max * 0.66);
+    const level = used >= redLine ? 'red' : used >= amberLine ? 'amber' : 'normal';
+    const ckptCount = deriveCompactionCount(cid, tokenState);
+    const dur = deriveSessionDurationLabel(cid);
+
+    const parts = [`${formatKCompact(used)} / ${formatKCompact(max)}`];
+    if (typeof ckptCount === 'number') parts.push(`压${ckptCount}`);
+    if (dur) parts.push(dur);
+
+    return {
+      used,
+      max,
+      level,
+      ckptCount,
+      dur,
+      label: parts.join(' · ')
+    };
+  }
+
+  function findActiveComposerEditor() {
+    const turboBtn = findActiveComposerTurboButton();
+    const box =
+      (turboBtn && turboBtn.closest && turboBtn.closest('[data-testid="agent-input-box"]')) ||
+      document.querySelector('[data-testid="agent-input-box"]') ||
+      document.getElementById('antigravity.agentSidePanelInputBox')?.parentElement ||
+      null;
+    const scope = box || document;
+    const candidates = scope.querySelectorAll
+      ? scope.querySelectorAll('textarea, input[type="text"], [contenteditable="true"], [contenteditable=""], [role="textbox"]')
+      : [];
+    for (const el of candidates) {
+      if (el.id && el.id.startsWith('agy-')) continue;
+      if (el.disabled || el.readOnly) continue;
+      const r = el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 1, height: 1 };
+      if (r.width > 0 && r.height > 0) return el;
+    }
+    return null;
+  }
+
+  function readComposerDraft(editor) {
+    if (!editor) return '';
+    const tag = (editor.tagName || '').toUpperCase();
+    if (tag === 'TEXTAREA' || tag === 'INPUT') {
+      return String(editor.value || '').trim();
+    }
+    return String(editor.textContent || '').trim();
+  }
+
+  function flashGuardBtnCopied(label = '已复制，粘贴发送') {
+    if (!ctxGuardBtnEl) return;
+    ctxGuardBtnEl.textContent = label;
+    if (ctxGuardResetTimer) clearTimeout(ctxGuardResetTimer);
+    ctxGuardResetTimer = setTimeout(() => {
+      ctxGuardResetTimer = null;
+      if (ctxGuardBtnEl) ctxGuardBtnEl.textContent = '存档换窗';
+    }, 3000);
+  }
+
+  function fallbackCopyHandoffPrompt() {
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        const p = navigator.clipboard.writeText(CTX_GUARD_HANDOFF_PROMPT);
+        if (p && typeof p.then === 'function') {
+          p.then(
+            () => flashGuardBtnCopied('已复制，粘贴发送'),
+            () => flashGuardBtnCopied('复制失败，请手动输入')
+          );
+          return 'clipboard-pending';
+        }
+        flashGuardBtnCopied('已复制，粘贴发送');
+        return 'clipboard';
+      }
+    } catch (_) {}
+    flashGuardBtnCopied('复制失败，请手动输入');
+    return 'clipboard-failed';
+  }
+
+  function isCompleteHandoffDraft(text) {
+    if (!text) return false;
+    return (
+      text.includes('存档换窗') &&
+      text.includes('按路径白名单') &&
+      text.includes('line-state-ops') &&
+      text.includes('唤醒词单独贴给我')
+    );
+  }
+
+  function fillComposerWithHandoffPrompt() {
+    // Guard 1: Never interfere while IME composition is active
+    if (composerComposing) {
+      return 'composing';
+    }
+    const editor = findActiveComposerEditor();
+    if (!editor) {
+      return fallbackCopyHandoffPrompt();
+    }
+    // Guard 2: Never overwrite non-empty existing user draft -> fall back to clipboard
+    if (readComposerDraft(editor).length > 0) {
+      return fallbackCopyHandoffPrompt();
+    }
+
+    const tag = (editor.tagName || '').toUpperCase();
+    try {
+      if (tag === 'TEXTAREA' || tag === 'INPUT') {
+        const proto = tag === 'TEXTAREA' ? window.HTMLTextAreaElement?.prototype : window.HTMLInputElement?.prototype;
+        const setter = proto && Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+        if (setter) {
+          setter.call(editor, CTX_GUARD_HANDOFF_PROMPT);
+        } else {
+          editor.value = CTX_GUARD_HANDOFF_PROMPT;
+        }
+        if (typeof editor.focus === 'function') editor.focus();
+        if (typeof editor.setSelectionRange === 'function') {
+          editor.setSelectionRange(CTX_GUARD_HANDOFF_PROMPT.length, CTX_GUARD_HANDOFF_PROMPT.length);
+        }
+        const ev = typeof Event === 'function' ? new Event('input', { bubbles: true }) : { type: 'input', bubbles: true };
+        editor.dispatchEvent(ev);
+      } else {
+        if (typeof editor.focus === 'function') editor.focus();
+        let inserted = false;
+        if (typeof document.execCommand === 'function') {
+          try {
+            inserted = Boolean(document.execCommand('insertText', false, CTX_GUARD_HANDOFF_PROMPT));
+          } catch (_) {
+            inserted = false;
+          }
+        }
+        if (!inserted && readComposerDraft(editor).length === 0) {
+          try {
+            const dt = typeof DataTransfer === 'function' ? new DataTransfer() : null;
+            if (dt) dt.setData('text/plain', CTX_GUARD_HANDOFF_PROMPT);
+            const pasteEvt =
+              typeof ClipboardEvent === 'function'
+                ? new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt })
+                : { type: 'paste', bubbles: true, clipboardData: { getData: () => CTX_GUARD_HANDOFF_PROMPT } };
+            editor.dispatchEvent(pasteEvt);
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+
+    // Guard 3: Read back full prompt after filling; partial or rejected fill falls back to clipboard (NEVER auto-send!)
+    if (isCompleteHandoffDraft(readComposerDraft(editor))) {
+      return 'filled';
+    }
+    return fallbackCopyHandoffPrompt();
+  }
+
+  function isElementVisiblyDisplayed(el) {
+    if (!el) return false;
+    const r = el.getBoundingClientRect ? el.getBoundingClientRect() : { width: el.offsetWidth || 0, height: el.offsetHeight || 0 };
+    if (r.width <= 0 || r.height <= 0) return false;
+    let cur = el;
+    for (let depth = 0; cur && depth < 6; depth++) {
+      if (cur.getAttribute && cur.getAttribute('aria-hidden') === 'true') return false;
+      if (typeof getComputedStyle === 'function') {
+        try {
+          const st = getComputedStyle(cur);
+          if (st.display === 'none' || st.visibility === 'hidden' || parseFloat(st.opacity) <= 0.05) {
+            return false;
+          }
+        } catch (_) {}
+      }
+      cur = cur.parentElement;
+    }
+    return true;
+  }
+
+  function ensureGuardChipMounted() {
+    if (disposed || !globalPrefs.enabled) return null;
+
+    if (!ctxGuardEl) {
+      const existing = document.getElementById('agy-ctx-guard');
+      if (existing) existing.remove();
+      ctxGuardEl = document.createElement('span');
+      ctxGuardEl.id = 'agy-ctx-guard';
+      ctxGuardEl.setAttribute('data-level', 'normal');
+
+      ctxGuardTextEl = document.createElement('span');
+      ctxGuardTextEl.id = 'agy-ctx-guard-text';
+
+      ctxGuardBtnEl = document.createElement('button');
+      ctxGuardBtnEl.id = 'agy-ctx-guard-btn';
+      ctxGuardBtnEl.type = 'button';
+      ctxGuardBtnEl.textContent = '存档换窗';
+      ctxGuardBtnEl.title = '仅填入交接提示词到输入框，绝不自动发送';
+      ctxGuardBtnEl.addEventListener('click', (e) => {
+        if (e && typeof e.preventDefault === 'function') e.preventDefault();
+        if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+        fillComposerWithHandoffPrompt();
+      });
+
+      ctxGuardEl.appendChild(ctxGuardTextEl);
+      ctxGuardEl.appendChild(ctxGuardBtnEl);
+    }
+
+    // Mount inline before visible official context-usage-indicator (skipping hidden ancestors),
+    // falling back to before visible permissions-selector-trigger
+    const turboBtn = findActiveComposerTurboButton();
+    const footerScope =
+      (turboBtn && turboBtn.closest && turboBtn.closest('[class*="@container/input-footer"]')) ||
+      (turboBtn && turboBtn.parentElement) ||
+      document;
+    let anchor = null;
+    const indNodes = footerScope.querySelectorAll
+      ? footerScope.querySelectorAll('[data-testid="context-usage-indicator"]')
+      : [];
+    for (const cand of indNodes) {
+      if (cand.parentElement && isElementVisiblyDisplayed(cand)) {
+        anchor = cand;
+        break;
+      }
+    }
+    if (!anchor && turboBtn && turboBtn.parentElement && isElementVisiblyDisplayed(turboBtn)) {
+      anchor = turboBtn;
+    }
+    if (!anchor || !anchor.parentElement) {
+      return null;
+    }
+
+    const parent = anchor.parentElement;
+    if (ctxGuardEl.parentElement !== parent || ctxGuardEl.nextElementSibling !== anchor) {
+      parent.insertBefore(ctxGuardEl, anchor);
+    }
+    return ctxGuardEl;
+  }
+
+  function updateContextGuardChip() {
+    if (disposed || !globalPrefs.enabled) {
+      if (ctxGuardEl) ctxGuardEl.style.display = 'none';
+      return;
+    }
+    const cid = getActiveConversationId();
+    const gs = computeGuardState(cid);
+    if (!gs) {
+      if (ctxGuardEl) ctxGuardEl.style.display = 'none';
+      return;
+    }
+    const chip = ensureGuardChipMounted();
+    if (!chip) return;
+
+    chip.style.display = 'inline-flex';
+    if (chip.getAttribute('data-level') !== gs.level) {
+      chip.setAttribute('data-level', gs.level);
+    }
+    if (ctxGuardTextEl && ctxGuardTextEl.textContent !== gs.label) {
+      ctxGuardTextEl.textContent = gs.label;
+    }
+    if (ctxGuardBtnEl) {
+      const showBtn = ctxGuardLayout === 'footer-always' || gs.level !== 'normal';
+      ctxGuardBtnEl.style.display = showBtn ? 'inline-block' : 'none';
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -4790,6 +5273,13 @@
     window.removeEventListener('click', onCollapsibleClickCapture, true);
     document.removeEventListener('visibilitychange', onVisibilityChange);
     document.removeEventListener('mousedown', onDocumentMouseDownForRing, true);
+    document.removeEventListener('compositionstart', onCompositionStart, true);
+    document.removeEventListener('compositionend', onCompositionEnd, true);
+    composerComposing = false;
+    if (ctxGuardResetTimer) {
+      clearTimeout(ctxGuardResetTimer);
+      ctxGuardResetTimer = null;
+    }
     ctxRingHovered = false;
     ctxRingPinned = false;
 
@@ -4801,6 +5291,7 @@
     for (const id of [
       'agy-enhance-scoped-style',
       'agy-ctx-ring-pill',
+      'agy-ctx-guard',
       'agy-mission-hud-host',
       'agy-settings-lang-row',
       'agy-settings-wide-row'
@@ -4809,6 +5300,9 @@
       if (el) el.remove();
     }
     ctxRingPill = null;
+    ctxGuardEl = null;
+    ctxGuardTextEl = null;
+    ctxGuardBtnEl = null;
     missionHudHost = null;
     missionHudShadow = null;
     missionHudRefs = {};
@@ -4823,10 +5317,13 @@
       window.addEventListener('click', onCollapsibleClickCapture, true);
       document.addEventListener('visibilitychange', onVisibilityChange);
       document.addEventListener('mousedown', onDocumentMouseDownForRing, true);
+      document.addEventListener('compositionstart', onCompositionStart, true);
+      document.addEventListener('compositionend', onCompositionEnd, true);
 
       ringTimer = setInterval(() => {
         if (disposed || !globalPrefs.enabled || document.hidden) return;
         updateFloatingContextRing();
+        updateContextGuardChip();
         pollLiveAgentState();
       }, 600);
 
@@ -4924,6 +5421,7 @@
     }
     scheduleTokenMetadataRefresh(false);
     updateFloatingContextRing();
+    updateContextGuardChip();
   }
 
   function onKeyDown(e) {
@@ -4939,6 +5437,7 @@
     if (!document.hidden && globalPrefs.enabled) {
       scheduleTokenMetadataRefresh(false);
       updateFloatingContextRing();
+      updateContextGuardChip();
       updateMissionHud();
     }
   }
@@ -4946,6 +5445,7 @@
   function onWindowResize() {
     if (!disposed && globalPrefs.enabled) {
       updateFloatingContextRing();
+      updateContextGuardChip();
       updateMissionHud();
     }
   }

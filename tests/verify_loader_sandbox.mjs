@@ -1595,12 +1595,151 @@ async function runVerification() {
     '  [PASS 8] 会话 e93889f8 思考流单句摘要 (含 nextToolDesc 14 行上下文推导)/点击展开修复与 macOS/Windows 标题栏平台守卫核验通过'
   );
 
+  // -------------------------------------------------------------------------
+  // Verification 9: Inline Context Guard Chip (#agy-ctx-guard) & One-Click Handoff Filler
+  // -------------------------------------------------------------------------
+  // 9a. Inline mount inside footer (never document.body, never position: fixed)
+  const guardChip = doc.getElementById('agy-ctx-guard');
+  assert.ok(guardChip, '#agy-ctx-guard must be mounted inline');
+  assert.notEqual(guardChip.parentElement, doc.body, '#agy-ctx-guard must NOT be mounted under document.body');
+  assert.equal(guardChip.parentElement, rightGroup, '#agy-ctx-guard must mount inline inside footer rightGroup');
+  assert.doesNotMatch(
+    scopedStyle.textContent.slice(scopedStyle.textContent.indexOf('#agy-ctx-guard')),
+    /position\s*:\s*fixed/i,
+    '#agy-ctx-guard CSS must never use position: fixed'
+  );
+
+  // 9b. Threshold colors & text for 499,999 (normal), 500,000 (amber), 650,000 (red) + compaction count (2 steep drops)
+  const prevAsu = context.__asu;
+  context.__asu = {
+    [TEST_CID]: [{ update: { compactionInfo: { compactedAtStepIndices: [120, 410] } } }]
+  };
+  const setFiberTokens = (used) => {
+    liveAgentState.trajectorySlice.stepsInSlice[1].metadata.modelUsage = {
+      inputTokens: 1000,
+      cacheReadTokens: used - 1000,
+      outputTokens: 0,
+      responseId: `req-${used}`
+    };
+    win.dispatchEvent({ type: 'resize' });
+  };
+  setFiberTokens(499999);
+  assert.equal(guardChip.getAttribute('data-level'), 'normal', '499,999 tokens must stay normal');
+  assert.match(guardChip.querySelector('#agy-ctx-guard-text').textContent, /500K \/ 1000K · 压2/);
+
+  setFiberTokens(500000);
+  assert.equal(guardChip.getAttribute('data-level'), 'amber', '500,000 tokens must turn amber');
+
+  setFiberTokens(650000);
+  assert.equal(guardChip.getAttribute('data-level'), 'red', '650,000 tokens must turn red');
+  assert.match(guardChip.querySelector('#agy-ctx-guard-text').textContent, /650K \/ 1000K · 压2/);
+  context.__asu = prevAsu;
+
+  // 9c. Coexistence: when official context-usage-indicator is present, #agy-ctx-guard stays visible inline right before it
+  const indInFooter = doc.createElement('button');
+  indInFooter.setAttribute('data-testid', 'context-usage-indicator');
+  indInFooter._rect = { left: 660, top: 684, right: 690, bottom: 708, width: 30, height: 24 };
+  rightGroup.insertBefore(indInFooter, turboBtn);
+  win.dispatchEvent({ type: 'resize' });
+  assert.equal(guardChip.style.display, 'inline-flex', '#agy-ctx-guard must remain visible alongside official indicator');
+  assert.equal(guardChip.nextElementSibling, indInFooter, '#agy-ctx-guard must sit immediately before official indicator');
+  indInFooter.remove();
+
+  // 9d. Click handoff button: fills textarea, fills contenteditable, protects non-empty draft via clipboard, NEVER auto-sends
+  const copiedTexts = [];
+  win.navigator.clipboard = {
+    writeText: async (t) => {
+      copiedTexts.push(t);
+    }
+  };
+  const guardBtn = guardChip.querySelector('#agy-ctx-guard-btn');
+  assert.ok(guardBtn, '#agy-ctx-guard-btn must exist');
+
+  // Case 1: textarea editor
+  const mockTa = doc.createElement('textarea');
+  mockTa.value = '';
+  mockTa._rect = { left: 120, top: 610, right: 860, bottom: 670, width: 740, height: 60 };
+  let taInputEvents = 0;
+  let taKeydownEvents = 0;
+  mockTa.addEventListener('input', () => { taInputEvents += 1; });
+  mockTa.addEventListener('keydown', () => { taKeydownEvents += 1; });
+  agentInputBox.insertBefore(mockTa, footerEl);
+
+  guardBtn.dispatchEvent({ type: 'click', preventDefault: () => {}, stopPropagation: () => {} });
+  assert.match(mockTa.value, /存档换窗/, 'Textarea must be filled with handoff prompt');
+  assert.equal(taInputEvents, 1, 'Textarea fill must dispatch input event');
+  assert.equal(taKeydownEvents, 0, 'Handoff button must NEVER synthesize Enter/send keydown');
+
+  // Case 2: Existing draft must NOT be overwritten -> falls back to clipboard
+  mockTa.value = '主人正在打的半截草稿';
+  guardBtn.dispatchEvent({ type: 'click', preventDefault: () => {}, stopPropagation: () => {} });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(mockTa.value, '主人正在打的半截草稿', 'Existing user draft must NOT be overwritten');
+  assert.equal(copiedTexts.length, 1, 'Existing draft guard must copy handoff prompt to clipboard');
+  assert.match(guardBtn.textContent, /已复制/, 'Button text must indicate clipboard fallback');
+
+  // Case 2b: Rejected clipboard write must NOT claim 已复制
+  win.navigator.clipboard = { writeText: async () => { throw new Error('clipboard denied'); } };
+  guardBtn.dispatchEvent({ type: 'click', preventDefault: () => {}, stopPropagation: () => {} });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.match(guardBtn.textContent, /复制失败/, 'Rejected clipboard must show 复制失败, not 已复制');
+
+  // Case 2c: Partial single-line acceptance by editor must fall back to clipboard (not falsely report filled)
+  win.navigator.clipboard = { writeText: async (t) => { copiedTexts.push(t); } };
+  mockTa.value = '';
+  const truncateHandler = () => { mockTa.value = '请现在收尾并存档换窗：'; };
+  mockTa.addEventListener('input', truncateHandler);
+  guardBtn.dispatchEvent({ type: 'click', preventDefault: () => {}, stopPropagation: () => {} });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(copiedTexts.length, 2, 'Truncated single-line prompt must trigger clipboard fallback');
+  mockTa.removeEventListener('input', truncateHandler);
+  mockTa.remove();
+
+  // Case 2d: Backup ring pill must NOT be squeezed out when #agy-ctx-guard sits left of turboBtn
+  ringPill._rect = { left: 0, top: 0, right: 92, bottom: 24, width: 92, height: 24 };
+  guardChip._rect = { left: 540, top: 684, right: 696, bottom: 708, width: 156, height: 24 };
+  win.dispatchEvent({ type: 'resize' });
+  assert.equal(ringPill.style.display, 'inline-flex', 'Backup ring pill must still show left of #agy-ctx-guard when gap suffices');
+  assert.ok(parseInt(ringPill.style.left, 10) <= 540 - 92 - 6, 'Backup ring pill must position left of #agy-ctx-guard without overlapping');
+
+  // Case 2e: Hidden-ancestor official indicator must NOT capture #agy-ctx-guard
+  const hiddenWrap = doc.createElement('div');
+  hiddenWrap.style.visibility = 'hidden';
+  const hiddenInd = doc.createElement('button');
+  hiddenInd.setAttribute('data-testid', 'context-usage-indicator');
+  hiddenInd._rect = { left: 600, top: 684, right: 630, bottom: 708, width: 30, height: 24 };
+  hiddenWrap.appendChild(hiddenInd);
+  rightGroup.insertBefore(hiddenWrap, turboBtn);
+  win.dispatchEvent({ type: 'resize' });
+  assert.notEqual(guardChip.parentElement, hiddenWrap, '#agy-ctx-guard must skip official indicator inside visibility:hidden ancestor');
+  hiddenWrap.remove();
+
+  // Case 3: contenteditable editor via execCommand('insertText')
+  const mockCe = doc.createElement('div');
+  mockCe.setAttribute('contenteditable', 'true');
+  mockCe.textContent = '';
+  mockCe._rect = { left: 120, top: 610, right: 860, bottom: 670, width: 740, height: 60 };
+  agentInputBox.insertBefore(mockCe, footerEl);
+  doc.execCommand = (cmd, _ui, val) => {
+    if (cmd === 'insertText') {
+      mockCe.textContent = val;
+      return true;
+    }
+    return false;
+  };
+  guardBtn.dispatchEvent({ type: 'click', preventDefault: () => {}, stopPropagation: () => {} });
+  assert.match(mockCe.textContent, /存档换窗/, 'ContentEditable must be filled via execCommand(insertText)');
+  mockCe.remove();
+
+  console.log('  [PASS 9] 行内上下文护航条 (#agy-ctx-guard) 阈值变色、压次计数、官方共存与防误发填词守卫 100% 通过');
+
   // Cleanly dispose loader and verify restoration
   win.__AGY_V3__.dispose();
   assert.equal(win.__AGY_V3__.isDisposed(), true, 'Loader must report disposed=true after dispose()');
+  assert.equal(doc.getElementById('agy-ctx-guard'), null, 'dispose() must cleanly remove #agy-ctx-guard');
   assert.equal(uiBtnText.nodeValue, 'New Conversation', 'dispose() must restore original English text');
-  console.log('  [PASS 9] Mode C 挂起与无损卸载还原 (dispose) 核验通过');
-  console.log('\n✅ 全部 9 大项（含 Grok 4.7 xhigh 审计新增边界断言）100% 通过！');
+  console.log('  [PASS 10] Mode C 挂起与无损卸载还原 (dispose) 核验通过');
+  console.log('\n✅ 全部 10 大项（含 Grok 4.7 xhigh 审计与上下文护航条边界断言）100% 通过！');
 }
 
 runVerification().catch((err) => {
