@@ -237,8 +237,15 @@ except ImportError:
     winreg = None
 from pathlib import Path
 
-task_file = Path(sys.argv[1])
-my_task_id = sys.argv[2]
+if len(sys.argv) >= 3:
+    task_file = Path(sys.argv[1])
+    my_task_id = sys.argv[2]
+elif len(sys.argv) == 2:
+    task_file = Path(__file__).resolve().with_name("deferred_asar_swap_task.json")
+    my_task_id = sys.argv[1]
+else:
+    raise SystemExit(2)
+lock_file = task_file.with_name("deferred_asar_swap.lock")
 RUNONCE_SUBKEY = r"Software\Microsoft\Windows\CurrentVersion\RunOnce"
 RUNONCE_VALUE = "AgyDeferredAsarSwap"
 
@@ -249,16 +256,24 @@ def clear_runonce_if_owner():
     if winreg is None:
         return
     try:
-        if task_file.exists():
-            cur = json.loads(task_file.read_text(encoding="utf-8"))
-            if cur.get("task_id") != my_task_id:
-                return
+        with lock_file.open("a+b") as lf:
+            lf.seek(0)
+            msvcrt.locking(lf.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                if not task_file.exists():
+                    return
+                cur = json.loads(task_file.read_text(encoding="utf-8"))
+                if cur.get("task_id") != my_task_id:
+                    return
+                try:
+                    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUNONCE_SUBKEY, 0, winreg.KEY_SET_VALUE) as k:
+                        winreg.DeleteValue(k, RUNONCE_VALUE)
+                except OSError:
+                    pass
+            finally:
+                lf.seek(0)
+                msvcrt.locking(lf.fileno(), msvcrt.LK_UNLCK, 1)
     except Exception:
-        pass
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUNONCE_SUBKEY, 0, winreg.KEY_SET_VALUE) as k:
-            winreg.DeleteValue(k, RUNONCE_VALUE)
-    except OSError:
         pass
 
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -308,10 +323,10 @@ allowed_target_shas = {s for s in (expected_orig_sha, expected_live_sha) if s}
 restart_exe = Path(task["restart_exe"]) if task.get("restart_exe") else None
 
 if not cand_asar.exists() or sha256_file(cand_asar) != expected_cand_sha:
+    clear_runonce_if_owner()
     raise SystemExit(1)
 
 swap_tmp = prod_asar.parent / f".app.asar.swap.{os.getpid()}.tmp"
-lock_file = task_file.with_name("deferred_asar_swap.lock")
 shutil.copy2(cand_asar, swap_tmp)
 try:
     with swap_tmp.open("r+b") as f:
@@ -321,11 +336,13 @@ except OSError:
 
 deadline = time.time() + 86400
 swapped = False
+terminal_abort = False
 idle_ticks = 0
 try:
     while time.time() < deadline:
         ready = probe_target_delete_ready(prod_asar)
         if ready is None:
+            terminal_abort = True
             break
         if ready is False:
             idle_ticks += 1
@@ -340,6 +357,8 @@ try:
             continue
 
         if not swap_tmp.exists() or not prod_asar.exists():
+            if not prod_asar.exists():
+                terminal_abort = True
             break
 
         abort_worker = False
@@ -357,6 +376,7 @@ try:
                         if cur_sha == expected_cand_sha:
                             swapped = True
                         elif cur_sha not in allowed_target_shas:
+                            terminal_abort = True
                             abort_worker = True
                         else:
                             st_now = prod_asar.stat()
@@ -409,7 +429,7 @@ if swapped:
             creationflags=0x00000008 | 0x00000200,
             close_fds=True,
         )
-else:
+elif terminal_abort:
     clear_runonce_if_owner()
 """
 
@@ -444,9 +464,37 @@ def resolve_windows_swapper_runner(agy_install_root: Path) -> str:
     return str(pyw if pyw.exists() else cur_py)
 
 
+RUNONCE_MAX_CMD_LEN = 260
+
+
+def shorten_windows_path(path_str: str) -> str:
+    """Return Windows 8.3 short path when available to keep RunOnce commands under 260 chars."""
+    if os.name != "nt":
+        return path_str
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(1024)
+        n = ctypes.windll.kernel32.GetShortPathNameW(path_str, buf, len(buf))
+        if 0 < n < len(buf) and len(buf.value) < len(path_str):
+            return buf.value
+    except Exception:
+        pass
+    return path_str
+
+
+def build_windows_runonce_cmd(runner: str, swapper_py: Path, task_id: str) -> str:
+    """Build compact RunOnce command omitting the redundant sibling task_file path (stays <= 260 chars)."""
+    cmd = f'"{runner}" "{swapper_py}" "{task_id}"'
+    if len(cmd) <= RUNONCE_MAX_CMD_LEN:
+        return cmd
+    short_runner = shorten_windows_path(runner)
+    short_swapper = shorten_windows_path(str(swapper_py))
+    return f'"{short_runner}" "{short_swapper}" "{task_id}"'
+
+
 def register_windows_runonce_swap(cmd_str: str) -> bool:
     """Register HKCU RunOnce fallback so deferred swap still completes even if the PC reboots before closing Antigravity."""
-    if os.name != "nt":
+    if os.name != "nt" or len(cmd_str) > RUNONCE_MAX_CMD_LEN:
         return False
     try:
         import winreg
@@ -500,6 +548,9 @@ def spawn_windows_deferred_asar_swapper(
         "candidate_sha256": candidate_sha256,
         "restart_exe": str(agy_exe) if (restart_app and agy_exe.exists()) else "",
     }
+    runner = resolve_windows_swapper_runner(prod_asar.parent.parent)
+    CREATE_NO_WINDOW = 0x08000000
+    cmd_str = build_windows_runonce_cmd(runner, swapper_py, task_id)
     tmp_task_file = runtime_dir / f"deferred_asar_swap_task.json.tmp.{os.getpid()}"
     tmp_task_file.write_text(json.dumps(task_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     if os.name == "nt":
@@ -509,23 +560,20 @@ def spawn_windows_deferred_asar_swapper(
             msvcrt.locking(lf.fileno(), msvcrt.LK_LOCK, 1)
             try:
                 os.replace(tmp_task_file, task_file)
+                register_windows_runonce_swap(cmd_str)
             finally:
                 lf.seek(0)
                 msvcrt.locking(lf.fileno(), msvcrt.LK_UNLCK, 1)
     else:
         os.replace(tmp_task_file, task_file)
 
-    runner = resolve_windows_swapper_runner(prod_asar.parent.parent)
-    CREATE_NO_WINDOW = 0x08000000
-    cmd_str = f'"{runner}" "{swapper_py}" "{task_file}" "{task_id}"'
-    register_windows_runonce_swap(cmd_str)
-
     pid = None
     # Prefer WMI Win32_Process.Create so the swapper is parented to WmiPrvSE.exe and escapes Job Object termination
     try:
+        ps_cmd_escaped = cmd_str.replace("'", "''")
         ps_cmd = (
             f"$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
-            f"-Arguments @{{CommandLine='{cmd_str}'}}; "
+            f"-Arguments @{{CommandLine='{ps_cmd_escaped}'}}; "
             f"Write-Output $r.ProcessId"
         )
         out = subprocess.check_output(
@@ -549,7 +597,7 @@ def spawn_windows_deferred_asar_swapper(
         for flags in (BREAKAWAY | DETACHED | NEW_GROUP | CREATE_NO_WINDOW, DETACHED | NEW_GROUP | CREATE_NO_WINDOW):
             try:
                 proc = subprocess.Popen(
-                    [runner, str(swapper_py), str(task_file), task_id],
+                    [runner, str(swapper_py), task_id],
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,

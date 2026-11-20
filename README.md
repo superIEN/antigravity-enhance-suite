@@ -100,7 +100,7 @@ antigravity-enhance-suite/
 │   ├── substance_verifier.py             # 护栏 3：防旁路死字典假接线、AST 调用图与受控进程实证验收器
 │   └── entrypoint_registry.json          # 不可变正常入口登记表
 ├── tests/
-│   ├── test_harness_guardrails.py        # 护栏与 v2.33.0 / Site 22 v2 全套 19 项单元测试
+│   ├── test_harness_guardrails.py        # 护栏与 v2.33.0 / Site 22 v2 / RunOnce 全套 21 项单元测试
 │   ├── verify_loader_sandbox.mjs         # 桌面增强 Loader 10 大项（含方案三护航条与 Grok 10 项极限并发探针）沙箱自验套件
 │   └── fixtures/
 │       └── real_transcript_headers_fixture.jsonl

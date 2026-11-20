@@ -932,12 +932,165 @@ class V233AdaptationTests(unittest.TestCase):
         self.assertIn("(0, mainClient_1.mainActuatorClientPortChanged)(newPort);", patched)
         self.assertIn("global.__agyLastPort === newPort", patched)
 
+    def test_site22_v2_x64_live_cpu_execution(self) -> None:
+        import ctypes
+        import platform
+        import sys
+        from src import patch_sites
+
+        clamp_sym = "google3/third_party/jetski/cortex/utils/utils.ClampCheckpointConfigForModelInfo"
+        orig_37 = bytes.fromhex("83790c00751f486357140f1f40004881fa409c00007f0431d2eb074881c2c063ffff89510c")
+        orig_34 = bytes.fromhex("83780c00751c486353144881fa409c00007f0531d290eb074881c2c063ffff89500c")
+        patch_37 = patch_sites.locate_1m_context_sites(b"\x00" * 32 + orig_37, {clamp_sym: (32, len(orig_37))})[0][3]
+        patch_34 = patch_sites.locate_1m_context_sites(b"\x00" * 32 + orig_34, {clamp_sym: (32, len(orig_34))})[0][3]
+        self.assertEqual(len(patch_37), 37)
+        self.assertEqual(len(patch_34), 34)
+
+        cases = (
+            # (max_input, init_limit, reserve, expected_after_site22, expected_after_tail_clamp)
+            (1_048_576, 0, 65_536, 983_040, 983_040),
+            (1_048_576, 256_000, 65_536, 983_040, 983_040),
+            (1_048_576, 512_000, 65_536, 983_040, 983_040),
+            (1_048_576, 786_432, 65_536, 983_040, 983_040),
+            (1_048_576, 983_040, 65_536, 983_040, 983_040),
+            (1_048_576, 512_000, 262_144, 983_040, 786_432),  # XHigh 256K reserve ceiling
+            (1_048_576, 1_008_576, 32_768, 1_008_576, 1_008_576),
+            (1_048_576, 1_048_576, 32_768, 1_048_576, 1_015_808),
+            (1_048_576, 0x80000000, 32_768, 0x80000000, 1_015_808),
+            (1_048_576, 0xFFFFFFFF, 32_768, 0xFFFFFFFF, 1_015_808),
+            (2_097_152, 512_000, 65_536, 2_031_616, 2_031_616),
+            (262_144, 0, 16_384, 262_144, 245_760),
+            (262_144, 200_000, 16_384, 200_000, 200_000),
+            (200_000, 0, 16_384, 200_000, 183_616),
+            (200_000, 256_000, 16_384, 256_000, 183_616),
+            (200_000, 180_000, 16_384, 180_000, 180_000),
+            (128_000, 0, 16_384, 128_000, 111_616),
+        )
+        self.assertEqual(len(cases) * 2, 34)
+
+        if sys.platform == "win32" and platform.machine().lower() in ("amd64", "x86_64"):
+            kernel32 = ctypes.windll.kernel32
+            kernel32.VirtualAlloc.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32, ctypes.c_uint32]
+            kernel32.VirtualAlloc.restype = ctypes.c_void_p
+            kernel32.VirtualFree.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32]
+            kernel32.VirtualFree.restype = ctypes.c_int
+
+            prologue = bytes.fromhex("53574883ec408954240c894c2434")
+            epilogue = bytes.fromhex("8b44240c4883c4405f5bc3")
+            stubs = [
+                ("x64-37B", prologue + bytes.fromhex("4889e1488d7c2420") + patch_37 + epilogue),
+                ("x64-34B", prologue + bytes.fromhex("4889e0488d5c2420") + patch_34 + epilogue),
+            ]
+            fn_type = ctypes.CFUNCTYPE(ctypes.c_uint32, ctypes.c_int32, ctypes.c_uint32, ctypes.c_uint32)
+            for label, code in stubs:
+                mem = kernel32.VirtualAlloc(None, len(code), 0x3000, 0x40)
+                self.assertTrue(mem, f"VirtualAlloc failed for {label}")
+                try:
+                    ctypes.memmove(mem, code, len(code))
+                    fn = fn_type(mem)
+                    for max_in, init_lim, res, exp_s22, exp_final in cases:
+                        got_s22 = fn(max_in, init_lim, res)
+                        self.assertEqual(
+                            got_s22,
+                            exp_s22,
+                            f"{label} Site 22 mismatch for ({max_in}, {init_lim}): got {got_s22}, expected {exp_s22}",
+                        )
+                        lim = (max_in - res) if (0 <= res < max_in) else max_in
+                        got_final = min(got_s22, lim) if max_in > 0 else got_s22
+                        self.assertEqual(got_final, exp_final, f"{label} tail-clamp mismatch for ({max_in}, {init_lim}, {res})")
+                finally:
+                    kernel32.VirtualFree(mem, 0, 0x8000)
+        else:
+            # Portable byte-level verification when not on Windows x86_64
+            self.assertEqual(patch_37[26:33], bytes.fromhex("39510c730389510c"))
+            self.assertEqual(patch_34[26:33], bytes.fromhex("39500c730389500c"))
+
     def test_deferred_swap_script_compiles_with_runonce_cleanup(self) -> None:
         import agy_suite
 
         compile(agy_suite.DEFERRED_SWAP_SCRIPT, "<DEFERRED_SWAP_SCRIPT>", "exec")
         self.assertIn("clear_runonce_if_owner", agy_suite.DEFERRED_SWAP_SCRIPT)
         self.assertIn("AgyDeferredAsarSwap", agy_suite.DEFERRED_SWAP_SCRIPT)
+        self.assertIn("elif terminal_abort:", agy_suite.DEFERRED_SWAP_SCRIPT)
+        # Timeout / pending exit must NOT clear RunOnce
+        self.assertNotIn("\nelse:\n    clear_runonce_if_owner()", agy_suite.DEFERRED_SWAP_SCRIPT)
+
+    def test_deferred_swapper_runonce_retention_locking_and_length(self) -> None:
+        import ast
+        import contextlib
+        import json
+        import agy_suite
+
+        # 1. Compact RunOnce command omits redundant sibling task_file and enforces 260-char Win32 cap
+        deep_swapper = Path(r"C:\Users\Administrator\.gemini\config\agy-themes\antigravity-enhance-suite\.runtime\deferred_asar_swapper.py")
+        runner = r"C:\Users\Administrator\AppData\Local\Programs\Python\Python310\pythonw.exe"
+        cmd = agy_suite.build_windows_runonce_cmd(runner, deep_swapper, "1795142000000-42112")
+        self.assertNotIn("deferred_asar_swap_task.json", cmd)
+        self.assertLessEqual(len(cmd), agy_suite.RUNONCE_MAX_CMD_LEN)
+        self.assertFalse(agy_suite.register_windows_runonce_swap("x" * (agy_suite.RUNONCE_MAX_CMD_LEN + 1)))
+
+        # 2. Extract and run clear_runonce_if_owner in-memory to verify lock-serialized ownership check
+        tree = ast.parse(agy_suite.DEFERRED_SWAP_SCRIPT)
+        fn_node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "clear_runonce_if_owner")
+        fn_code = compile(ast.Module(body=[fn_node], type_ignores=[]), "<clear_runonce_if_owner>", "exec")
+
+        lock_events: list[str] = []
+        reg_deleted: list[str] = []
+        state = {"task_id": "task-B"}
+
+        class FakeLockFile:
+            def open(self, mode):
+                class _Ctx:
+                    def __enter__(self_inner): return self_inner
+                    def __exit__(self_inner, *a): return False
+                    def seek(self_inner, pos): pass
+                    def fileno(self_inner): return 7
+                return _Ctx()
+
+        class FakeMsvcrt:
+            LK_LOCK = 1
+            LK_UNLCK = 2
+            @staticmethod
+            def locking(fd, mode, n):
+                lock_events.append("lock" if mode == 1 else "unlock")
+
+        class FakeTaskFile:
+            def exists(self): return True
+            def read_text(self, encoding="utf-8"): return json.dumps({"task_id": state["task_id"]})
+
+        class FakeWinreg:
+            HKEY_CURRENT_USER = 1
+            KEY_SET_VALUE = 2
+            @staticmethod
+            @contextlib.contextmanager
+            def OpenKey(root, subkey, reserved, access):
+                yield "key"
+            @staticmethod
+            def DeleteValue(key, name):
+                reg_deleted.append(name)
+
+        # Worker A must NOT delete RunOnce once task-B owns task_file
+        ns_a = {
+            "winreg": FakeWinreg,
+            "lock_file": FakeLockFile(),
+            "task_file": FakeTaskFile(),
+            "msvcrt": FakeMsvcrt,
+            "json": json,
+            "my_task_id": "task-A",
+            "RUNONCE_SUBKEY": r"Software\Microsoft\Windows\CurrentVersion\RunOnce",
+            "RUNONCE_VALUE": "AgyDeferredAsarSwap",
+        }
+        exec(fn_code, ns_a)
+        ns_a["clear_runonce_if_owner"]()
+        self.assertEqual(reg_deleted, [])
+        self.assertEqual(lock_events, ["lock", "unlock"])
+
+        # Worker B owns task_file -> deletes RunOnce under lock
+        ns_b = dict(ns_a, my_task_id="task-B")
+        exec(fn_code, ns_b)
+        ns_b["clear_runonce_if_owner"]()
+        self.assertEqual(reg_deleted, ["AgyDeferredAsarSwap"])
+        self.assertEqual(lock_events, ["lock", "unlock", "lock", "unlock"])
 
 
 if __name__ == "__main__":

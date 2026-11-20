@@ -9,7 +9,7 @@
 ### 新增与优化 (Added & Changed)
 - **官方 Antigravity `v2.33.0` 全栈兼容适配与宽屏覆写摘除（`src/patch_sites.py` · `src/build_asar.py` · `src/build_ls.py` · `src/agy-enhance-loader.js` · `agy_suite.py`）**：
   - **Go 语言服务端 `v2.33.0` 位点对齐**：适配 `v2.33.0` 下的 `Site 20`（`startMessageWatcherLocked.func2`）、`Site 22`（`37B` 指令跨度）及 `Site 14`（17 槽位断流重试表），Windows `x86_64` 全套 20 处位点 100% 精准定位并支持原厂 / 旧补丁 / 新补丁三态幂等重编。
-  - **Electron 宿主 `v2.33.0` `main.js` 锚点适配**：保留官方 `v2.33.0` 的 Mendel 特性刷新与 Actuator 端口同步逻辑，并升级 Windows `DEFERRED_SWAP_SCRIPT` 在客户端退出瞬间自动完成 `app.asar` 无损换盘与 `RunOnce` 清理。
+  - **Electron 宿主 `v2.33.0` `main.js` 锚点适配**：保留官方 `v2.33.0` 的 Mendel 特性刷新与 Actuator 端口同步逻辑；升级 Windows `DEFERRED_SWAP_SCRIPT` 在客户端退出瞬间自动完成 `app.asar` 无损换盘，并将任务写入、`RunOnce` 登记与归属清理全部纳入 `deferred_asar_swap.lock` 独占锁（根除并发竞态），24h 超时未换包时保留 `RunOnce` 重启兜底，且缩短启动命令（自动省略同目录冗余任务文件路径并校验 Win32 260 字符上限）。
   - **全面摘除宽屏 CSS 覆写**：移除了会破坏官方布局的宽屏宽度覆盖规则，保留原生居中阅读宽度与无损中文界面。
 - **`Site 22 v2` 无符号 1M 地板升级：彻底击穿云端 `512K / 768K` 远程降级封顶（`src/patch_sites.py` · `src/build_ls.py` · `src/patch_sites_macos_v36.py` · `src/upgrade_db_context_limit.py`，同时致谢社区 [PR #13](https://github.com/superIEN/antigravity-enhance-suite/pull/13) 对 `512K` FeatureProvider 覆写问题的共同定位）**：
   - **根因定位**：2026-11-16 起官方云端特性开关（`applyFeatureProviderCheckpointOverrideConfig`）将 `CheckpointConfig.MaxTokenLimit` 压低至 `512,000`（`0x7d000`），绕过了旧版 Site 22 仅判断 `{0, 256,000}` 的等值分支，导致 1M 模型提前近一半就触发有损压缩。
@@ -20,7 +20,7 @@
   - **水位变色、压次计数与重试去重**：实时显示 `已用K / 上限K · 压N`，50 万 Tokens 起切换琥珀提示色、65 万 Tokens 起切换朱红提醒色；降级压次统计按末次 `retryInfos` 有效用量并按 `responseId` 去重，消除重试误报。
   - **防误发「存档换窗」填词守卫**：点击仅向空输入框填入结构化交接话术（**绝不自动按回车发送**），中文输入法组字期静默不打断；已有草稿或编辑器截断时自动退回剪贴板并区分「已复制」与「复制失败」；适配真实桌面端 Lexical/ProseMirror 富文本编辑器读回校验，成功填入后提示「已填入，按回车发送」且不覆写用户剪贴板。
 - **独立审验与实机测试验证**：
-  - 全套 **19 项 Python 单元测试**（含真实 x64 CPU 机器码执行 34 组边界与无符号溢出回归、ARM64 无符号仿真、混合/无名 DB Fail-Safe 测试）与 **10 大项 Node.js Loader 沙盒测试** 100% 通过；
+  - 全套 **21 项 Python 单元测试**（含 Windows `x86_64` 真实 CPU 机器码执行 34 组 37B/34B 边界与无符号溢出测试、ARM64 无符号仿真、混合/无名 DB Fail-Safe 测试、RunOnce 锁串行化与 260 字符上限守卫）与 **10 大项 Node.js Loader 沙盒测试** 100% 通过；
   - 经 Codex（`gpt-6.1-sol`）多轮独立只读审计，并在 Windows 11 `x86_64` 官方 Antigravity `v2.33.0` 桌面端完成重启后真机部署、SQLite 实写上限与桌面实景截图验收。
 
 ---
