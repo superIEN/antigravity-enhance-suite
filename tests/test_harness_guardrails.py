@@ -690,5 +690,408 @@ class Site23TrajectoryCapTests(unittest.TestCase):
                     patch_sites_macos_v36.inspect_v36_sites(raw_macho)
 
 
+class V233AdaptationTests(unittest.TestCase):
+    """Regression tests for Antigravity v2.33.0 x64 binary sites & main.js onPortChanged preservation."""
+
+    def test_v233_site22_37b_and_site20_idempotence(self) -> None:
+        from src import build_ls, patch_sites
+
+        clamp_sym = "google3/third_party/jetski/cortex/utils/utils.ClampCheckpointConfigForModelInfo"
+        orig_s22 = bytes.fromhex("83790c00751f486357140f1f40004881fa409c00007f0431d2eb074881c2c063ffff89510c")
+        prev_s22 = bytes.fromhex("8b510c85d2740881fa00e8030075168b571466837f16047e0681ea0000010089510c0f1f00")
+        patch_s22 = bytes.fromhex("8b571481fa000004007f0883790c007510eb0b81ea0000010039510c730389510c0f1f4000")
+        self.assertEqual(len(orig_s22), 37)
+        self.assertEqual(len(prev_s22), 37)
+        self.assertEqual(len(patch_s22), 37)
+        for body in (orig_s22, prev_s22, patch_s22):
+            found = patch_sites.locate_1m_context_sites(b"\x00" * 32 + body, {clamp_sym: (32, len(body))})
+            self.assertEqual(len(found), 1)
+            self.assertIn("Site 22", found[0][0])
+            self.assertEqual(found[0][1:], (32, orig_s22, patch_s22))
+            self.assertTrue(build_ls._is_valid_site_state(found[0][0], body, orig_s22, patch_s22))
+
+        # Unknown/corrupted 37B sequence must fail closed
+        self.assertFalse(build_ls._is_valid_site_state("Site 22 utils.ClampCheckpointConfigForModelInfo", b"\x90" * 37, orig_s22, patch_s22))
+
+        # Also check 34B x64 (v2.25-v2.32.2) and ARM64 (#0x10 & #0x0c) 3-state upgrade idempotence
+        orig_34 = bytes.fromhex("83780c00751c486353144881fa409c00007f0531d290eb074881c2c063ffff89500c")
+        prev_34 = bytes.fromhex("8b500c85d2740881fa00e8030075138b531466837b16047e0681ea0000010089500c")
+        patch_34 = bytes.fromhex("8b531481fa000004007f0883780c007510eb0b81ea0000010039500c730389500c90")
+        for body in (orig_34, prev_34, patch_34):
+            found = patch_sites.locate_1m_context_sites(b"\x00" * 32 + body, {clamp_sym: (32, len(body))})
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0][1:], (32, orig_34, patch_34))
+            self.assertTrue(build_ls._is_valid_site_state(found[0][0], body, orig_34, patch_34))
+
+        arm_head = bytes.fromhex("cffaedfe") + b"\x00" * 28
+        arm_orig_0c = bytes.fromhex("23010035231480b9048893d27f0004eb6c000054e3031faa02000014630004cb030c00b9")
+        arm_prev_0c = bytes.fromhex("65f84051bf0020716418407ac1000054241480b9854040d19f004171a4c0841a040c00b9")
+        arm_patch_0c = bytes.fromhex("241480b99f0041716c000054c300003504000014854040517f00056b6420851a040c00b9")
+        for body in (arm_orig_0c, arm_prev_0c, arm_patch_0c):
+            found = patch_sites.locate_1m_context_sites(arm_head + body, {clamp_sym: (32, len(body))})
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0][1:], (32, arm_orig_0c, arm_patch_0c))
+
+        # Verify standalone macOS v36 script accepts ARM64 v1 -> v2 in base-sites pass
+        from src import patch_sites_macos_v36
+        self.assertIn(arm_prev_0c, patch_sites.SITE22_PREV_PATCHES)
+        self.assertIn(arm_prev_0c, patch_sites_macos_v36.ARM64_V36_SITES[3].prev_patch_bytes)
+
+        mw2_sym = "google3/third_party/gemini_coder/framework/executor/agentexecutor/agentexecutor.(*AgentExecutor).startMessageWatcherLocked.func2"
+        orig_s20 = bytes.fromhex("0fb654243284d27453488b8424b0000000")
+        patch_s20 = bytes.fromhex("0fb654243284d29090488b8424b0000000")
+        for body in (orig_s20, patch_s20):
+            found = patch_sites.locate_bg_task_timeout_sites(b"\x00" * 32 + body, {mw2_sym: (32, len(body))})
+            self.assertEqual(len(found), 1)
+            self.assertIn("startMessageWatcherLocked.func2", found[0][0])
+            self.assertEqual(found[0][1:], (32, orig_s20, patch_s20))
+
+    def test_site22_v2_arm64_and_db_upgrader_512k_786k(self) -> None:
+        import sqlite3
+        import struct
+        from src import upgrade_db_context_limit as upg
+
+        # Simulate the 9-instruction ARM64 Site 22 v2 sequence (unsigned uint32 csel hs)
+        arm_v2_0c = bytes.fromhex("241480b99f0041716c000054c300003504000014854040517f00056b6420851a040c00b9")
+        words = [struct.unpack_from("<I", arm_v2_0c, i)[0] for i in range(0, 36, 4)]
+        self.assertEqual(len(words), 9)
+
+        def run_arm64(max_input: int, init_limit: int, reserve: int) -> int:
+            w3 = init_limit & 0xFFFFFFFF
+            w4 = 0
+            w5 = 0
+            cfg_lim = w3
+            pc = 0
+            n_flag = z_flag = c_flag = v_flag = False
+            while pc < 9:
+                w = words[pc]
+                if w == 0xB9801424:  # ldrsw x4, [x1, #0x14]
+                    w4 = max_input & 0xFFFFFFFF
+                elif w == 0x7141009F:  # cmp w4, #0x40, lsl #12 (262144)
+                    diff = (w4 - 262144) & 0xFFFFFFFF
+                    n_flag = bool(diff & 0x80000000)
+                    z_flag = diff == 0
+                    c_flag = w4 >= 262144
+                    v_flag = (((w4 ^ 262144) & (w4 ^ diff)) & 0x80000000) != 0
+                elif w == 0x5400006C:  # b.gt +3 insns
+                    if (not z_flag) and (n_flag == v_flag):
+                        pc += 3
+                        continue
+                elif w == 0x350000C3:  # cbnz w3, +6 insns (exit)
+                    if w3 != 0:
+                        pc += 6
+                        continue
+                elif w == 0x14000004:  # b +4 insns (store)
+                    pc += 4
+                    continue
+                elif w == 0x51404085:  # sub w5, w4, #0x10, lsl #12 (65536)
+                    w5 = (w4 - 65536) & 0xFFFFFFFF
+                elif w == 0x6B05007F:  # cmp w3, w5
+                    diff = (w3 - w5) & 0xFFFFFFFF
+                    n_flag = bool(diff & 0x80000000)
+                    z_flag = diff == 0
+                    c_flag = w3 >= w5
+                    v_flag = (((w3 ^ w5) & (w3 ^ diff)) & 0x80000000) != 0
+                elif w == 0x1A852064:  # csel w4, w3, w5, hs (unsigned >=)
+                    w4 = w3 if c_flag else w5
+                elif w == 0xB9000C04:  # str w4, [x0, #0xc]
+                    cfg_lim = w4
+                else:
+                    raise AssertionError(f"Unexpected ARM64 word 0x{w:08x}")
+                pc += 1
+            # Original Go tail upper-bound clamp (uint32)
+            if max_input > 0:
+                lim = max_input - reserve if (0 <= reserve < max_input) else max_input
+                if cfg_lim > lim:
+                    cfg_lim = lim
+            return cfg_lim
+
+        for max_in, init_lim, res, expected in (
+            (1048576, 0, 32768, 983040),
+            (1048576, 256000, 32768, 983040),
+            (1048576, 512000, 32768, 983040),
+            (1048576, 786432, 32768, 983040),
+            (1048576, 983040, 32768, 983040),
+            (1048576, 1008576, 32768, 1008576),
+            (1048576, 1048576, 32768, 1015808),
+            (1048576, 0x80000000, 32768, 1015808),
+            (1048576, 0xFFFFFFFF, 32768, 1015808),
+            (200000, 0, 16384, 183616),
+            (200000, 256000, 16384, 183616),
+            (200000, 180000, 16384, 180000),
+            (262144, 256000, 0, 256000),
+            (2097152, 512000, 32768, 2031616),
+        ):
+            self.assertEqual(run_arm64(max_in, init_lim, res), expected)
+
+        # Verify upgrade_db_context_limit upgrades 512k/786k in 1M DBs, protects 200k Claude even when
+        # KnowledgeConfig=1M, and upgrades 1M gen_metadata rows cleanly in mixed-model DBs
+        def pb_varint(field_num: int, val: int) -> bytes:
+            return upg.encode_varint((field_num << 3) | 0) + upg.encode_varint(val)
+
+        def pb_str(field_num: int, text: str) -> bytes:
+            b = text.encode("utf-8")
+            return upg.encode_varint((field_num << 3) | 2) + upg.encode_varint(len(b)) + b
+
+        def pb_msg(field_num: int, payload: bytes) -> bytes:
+            return upg.encode_varint((field_num << 3) | 2) + upg.encode_varint(len(payload)) + payload
+
+        with tempfile.TemporaryDirectory(prefix="db-upg-512k-") as td:
+            # 1) Pure 1M Gemini DB with 512k & 786k
+            db_1m = Path(td) / "sess_1m.db"
+            em_1m = pb_msg(10, pb_msg(1, pb_str(28, "gemini-4-neon-xhigh") + pb_msg(32, pb_varint(3, 1_048_576))) + pb_msg(2, pb_varint(5, 512_000)))
+            gm_1m = pb_msg(1, pb_msg(9, pb_msg(10, pb_varint(4, 512_000))) + pb_str(19, "gemini-4-neon"))
+            gm_786 = pb_msg(1, pb_msg(9, pb_msg(10, pb_varint(4, 786_432))) + pb_str(19, "gemini-4-argon"))
+            conn = sqlite3.connect(str(db_1m))
+            conn.execute("CREATE TABLE executor_metadata (data BLOB)")
+            conn.execute("CREATE TABLE gen_metadata (data BLOB)")
+            conn.execute("INSERT INTO executor_metadata VALUES (?)", (em_1m,))
+            conn.execute("INSERT INTO gen_metadata VALUES (?)", (gm_1m,))
+            conn.execute("INSERT INTO gen_metadata VALUES (?)", (gm_786,))
+            conn.commit()
+            conn.close()
+
+            res = upg.inspect_or_upgrade_db(db_1m, upgrade_to=983_040)
+            by_tbl = {e["table"]: e for e in res["entries"]}
+            self.assertEqual(by_tbl["executor_metadata"]["replaced"], 1)
+            self.assertEqual(by_tbl["executor_metadata"]["hits_983k"], 1)
+            self.assertEqual(by_tbl["gen_metadata"]["replaced"], 2)
+            self.assertEqual(by_tbl["gen_metadata"]["hits_983k"], 2)
+
+            # 2) 200k Claude DB EVEN WITH KnowledgeConfig=1,048,576 & 512,000 checkpoint must stay 100% protected!
+            db_200k = Path(td) / "sess_200k_with_1m_knowledge.db"
+            em_200k = pb_msg(10, pb_msg(1, pb_str(28, "claude-opus-5-5-high") + pb_msg(32, pb_varint(3, 1_048_576))) + pb_msg(2, pb_varint(5, 512_000)))
+            gm_200k = pb_msg(1, pb_msg(9, pb_msg(10, pb_varint(4, 512_000))) + pb_str(19, "claude-opus-5-5"))
+            conn = sqlite3.connect(str(db_200k))
+            conn.execute("CREATE TABLE executor_metadata (data BLOB)")
+            conn.execute("CREATE TABLE gen_metadata (data BLOB)")
+            conn.execute("INSERT INTO executor_metadata VALUES (?)", (em_200k,))
+            conn.execute("INSERT INTO gen_metadata VALUES (?)", (gm_200k,))
+            conn.commit()
+            conn.close()
+            res2 = upg.inspect_or_upgrade_db(db_200k, upgrade_to=983_040)
+            for e in res2["entries"]:
+                self.assertEqual(e["replaced"], 0)
+
+            # 3) Mixed DB (1 Claude 200k row + 1 Gemini 1M row): only Gemini 1M rows upgraded!
+            db_mix = Path(td) / "sess_mixed.db"
+            conn = sqlite3.connect(str(db_mix))
+            conn.execute("CREATE TABLE executor_metadata (data BLOB)")
+            conn.execute("CREATE TABLE gen_metadata (data BLOB)")
+            conn.execute("INSERT INTO executor_metadata VALUES (?)", (em_200k,))
+            conn.execute("INSERT INTO executor_metadata VALUES (?)", (em_1m,))
+            conn.execute("INSERT INTO gen_metadata VALUES (?)", (gm_200k,))
+            conn.execute("INSERT INTO gen_metadata VALUES (?)", (gm_1m,))
+            conn.commit()
+            conn.close()
+            res3 = upg.inspect_or_upgrade_db(db_mix, upgrade_to=983_040)
+            by_tbl3 = {e["table"]: e for e in res3["entries"]}
+            self.assertEqual(by_tbl3["executor_metadata"]["replaced"], 1)
+            self.assertEqual(by_tbl3["gen_metadata"]["replaced"], 1)
+
+            # 4) Missing model name rows must fail-safe protect even when KnowledgeConfig=1M
+            db_nameless = Path(td) / "sess_nameless.db"
+            em_nameless = pb_msg(10, pb_msg(1, pb_msg(32, pb_varint(3, 1_048_576))) + pb_msg(2, pb_varint(5, 512_000)))
+            gm_nameless = pb_msg(1, pb_msg(9, pb_msg(10, pb_varint(4, 786_432))))
+            conn = sqlite3.connect(str(db_nameless))
+            conn.execute("CREATE TABLE executor_metadata (data BLOB)")
+            conn.execute("CREATE TABLE gen_metadata (data BLOB)")
+            conn.execute("INSERT INTO executor_metadata VALUES (?)", (em_nameless,))
+            conn.execute("INSERT INTO gen_metadata VALUES (?)", (gm_nameless,))
+            conn.commit()
+            conn.close()
+            res4 = upg.inspect_or_upgrade_db(db_nameless, upgrade_to=983_040)
+            for e in res4["entries"]:
+                self.assertEqual(e["replaced"], 0)
+
+    def test_v233_main_js_preserves_mendel_and_actuator_port_sync(self) -> None:
+        from src import build_asar
+
+        sample_main = """
+            onPortChanged: (newPort) => {
+                lsExited = false;
+                mendelFlagSync?.onPortChanged(newPort);
+                const newUrl = `${constants_1.WINDOW_ORIGIN}:${newPort}/`;
+                console.log(`[Auto-Restart] Port changed! Reloading all windows with URL: ${newUrl}`);
+                // Apply cert trust
+                (0, languageServer_1.setupLocalCertTrust)();
+                // Main-process ActuatorService streams follow the LS to its new port.
+                (0, mainClient_1.mainActuatorClientPortChanged)(newPort);
+                if (!HEADLESS) {
+                    // Hub windows only: the desktop HUD keeps its own page.
+                    const windows = (0, utils_1.getLocalHubWindows)();
+                    for (const win of windows) {
+                        void win.loadURL(newUrl);
+                    }
+                }
+            },
+        """
+        patched = build_asar.patch_main_js(sample_main)
+        self.assertIn("lsExited = false;", patched)
+        self.assertIn("mendelFlagSync?.onPortChanged(newPort);", patched)
+        self.assertIn("(0, mainClient_1.mainActuatorClientPortChanged)(newPort);", patched)
+        self.assertIn("global.__agyLastPort === newPort", patched)
+
+    def test_site22_v2_x64_live_cpu_execution(self) -> None:
+        import ctypes
+        import platform
+        import sys
+        from src import patch_sites
+
+        clamp_sym = "google3/third_party/jetski/cortex/utils/utils.ClampCheckpointConfigForModelInfo"
+        orig_37 = bytes.fromhex("83790c00751f486357140f1f40004881fa409c00007f0431d2eb074881c2c063ffff89510c")
+        orig_34 = bytes.fromhex("83780c00751c486353144881fa409c00007f0531d290eb074881c2c063ffff89500c")
+        patch_37 = patch_sites.locate_1m_context_sites(b"\x00" * 32 + orig_37, {clamp_sym: (32, len(orig_37))})[0][3]
+        patch_34 = patch_sites.locate_1m_context_sites(b"\x00" * 32 + orig_34, {clamp_sym: (32, len(orig_34))})[0][3]
+        self.assertEqual(len(patch_37), 37)
+        self.assertEqual(len(patch_34), 34)
+
+        cases = (
+            # (max_input, init_limit, reserve, expected_after_site22, expected_after_tail_clamp)
+            (1_048_576, 0, 65_536, 983_040, 983_040),
+            (1_048_576, 256_000, 65_536, 983_040, 983_040),
+            (1_048_576, 512_000, 65_536, 983_040, 983_040),
+            (1_048_576, 786_432, 65_536, 983_040, 983_040),
+            (1_048_576, 983_040, 65_536, 983_040, 983_040),
+            (1_048_576, 512_000, 262_144, 983_040, 786_432),  # XHigh 256K reserve ceiling
+            (1_048_576, 1_008_576, 32_768, 1_008_576, 1_008_576),
+            (1_048_576, 1_048_576, 32_768, 1_048_576, 1_015_808),
+            (1_048_576, 0x80000000, 32_768, 0x80000000, 1_015_808),
+            (1_048_576, 0xFFFFFFFF, 32_768, 0xFFFFFFFF, 1_015_808),
+            (2_097_152, 512_000, 65_536, 2_031_616, 2_031_616),
+            (262_144, 0, 16_384, 262_144, 245_760),
+            (262_144, 200_000, 16_384, 200_000, 200_000),
+            (200_000, 0, 16_384, 200_000, 183_616),
+            (200_000, 256_000, 16_384, 256_000, 183_616),
+            (200_000, 180_000, 16_384, 180_000, 180_000),
+            (128_000, 0, 16_384, 128_000, 111_616),
+        )
+        self.assertEqual(len(cases) * 2, 34)
+
+        if sys.platform == "win32" and platform.machine().lower() in ("amd64", "x86_64"):
+            kernel32 = ctypes.windll.kernel32
+            kernel32.VirtualAlloc.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32, ctypes.c_uint32]
+            kernel32.VirtualAlloc.restype = ctypes.c_void_p
+            kernel32.VirtualFree.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32]
+            kernel32.VirtualFree.restype = ctypes.c_int
+
+            prologue = bytes.fromhex("53574883ec408954240c894c2434")
+            epilogue = bytes.fromhex("8b44240c4883c4405f5bc3")
+            stubs = [
+                ("x64-37B", prologue + bytes.fromhex("4889e1488d7c2420") + patch_37 + epilogue),
+                ("x64-34B", prologue + bytes.fromhex("4889e0488d5c2420") + patch_34 + epilogue),
+            ]
+            fn_type = ctypes.CFUNCTYPE(ctypes.c_uint32, ctypes.c_int32, ctypes.c_uint32, ctypes.c_uint32)
+            for label, code in stubs:
+                mem = kernel32.VirtualAlloc(None, len(code), 0x3000, 0x40)
+                self.assertTrue(mem, f"VirtualAlloc failed for {label}")
+                try:
+                    ctypes.memmove(mem, code, len(code))
+                    fn = fn_type(mem)
+                    for max_in, init_lim, res, exp_s22, exp_final in cases:
+                        got_s22 = fn(max_in, init_lim, res)
+                        self.assertEqual(
+                            got_s22,
+                            exp_s22,
+                            f"{label} Site 22 mismatch for ({max_in}, {init_lim}): got {got_s22}, expected {exp_s22}",
+                        )
+                        lim = (max_in - res) if (0 <= res < max_in) else max_in
+                        got_final = min(got_s22, lim) if max_in > 0 else got_s22
+                        self.assertEqual(got_final, exp_final, f"{label} tail-clamp mismatch for ({max_in}, {init_lim}, {res})")
+                finally:
+                    kernel32.VirtualFree(mem, 0, 0x8000)
+        else:
+            # Portable byte-level verification when not on Windows x86_64
+            self.assertEqual(patch_37[26:33], bytes.fromhex("39510c730389510c"))
+            self.assertEqual(patch_34[26:33], bytes.fromhex("39500c730389500c"))
+
+    def test_deferred_swap_script_compiles_with_runonce_cleanup(self) -> None:
+        import agy_suite
+
+        compile(agy_suite.DEFERRED_SWAP_SCRIPT, "<DEFERRED_SWAP_SCRIPT>", "exec")
+        self.assertIn("clear_runonce_if_owner", agy_suite.DEFERRED_SWAP_SCRIPT)
+        self.assertIn("AgyDeferredAsarSwap", agy_suite.DEFERRED_SWAP_SCRIPT)
+        self.assertIn("elif terminal_abort:", agy_suite.DEFERRED_SWAP_SCRIPT)
+        # Timeout / pending exit must NOT clear RunOnce
+        self.assertNotIn("\nelse:\n    clear_runonce_if_owner()", agy_suite.DEFERRED_SWAP_SCRIPT)
+
+    def test_deferred_swapper_runonce_retention_locking_and_length(self) -> None:
+        import ast
+        import contextlib
+        import json
+        import agy_suite
+
+        # 1. Compact RunOnce command omits redundant sibling task_file and enforces 260-char Win32 cap
+        deep_swapper = Path(r"C:\Users\Administrator\.gemini\config\agy-themes\antigravity-enhance-suite\.runtime\deferred_asar_swapper.py")
+        runner = r"C:\Users\Administrator\AppData\Local\Programs\Python\Python310\pythonw.exe"
+        cmd = agy_suite.build_windows_runonce_cmd(runner, deep_swapper, "1795142000000-42112")
+        self.assertNotIn("deferred_asar_swap_task.json", cmd)
+        self.assertLessEqual(len(cmd), agy_suite.RUNONCE_MAX_CMD_LEN)
+        self.assertFalse(agy_suite.register_windows_runonce_swap("x" * (agy_suite.RUNONCE_MAX_CMD_LEN + 1)))
+
+        # 2. Extract and run clear_runonce_if_owner in-memory to verify lock-serialized ownership check
+        tree = ast.parse(agy_suite.DEFERRED_SWAP_SCRIPT)
+        fn_node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "clear_runonce_if_owner")
+        fn_code = compile(ast.Module(body=[fn_node], type_ignores=[]), "<clear_runonce_if_owner>", "exec")
+
+        lock_events: list[str] = []
+        reg_deleted: list[str] = []
+        state = {"task_id": "task-B"}
+
+        class FakeLockFile:
+            def open(self, mode):
+                class _Ctx:
+                    def __enter__(self_inner): return self_inner
+                    def __exit__(self_inner, *a): return False
+                    def seek(self_inner, pos): pass
+                    def fileno(self_inner): return 7
+                return _Ctx()
+
+        class FakeMsvcrt:
+            LK_LOCK = 1
+            LK_UNLCK = 2
+            @staticmethod
+            def locking(fd, mode, n):
+                lock_events.append("lock" if mode == 1 else "unlock")
+
+        class FakeTaskFile:
+            def exists(self): return True
+            def read_text(self, encoding="utf-8"): return json.dumps({"task_id": state["task_id"]})
+
+        class FakeWinreg:
+            HKEY_CURRENT_USER = 1
+            KEY_SET_VALUE = 2
+            @staticmethod
+            @contextlib.contextmanager
+            def OpenKey(root, subkey, reserved, access):
+                yield "key"
+            @staticmethod
+            def DeleteValue(key, name):
+                reg_deleted.append(name)
+
+        # Worker A must NOT delete RunOnce once task-B owns task_file
+        ns_a = {
+            "winreg": FakeWinreg,
+            "lock_file": FakeLockFile(),
+            "task_file": FakeTaskFile(),
+            "msvcrt": FakeMsvcrt,
+            "json": json,
+            "my_task_id": "task-A",
+            "RUNONCE_SUBKEY": r"Software\Microsoft\Windows\CurrentVersion\RunOnce",
+            "RUNONCE_VALUE": "AgyDeferredAsarSwap",
+        }
+        exec(fn_code, ns_a)
+        ns_a["clear_runonce_if_owner"]()
+        self.assertEqual(reg_deleted, [])
+        self.assertEqual(lock_events, ["lock", "unlock"])
+
+        # Worker B owns task_file -> deletes RunOnce under lock
+        ns_b = dict(ns_a, my_task_id="task-B")
+        exec(fn_code, ns_b)
+        ns_b["clear_runonce_if_owner"]()
+        self.assertEqual(reg_deleted, ["AgyDeferredAsarSwap"])
+        self.assertEqual(lock_events, ["lock", "unlock", "lock", "unlock"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

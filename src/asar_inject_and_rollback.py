@@ -266,7 +266,7 @@ def patch_ipc_handlers_js(code: str) -> str:
             enabled: true,
             theme: 'native',
             lang: 'zh-std',
-            widescreen: true,
+            widescreen: false,
         },
         windowDefaults: {},
     };
@@ -282,7 +282,7 @@ def patch_ipc_handlers_js(code: str) -> str:
                         enabled: typeof loaded.global.enabled === 'boolean' ? loaded.global.enabled : true,
                         theme: 'native',
                         lang: loaded.global.lang === 'en' ? 'en' : 'zh-std',
-                        widescreen: typeof loaded.global.widescreen === 'boolean' ? loaded.global.widescreen : true,
+                        widescreen: typeof loaded.global.widescreen === 'boolean' ? loaded.global.widescreen : false,
                     },
                     windowDefaults: (loaded.windowDefaults && typeof loaded.windowDefaults === 'object') ? loaded.windowDefaults : {},
                 };

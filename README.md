@@ -1,6 +1,6 @@
-# Antigravity Enhance Suite `v3.6.5`
+# Antigravity Enhance Suite `v3.6.6`
 
-一套面向 Google **Antigravity Desktop IDE**（支持 **macOS Apple Silicon `arm64`** 与 **Windows `x86_64`**，`v2.24.0` / `v2.25.0` / `v2.26.0` / `v2.27.0` / `v2.28.x` / `v2.29.0` / `v2.30.0` / `v2.31.0` / `v2.31.1` / `v2.31.2` / `v2.32.1+`）的全栈稳定性增强、桌面端 1M（`983,040` Tokens）上下文窗口真实解锁、官方 `v2.29.0+` 原生上下文与配额指示器汉化联动、官方 `v2.32.1+` SSH 远程开发窗口零串扰安全隔离、Windows 独占锁后台 WMI 自动换包守护、后台任务/子智能体响应式唤醒死锁双层根治、会话媒体 `18 MB` 自适应预算守护、防退化 Harness 三大工程护栏与深度专业中文汉化套件。
+一套面向 Google **Antigravity Desktop IDE**（支持 **macOS Apple Silicon `arm64`** 与 **Windows `x86_64`**，`v2.24.0` / `v2.25.0` / `v2.26.0` / `v2.27.0` / `v2.28.x` / `v2.29.0` / `v2.30.0` / `v2.31.0` / `v2.31.1` / `v2.31.2` / `v2.32.1` / `v2.32.2` / `v2.33.0+`）的全栈稳定性增强、桌面端 1M 上下文窗口无符号地板解锁（彻底击穿云端 `256K / 512K / 768K` 远程降级封顶）、输入框顶部任务条 1M 上下文护航条与防误发「存档换窗」助手、官方 `v2.29.0+` 原生上下文与配额指示器汉化联动、官方 `v2.32.1+` SSH 远程开发窗口零串扰安全隔离、Windows 独占锁后台 WMI 自动换包守护、后台任务/子智能体响应式唤醒死锁双层根治、会话媒体 `18 MB` 自适应预算守护、防退化 Harness 三大工程护栏与深度专业中文汉化套件。
 
 > 版本演进与更新详情请参阅 [CHANGELOG.md](./CHANGELOG.md) 或仓库 [Releases](https://github.com/superIEN/antigravity-enhance-suite/releases) 页面。
 
@@ -43,10 +43,10 @@ python3 agy_suite.py install --hot-inject
 ## 核心特性概览
 
 1. **Go 语言服务端（macOS `language_server` / Windows `language_server*.exe`）23 项（30 处位点）二进制级增强**
-   - **桌面端 1M（`983,040` Tokens）上下文真实解锁、200k 模型零回退保护与 `256 MB` 轨迹物理体积扩容（Sites 22–23）**：
-     - 针对桌面端 `applyFeatureProviderCheckpointOverrideConfig` 强行注入 `MaxTokenLimit = 256,000` 导致每 ~250k 自动触发有损压缩（`<CONTEXT_SUMMARY>`）的根因，在 `utils.ClampCheckpointConfigForModelInfo`（`Site 22`）植入原地补丁：对 1M 模型精确解锁至 **`983,040` Tokens**（`1,048,576 - 65,536`），对 `200,000` 模型（Claude 系列）在 `w3 == 0` 与 `w3 == 256,000` 下均保持 **`200,000` Tokens** 零回退。
+   - **桌面端 1M 上下文无符号地板解锁、200k 模型零回退保护与 `256 MB` 轨迹物理体积扩容（Sites 22–23）**：
+     - 针对桌面端云端特性开关（`applyFeatureProviderCheckpointOverrideConfig`）陆续将 `MaxTokenLimit` 压低至 `256,000` / `512,000` 导致过早触发有损压缩（`<CONTEXT_SUMMARY>`）的根因，在 `utils.ClampCheckpointConfigForModelInfo`（`Site 22 v2`）植入无符号下限地板补丁（Windows `x86_64` `jae` + macOS `ARM64` `csel hs`）：对 `MaxInputTokens > 262,144` 的 1M+ 模型一律将初值抬升至 `>= MaxInputTokens - 65,536`（`983,040`），随后由原厂上限夹紧自动贴合模型真实 `MaxOutputTokens` 安全天花板（64K 输出档实测拉满 **`983,040`**，XHigh 256K 输出预留档实测拉满 **`786,432`**，较 512K 封顶暴增 +274K 且不撞 1M 硬墙）；对 `200,000` 模型（Claude 系列等）继续 100% 保持 **`200,000` Tokens** 零回退。
      - **新增 `Site 23 ((*TruncationDecorator).truncateIfTooLarge)` 单会话轨迹物理字节上限扩容（`25 MB -> 256 MB`）**：解除官方 `TruncationDecorator` 硬编码的 `0x01900000`（`25 MB`）单会话物理体积红线（将其扩容至 `0x10000000` = **`256 MB`**），防止含大量高清图片、立绘或 `.mp3` 音频母带的多媒体重度会话在 Token 远未达 1M 时因物理体积触碰 `25 MB` 而提前调用 `utils.ClearTrajectoryStep`（`CORTEX_STEP_STATUS_CLEARED`）清空旧步骤并连带触发检查点压缩。
-     - 配套提供 `src/upgrade_db_context_limit.py`，基于结构化 Protobuf Wire 语法树解析、在线备份与 `BEGIN IMMEDIATE` 事务，将存量 `.db` 会话的 `executor_metadata`（`$.10.2.5`）与 `gen_metadata`（`$.1.9.10.4`）从 `256,000` 等长无损升级至 `983,040`。
+     - 配套提供 `src/upgrade_db_context_limit.py`，基于结构化 Protobuf Wire 语法树解析、逐行模型名 Fail-Safe 校验、在线备份与 `BEGIN IMMEDIATE` 事务，将存量 Gemini 1M `.db` 会话的 `executor_metadata`（`$.10.2.5`）与 `gen_metadata`（`$.1.9.10.4`）从 `256,000` / `512,000` / `786,432` 等长无损升级至 `983,040`（非 Gemini 或缺失模型名行严格只读跳过）。
    - **长连接防断流与 HTTP/2 KeepAlive 优化（Sites 1–3）**：显式开启自定义 `TLSClientConfig` 下的 HTTP/2 协议协商，配置 `SendPing=20s` / `PingTimeout=80s`（stdlib）与 `ReadIdle=25s` / `PingTimeout=50s`（`go_net/http2`），消除 120s 静默断流（`unexpected EOF`）。
    - **后台任务/子智能体完成静默唤醒失败双层根治（Sites 15–16, 19–21）**：
      - **Sites 15–16**：非守护后台命令默认 60s `NotificationTimeoutSeconds` 主动唤醒（兼容 `v2.28.0` `waitInBackground`）；
@@ -55,7 +55,7 @@ python3 agy_suite.py install --hot-inject
      - **Site 21 (`(*AgentExecutor).startMessageWatcherLocked.func2.1-range1`)**：穿透 `SubagentsAndTasksIdle` 与 `*prevIdle` 边沿锁，消除并发后台任务完成时的唤醒信号丢失。
    - **多模态媒体压缩、流式 UTF-8 容错、15/16 槽位自动重试与 OAuth2 20m 预刷新（Sites 7–14, 17–18）**。
 
-2. **Electron 宿主（`app.asar`）8 项受控生命周期加固（兼容 macOS & Windows `v2.24.0–v2.32.1+`）**
+2. **Electron 宿主（`app.asar`）8 项受控生命周期加固（兼容 macOS & Windows `v2.24.0–v2.33.0+`）**
    - **`v2.29.0–v2.30.0` `BaseWindow` + `WebContentsView` (`hubWcv`) 宿主适配**：全面兼容 `getHubWindows()`、`getHubWebContents(win)` 与 `resolveHubWindowFromWebContents(wc)`，并在Windows 在线安装遭遇 `app.asar` 独占锁（`[WinError 32]`）时自动拉起脱离 Job Object 的 **WMI 后台延迟原子换包守护（`deferred_asar_swapper.py`）**。
    - **`storage.js`**：原生兼容 `v2.30.0` 新增的 `this.writeChain` 串行写入队列、`.corrupt-*.bak` 损坏恢复与 `getItemsSync()` 同步读取接口（在旧版上提供完整写入队列补丁），默认注入 `contextUsageIndicatorEnabled: "true"`（尊重用户手动开关选择）。
    - **`languageServer.js`**：子进程局部句柄追踪、`timer` TDZ 修复、`child.kill('SIGKILL')` 有界终止、`stderr` 1500ms 有界排空与端口冲突自动回退动态端口 `0`。
@@ -65,6 +65,8 @@ python3 agy_suite.py install --hot-inject
 3. **深度专业中文汉化、集合差分看门狗与媒体预算守护（`src/agy-enhance-loader.js` & `src/compress_tempmedia.py`）**
    - **按 ID 集合差分（Set-Diff）+ 双源 1:1 归一的响应式唤醒看门狗**：精确捕获同数量任务替换（`{bg-a, bg-b} -> {bg-b, bg-c}`），折叠 `backgroundTasksUpdate`/`pendingAgentMessagesUpdate` 与 `globalThis.__asu` 稀疏补丁，将 Provider 行与运行中 `invokeSubagent` 步骤 1:1 归一为 `step:N`，并在 Mission HUD 顶栏右侧提供 `#m-wd`（`后台 N` / `等待接管` / `已接管`）实时状态胶囊。
    - **`WeakMap` React Fiber 缓存（含空值命中）与 250ms HUD 合并节流**。
+   - **输入框顶部任务条 1M 上下文护航条（`#agy-ctx-guard`，方案三默认，零底栏占位）**：收在输入框上方 Mission HUD 顶栏右上角，实时展示 `已用K / 上限K · 压N`（50 万起琥珀色、65 万起朱红色）与防误发 **「存档换窗」** 按钮——点击仅往空输入框填入结构化交接话术（绝不自动发送、绝不覆盖已有草稿、中文输入法组字期静默、绝不误折叠任务条），富文本/草稿冲突时自动安全退回剪贴板；纯问答无任务阶段时亦保持顶栏紧凑可见。
+   - **原生宽度零覆盖**：尊重官方对话与阅读宽度布局，全面移除旧版宽屏 CSS 覆写。
    - **`983,040` 上下文计量环（`#agy-ctx-ring-pill`）、思考流单句定性摘要（含 `nextToolDesc` 推导）与 `<subagent_message>` 裸标签净化**。
    - **会话媒体库 `18 MB` Base64 二阶段自适应预算压缩器（`src/compress_tempmedia.py`）**：基于 `_bak_orig` 无损备份执行自适应重编码，带 `fcntl.flock` 目录锁、白底 Alpha 合成、EXIF 旋转校正与非图视频媒体诚实核算。
 
@@ -89,7 +91,7 @@ antigravity-enhance-suite/
 │   ├── asar_inject_and_rollback.py       # macOS app.asar 隔离构建、原子安装、CDP 热注入与多目标回滚工具
 │   ├── agy-enhance-loader.js             # 渲染层深度汉化、集合差分看门狗、#m-wd 态势托盘与 983k 上下文环运行时
 │   ├── hot_inject.py                     # 基于 Chrome DevTools Protocol (CDP) 的跨平台在线热注入工具
-│   ├── upgrade_db_context_limit.py       # SQLite (.db) 结构化 Protobuf Wire 树 256k -> 983,040 无损升级器
+│   ├── upgrade_db_context_limit.py       # SQLite (.db) 结构化 Protobuf Wire 树 256k/512k/786k -> 983,040 Fail-Safe 无损升级器
 │   └── compress_tempmedia.py             # 会话级 18MB Base64 二阶段自适应预算媒体压缩与守护工具
 ├── guardrails/
 │   ├── harness_guardrails.py             # AGY 防退化三项护栏统一正常入口 CLI
@@ -98,8 +100,8 @@ antigravity-enhance-suite/
 │   ├── substance_verifier.py             # 护栏 3：防旁路死字典假接线、AST 调用图与受控进程实证验收器
 │   └── entrypoint_registry.json          # 不可变正常入口登记表
 ├── tests/
-│   ├── test_harness_guardrails.py        # 护栏 1–4 全套 12 组正反例单元测试
-│   ├── verify_loader_sandbox.mjs         # 桌面增强 Loader 9 大项 + Grok 10 项极限并发探针沙箱自验套件
+│   ├── test_harness_guardrails.py        # 护栏与 v2.33.0 / Site 22 v2 / RunOnce 全套 21 项单元测试
+│   ├── verify_loader_sandbox.mjs         # 桌面增强 Loader 10 大项（含方案三护航条与 Grok 10 项极限并发探针）沙箱自验套件
 │   └── fixtures/
 │       └── real_transcript_headers_fixture.jsonl
 ├── docs/
@@ -124,7 +126,7 @@ python3 agy_suite.py inspect
 python3 agy_suite.py install --hot-inject
 ```
 
-### 3. 将存量桌面端会话 `.db` 从 `256,000` 结构化无损升级至 `983,040` Tokens
+### 3. 将存量桌面端 Gemini 1M 会话 `.db` 从 `256k / 512k / 786k` 结构化无损升级至 `983,040` Tokens
 ```bash
 python3 src/upgrade_db_context_limit.py --all --upgrade-to 983040
 ```

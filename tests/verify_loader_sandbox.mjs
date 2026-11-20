@@ -4,7 +4,7 @@
  *
  * 完整实测验证以下 8 大核心验收条件：
  * 1. 界面中文化与动态流状态翻译（含 trackedTextNodes / lastWritten 防 MutationObserver 死循环守卫 + Alt+L 无损还原）；
- * 2. 宽屏排版（html[data-agy-widescreen="1"]）与阅读舒适度样式（#agy-enhance-scoped-style）；
+ * 2. 原生宽度零覆盖守卫（停用宽屏 CSS 接管）与基础样式挂载（#agy-enhance-scoped-style）；
  * 3. 真实步骤轨迹 HUD（#agy-mission-hud-host Shadow DOM，基于实际 stepsInSlice 轨迹与 GetModelResponse）；
  * 4. <subagent_message> / Ahmad 等子 Agent 唤醒裸标签与内部包装文本清洗；
  * 5. 前端响应式唤醒看门狗（evaluateReactiveWakeupWatchdog / triggerNativeSystemWakeupRpc / getWakeupWatchdogState 三大触发条件与 45s 冷却守卫）；
@@ -799,8 +799,8 @@ async function runVerification() {
     __AGY_BRIDGE__: bridgeMock,
     getComputedStyle: (el) => ({
       display: el?.style?.getPropertyValue('display') || 'block',
-      visibility: 'visible',
-      opacity: '1',
+      visibility: el?.style?.getPropertyValue('visibility') || 'visible',
+      opacity: el?.style?.getPropertyValue('opacity') || '1',
       color: 'rgb(240, 240, 240)',
       getPropertyValue: (prop) => (prop === '--background' ? '#131313' : '#131313')
     }),
@@ -879,16 +879,20 @@ async function runVerification() {
   );
 
   // -------------------------------------------------------------------------
-  // Verification 2: Widescreen Typography & Comfort CSS (including CSS backslash fix)
+  // Verification 2: Native Width Preservation (No Widescreen Override) & Scoped CSS
   // -------------------------------------------------------------------------
   assert.equal(
     htmlEl.getAttribute('data-agy-widescreen'),
-    '1',
-    'html[data-agy-widescreen="1"] must be enabled by default'
+    null,
+    'html[data-agy-widescreen] must stay unset even when legacy prefs carry widescreen=true'
   );
   const scopedStyle = doc.getElementById('agy-enhance-scoped-style');
   assert.ok(scopedStyle, '#agy-enhance-scoped-style must be mounted');
-  assert.match(scopedStyle.textContent, /--max-conversation-width:\s*min\(92vw,\s*1480px\)/);
+  assert.doesNotMatch(
+    scopedStyle.textContent,
+    /--max-conversation-width|data-agy-widescreen/,
+    'Widescreen override CSS rules must not be injected'
+  );
   assert.match(scopedStyle.textContent, /PingFang SC/);
   assert.ok(
     scopedStyle.textContent.includes('[title*="\\\\AppData\\\\Local\\\\Temp\\\\agy_"]'),
@@ -898,7 +902,7 @@ async function runVerification() {
     scopedStyle.textContent.includes('[title*="AppData/Local/Temp/agy_"]'),
     'CSS selector must also include forward-slash Windows temp path selector'
   );
-  console.log('  [PASS 2] 宽屏学术排版 (data-agy-widescreen="1")、macOS 字体栈与 CSS 反斜杠转义核验通过');
+  console.log('  [PASS 2] 原生宽度零覆盖（已摘除宽屏补丁）、macOS 字体栈与 CSS 反斜杠转义核验通过');
 
   // -------------------------------------------------------------------------
   // Verification 3: Real Step Trajectory Mission HUD (#agy-mission-hud-host)
@@ -1557,11 +1561,30 @@ async function runVerification() {
     'setWindowTitleBarColors must skip setTitleBarOverlay on macOS (MacIntel)'
   );
   currentPlatform = 'Win32';
+  let altWPrevented = false;
   win.dispatchEvent({
     type: 'keydown',
     altKey: true,
     key: 'w',
     code: 'KeyW',
+    preventDefault: () => {
+      altWPrevented = true;
+    }
+  });
+  assert.equal(altWPrevented, false, 'Alt+W widescreen hotkey must stay removed');
+  assert.equal(htmlEl.getAttribute('data-agy-widescreen'), null, 'Alt+W must not re-enable data-agy-widescreen');
+  win.dispatchEvent({
+    type: 'keydown',
+    altKey: true,
+    key: 'l',
+    code: 'KeyL',
+    preventDefault: () => {}
+  });
+  win.dispatchEvent({
+    type: 'keydown',
+    altKey: true,
+    key: 'l',
+    code: 'KeyL',
     preventDefault: () => {}
   });
   assert.ok(
@@ -1572,12 +1595,223 @@ async function runVerification() {
     '  [PASS 8] 会话 e93889f8 思考流单句摘要 (含 nextToolDesc 14 行上下文推导)/点击展开修复与 macOS/Windows 标题栏平台守卫核验通过'
   );
 
+  // -------------------------------------------------------------------------
+  // Verification 9: Option 3 Context Guard Chip in Mission HUD Top-Right (#agy-ctx-guard) & One-Click Handoff Filler
+  // -------------------------------------------------------------------------
+  // 9a. Option 3 mounts inside Mission HUD Shadow DOM top-right (zero footer footprint, never document.body, never position: fixed)
+  const hudHost9 = doc.getElementById('agy-mission-hud-host');
+  assert.ok(hudHost9 && hudHost9.shadowRoot, '#agy-mission-hud-host must be mounted for Option 3');
+  assert.equal(doc.getElementById('agy-ctx-guard'), null, 'Option 3 must NOT mount #agy-ctx-guard inside composer footer');
+  const guardChip = hudHost9.shadowRoot.getElementById('agy-ctx-guard');
+  const guardText = hudHost9.shadowRoot.getElementById('agy-ctx-guard-text');
+  const guardBtn = hudHost9.shadowRoot.getElementById('agy-ctx-guard-btn');
+  const hudBox9 = hudHost9.shadowRoot.getElementById('m-box');
+  const hudTop9 = hudHost9.shadowRoot.getElementById('m-top');
+  assert.ok(guardChip && guardText && guardBtn, '#agy-ctx-guard chip, text and button must live in Mission HUD shadowRoot');
+  assert.equal(guardChip.style.display, 'inline-flex', 'Option 3 guard chip must be visible in HUD top-right');
+  assert.doesNotMatch(
+    hudHost9.shadowRoot.innerHTML.slice(hudHost9.shadowRoot.innerHTML.indexOf('.ctx-guard')),
+    /position\s*:\s*fixed/i,
+    'Option 3 HUD guard CSS must never use position: fixed'
+  );
+
+  // 9b. Threshold colors & text for 499,999 (normal), 500,000 (amber), 650,000 (red) + compaction count (2 steep drops)
+  const prevAsu = context.__asu;
+  context.__asu = {
+    [TEST_CID]: [{ update: { compactionInfo: { compactedAtStepIndices: [120, 410] } } }]
+  };
+  const setFiberTokens = (used) => {
+    liveAgentState.trajectorySlice.stepsInSlice[1].metadata.modelUsage = {
+      inputTokens: 1000,
+      cacheReadTokens: used - 1000,
+      outputTokens: 0,
+      responseId: `req-${used}`
+    };
+    win.dispatchEvent({ type: 'resize' });
+  };
+  setFiberTokens(499999);
+  assert.equal(guardChip.getAttribute('data-level'), 'normal', '499,999 tokens must stay normal');
+  assert.match(guardText.textContent, /500K \/ 1000K · 压2/);
+
+  setFiberTokens(500000);
+  assert.equal(guardChip.getAttribute('data-level'), 'amber', '500,000 tokens must turn amber');
+
+  setFiberTokens(650000);
+  assert.equal(guardChip.getAttribute('data-level'), 'red', '650,000 tokens must turn red');
+  assert.match(guardText.textContent, /650K \/ 1000K · 压2/);
+  context.__asu = prevAsu;
+
+  // 9c. Coexistence: official indicator & backup ring keep full uncluttered composer footer; clicking guard button never toggles HUD collapse
+  const indInFooter = doc.createElement('button');
+  indInFooter.setAttribute('data-testid', 'context-usage-indicator');
+  indInFooter._rect = { left: 660, top: 684, right: 690, bottom: 708, width: 30, height: 24 };
+  rightGroup.insertBefore(indInFooter, turboBtn);
+  win.dispatchEvent({ type: 'resize' });
+  assert.equal(guardChip.style.display, 'inline-flex', 'Option 3 guard chip must remain visible alongside official footer indicator');
+  assert.equal(doc.getElementById('agy-ctx-guard'), null, 'Footer must stay completely free of #agy-ctx-guard');
+  indInFooter.remove();
+
+  ringPill._rect = { left: 0, top: 0, right: 92, bottom: 24, width: 92, height: 24 };
+  win.dispatchEvent({ type: 'resize' });
+  assert.equal(ringPill.style.display, 'inline-flex', 'Backup ring pill must enjoy uncluttered footer space in Option 3');
+
+  // 9d. Click handoff button: fills textarea, protects non-empty draft via clipboard, NEVER auto-sends, NEVER collapses Mission HUD
+  const copiedTexts = [];
+  win.navigator.clipboard = {
+    writeText: async (t) => {
+      copiedTexts.push(t);
+    }
+  };
+
+  // Case 1: textarea editor + HUD collapse-isolation check
+  const mockTa = doc.createElement('textarea');
+  mockTa.value = '';
+  mockTa._rect = { left: 120, top: 610, right: 860, bottom: 670, width: 740, height: 60 };
+  let taInputEvents = 0;
+  let taKeydownEvents = 0;
+  mockTa.addEventListener('input', () => { taInputEvents += 1; });
+  mockTa.addEventListener('keydown', () => { taKeydownEvents += 1; });
+  agentInputBox.insertBefore(mockTa, footerEl);
+
+  const collapsedBeforeClick = hudBox9.classList.contains('collapsed');
+  let stoppedProp = false;
+  guardBtn.dispatchEvent({
+    type: 'click',
+    preventDefault: () => {},
+    stopPropagation: () => { stoppedProp = true; }
+  });
+  assert.equal(stoppedProp, true, 'Guard button click must call stopPropagation to avoid toggling Mission HUD');
+  // Even if an event targets guardBtn on #m-top directly, #m-top guard must refuse to collapse HUD
+  hudTop9.dispatchEvent({ type: 'click', target: guardBtn, preventDefault: () => {}, stopPropagation: () => {} });
+  assert.equal(hudBox9.classList.contains('collapsed'), collapsedBeforeClick, 'Clicking guard button must NEVER toggle Mission HUD collapse state');
+  assert.match(mockTa.value, /存档换窗/, 'Textarea must be filled with handoff prompt');
+  assert.equal(taInputEvents, 1, 'Textarea fill must dispatch input event');
+  assert.equal(taKeydownEvents, 0, 'Handoff button must NEVER synthesize Enter/send keydown');
+
+  // Case 2: Existing draft must NOT be overwritten -> falls back to clipboard
+  mockTa.value = '主人正在打的半截草稿';
+  guardBtn.dispatchEvent({ type: 'click', preventDefault: () => {}, stopPropagation: () => {} });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(mockTa.value, '主人正在打的半截草稿', 'Existing user draft must NOT be overwritten');
+  assert.equal(copiedTexts.length, 1, 'Existing draft guard must copy handoff prompt to clipboard');
+  assert.match(guardBtn.textContent, /已复制/, 'Button text must indicate clipboard fallback');
+
+  // Case 2b: Rejected clipboard write must NOT claim 已复制
+  win.navigator.clipboard = { writeText: async () => { throw new Error('clipboard denied'); } };
+  guardBtn.dispatchEvent({ type: 'click', preventDefault: () => {}, stopPropagation: () => {} });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.match(guardBtn.textContent, /复制失败/, 'Rejected clipboard must show 复制失败, not 已复制');
+
+  // Case 2c: Partial single-line acceptance OR tail truncation by editor must fall back to clipboard (not falsely report filled)
+  win.navigator.clipboard = { writeText: async (t) => { copiedTexts.push(t); } };
+  mockTa.value = '';
+  const truncateHandler = () => { mockTa.value = '请现在收尾并存档换窗：'; };
+  mockTa.addEventListener('input', truncateHandler);
+  guardBtn.dispatchEvent({ type: 'click', preventDefault: () => {}, stopPropagation: () => {} });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(copiedTexts.length, 2, 'Truncated single-line prompt must trigger clipboard fallback');
+  mockTa.removeEventListener('input', truncateHandler);
+
+  mockTa.value = '';
+  const tailTruncHandler = () => {
+    mockTa.value = mockTa.value.replace(/存档完成前不开新活。$/, '').trim();
+  };
+  mockTa.addEventListener('input', tailTruncHandler);
+  guardBtn.dispatchEvent({ type: 'click', preventDefault: () => {}, stopPropagation: () => {} });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(copiedTexts.length, 3, 'Tail-truncated prompt (missing final clause) must trigger clipboard fallback');
+  mockTa.removeEventListener('input', tailTruncHandler);
+  mockTa.remove();
+
+  // Case 2f: Fallback compaction count must honor final retryInfos usage and deduplicate repeated responseId
+  const prevFetchMeta = bridgeMock.fetchGeneratorMetadata;
+  bridgeMock.fetchGeneratorMetadata = async ({ generatorMetadataOffset }) => {
+    if (generatorMetadataOffset === 0) {
+      return {
+        generatorMetadata: [
+          {
+            chatModel: {
+              usage: { inputTokens: 1000, cacheReadTokens: 499000, outputTokens: 0, responseId: 'resp-A' }
+            }
+          },
+          {
+            chatModel: {
+              usage: { inputTokens: 1000, cacheReadTokens: 99000, outputTokens: 0, responseId: 'resp-B-init' },
+              retryInfos: [
+                { usage: { inputTokens: 1000, cacheReadTokens: 509000, outputTokens: 0, responseId: 'resp-B-final' } }
+              ]
+            }
+          },
+          {
+            chatModel: {
+              usage: { inputTokens: 1000, cacheReadTokens: 99000, outputTokens: 0, responseId: 'resp-A' }
+            }
+          }
+        ]
+      };
+    }
+    return {};
+  };
+  const prevAsu2f = context.__asu;
+  context.__asu = {};
+  currentNowMs += 5000;
+  doc.dispatchEvent({ type: 'visibilitychange' });
+  await new Promise((r) => setTimeout(r, 25));
+  win.dispatchEvent({ type: 'resize' });
+  assert.match(
+    guardText.textContent,
+    /压0/,
+    'Fallback compaction count must pick final retry usage and skip duplicate responseId (no false 压1)'
+  );
+  context.__asu = prevAsu2f;
+  bridgeMock.fetchGeneratorMetadata = prevFetchMeta;
+
+  // Case 2g: Pure chat session with zero task steps still keeps HUD top bar visible with Option 3 guard chip
+  const savedSteps = liveAgentState.trajectorySlice.stepsInSlice;
+  const savedTotalSteps = liveAgentState.trajectorySlice.totalStepsLength;
+  const savedStorageCache = storageMap.get('agy.v3.llmMissionCache.v1');
+  liveAgentState.trajectorySlice.stepsInSlice = [];
+  liveAgentState.trajectorySlice.totalStepsLength = 0;
+  win.dispatchEvent({ type: 'resize' });
+  assert.equal(hudHost9.style.display, 'block', 'Option 3 must keep HUD top bar visible whenever token usage exists even without task steps');
+  assert.equal(guardChip.style.display, 'inline-flex', 'Option 3 guard chip must stay visible when session has no task list');
+  liveAgentState.trajectorySlice.stepsInSlice = savedSteps;
+  liveAgentState.trajectorySlice.totalStepsLength = savedTotalSteps;
+  if (savedStorageCache !== undefined) storageMap.set('agy.v3.llmMissionCache.v1', savedStorageCache);
+  win.dispatchEvent({ type: 'resize' });
+
+  // Case 3: contenteditable editor via execCommand('insertText'), including Lexical-style textContent that drops \n between blocks
+  const mockCe = doc.createElement('div');
+  mockCe.setAttribute('contenteditable', 'true');
+  mockCe.textContent = '';
+  mockCe._rect = { left: 120, top: 610, right: 860, bottom: 670, width: 740, height: 60 };
+  agentInputBox.insertBefore(mockCe, footerEl);
+  doc.execCommand = (cmd, _ui, val) => {
+    if (cmd === 'insertText') {
+      // Simulate real Lexical/ProseMirror contenteditable where paragraph blocks lose \n in textContent
+      mockCe.textContent = String(val).replace(/\n+/g, ' ');
+      return true;
+    }
+    return false;
+  };
+  const copiedBeforeCe = copiedTexts.length;
+  guardBtn.dispatchEvent({ type: 'click', preventDefault: () => {}, stopPropagation: () => {} });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.match(mockCe.textContent, /存档换窗/, 'ContentEditable must be filled via execCommand(insertText)');
+  assert.equal(copiedTexts.length, copiedBeforeCe, 'Full Lexical contenteditable fill must NOT fall back to clipboard');
+  assert.match(guardBtn.textContent, /已填入/, 'Successful fill must show 已填入 rather than 已复制');
+  mockCe.remove();
+
+  console.log('  [PASS 9] 方案三任务顶栏右上角上下文护航条 (#agy-ctx-guard) 零底栏占位、防误折叠与填词守卫 100% 通过');
+
   // Cleanly dispose loader and verify restoration
   win.__AGY_V3__.dispose();
   assert.equal(win.__AGY_V3__.isDisposed(), true, 'Loader must report disposed=true after dispose()');
+  assert.equal(doc.getElementById('agy-mission-hud-host'), null, 'dispose() must cleanly remove #agy-mission-hud-host');
+  assert.equal(doc.getElementById('agy-ctx-guard'), null, 'dispose() must leave zero #agy-ctx-guard residue');
   assert.equal(uiBtnText.nodeValue, 'New Conversation', 'dispose() must restore original English text');
-  console.log('  [PASS 9] Mode C 挂起与无损卸载还原 (dispose) 核验通过');
-  console.log('\n✅ 全部 9 大项（含 Grok 4.7 xhigh 审计新增边界断言）100% 通过！');
+  console.log('  [PASS 10] Mode C 挂起与无损卸载还原 (dispose) 核验通过');
+  console.log('\n✅ 全部 10 大项（含 Grok 4.7 xhigh 审计与方案三上下文护航条边界断言）100% 通过！');
 }
 
 runVerification().catch((err) => {

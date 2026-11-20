@@ -5,7 +5,7 @@
  * - MutationObserver strictly filters out all [id^="agy-"] self-mutations (zero ring self-trigger loop).
  * - True multi-page generatorMetadata pagination (reachedTail only on batch.length === 0) + global concurrency cap.
  * - Native CortexStepStatus enum mapping (DONE=3, INVALID=4, CANCELED=6, ERROR=7, INTERRUPTED=12) via stepsUpdate.steps.
- * - Native Settings integration (Settings -> Appearance: Interface Language & Widescreen Academic Typography).
+ * - Native Settings integration (Settings -> Appearance: Interface Language).
  */
 (function () {
   const VERSION = '3.6.0-macos-merged';
@@ -40,7 +40,7 @@
     enabled: true,
     theme: 'native',
     lang: 'zh-std',
-    widescreen: true
+    widescreen: false
   };
 
   let localRevision = 0;
@@ -1722,24 +1722,6 @@
       document.head.appendChild(styleEl);
     }
     styleEl.textContent = `
-      html[data-agy-widescreen="1"] {
-        --max-conversation-width: min(92vw, 1480px) !important;
-      }
-      html[data-agy-widescreen="1"] .max-w-3xl,
-      html[data-agy-widescreen="1"] .max-w-2xl,
-      html[data-agy-widescreen="1"] .max-w-4xl {
-        max-width: min(92vw, 1480px) !important;
-      }
-      html[data-agy-widescreen="1"] .prose {
-        max-width: 100% !important;
-        line-height: 1.78 !important;
-        letter-spacing: 0.012em !important;
-      }
-      html[data-agy-widescreen="1"] .prose table {
-        display: table !important;
-        width: 100% !important;
-      }
-
       body:has([data-testid="context-usage-indicator"]) #agy-ctx-ring-pill {
         display: none !important;
       }
@@ -1791,6 +1773,102 @@
         height: 14px;
         transform: rotate(-90deg);
         flex-shrink: 0;
+      }
+
+      /* Inline 1M Context Guard Chip & Handoff Button (never position: fixed) */
+      #agy-ctx-guard {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        height: 22px;
+        padding: 0 6px;
+        margin-right: 4px;
+        border-radius: 6px;
+        font-family: "JetBrains Mono", "SF Mono", "Consolas", "PingFang SC", "Microsoft YaHei", monospace, system-ui;
+        font-size: 11px;
+        font-weight: 500;
+        line-height: 1;
+        white-space: nowrap;
+        user-select: none;
+        flex-shrink: 0;
+        background: rgba(255, 255, 255, 0.05);
+        color: var(--muted-foreground, #a1a1aa);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      html[data-agy-color-mode="light"] #agy-ctx-guard,
+      body.theme-light #agy-ctx-guard {
+        background: #f4f4f5;
+        color: #52525b;
+        border-color: #e4e4e7;
+      }
+      #agy-ctx-guard[data-level="amber"] {
+        background: rgba(245, 158, 11, 0.16);
+        color: #fbbf24;
+        border-color: rgba(245, 158, 11, 0.38);
+      }
+      html[data-agy-color-mode="light"] #agy-ctx-guard[data-level="amber"],
+      body.theme-light #agy-ctx-guard[data-level="amber"] {
+        background: #fffbeb;
+        color: #b45309;
+        border-color: #fcd34d;
+      }
+      #agy-ctx-guard[data-level="red"] {
+        background: rgba(239, 68, 68, 0.18);
+        color: #f87171;
+        border-color: rgba(239, 68, 68, 0.45);
+      }
+      html[data-agy-color-mode="light"] #agy-ctx-guard[data-level="red"],
+      body.theme-light #agy-ctx-guard[data-level="red"] {
+        background: #fef2f2;
+        color: #b91c1c;
+        border-color: #fca5a5;
+      }
+      #agy-ctx-guard-btn {
+        font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-size: 10.5px;
+        font-weight: 600;
+        line-height: 1.4;
+        padding: 1px 6px;
+        border-radius: 4px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(255, 255, 255, 0.08);
+        color: inherit;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      html[data-agy-color-mode="light"] #agy-ctx-guard-btn,
+      body.theme-light #agy-ctx-guard-btn {
+        background: #ffffff;
+        border-color: #d4d4d8;
+        color: #3f3f46;
+      }
+      #agy-ctx-guard[data-level="amber"] #agy-ctx-guard-btn {
+        background: rgba(245, 158, 11, 0.28);
+        border-color: rgba(251, 191, 36, 0.55);
+        color: #fef3c7;
+      }
+      html[data-agy-color-mode="light"] #agy-ctx-guard[data-level="amber"] #agy-ctx-guard-btn,
+      body.theme-light #agy-ctx-guard[data-level="amber"] #agy-ctx-guard-btn {
+        background: #f59e0b;
+        border-color: #d97706;
+        color: #ffffff;
+      }
+      #agy-ctx-guard[data-level="red"] #agy-ctx-guard-btn {
+        background: rgba(239, 68, 68, 0.34);
+        border-color: rgba(248, 113, 113, 0.60);
+        color: #fee2e2;
+      }
+      html[data-agy-color-mode="light"] #agy-ctx-guard[data-level="red"] #agy-ctx-guard-btn,
+      body.theme-light #agy-ctx-guard[data-level="red"] #agy-ctx-guard-btn {
+        background: #dc2626;
+        border-color: #b91c1c;
+        color: #ffffff;
+      }
+      #agy-ctx-guard.compact-btn-only #agy-ctx-guard-text {
+        display: none;
+      }
+      #agy-ctx-guard.compact-num-only #agy-ctx-guard-btn {
+        display: none;
       }
 
       /* Stream Qualitative UX Inline Enhancements (Minimalist Codex-like Style) */
@@ -2250,6 +2328,7 @@
         }
         globalMetadataInFlight = false;
         updateFloatingContextRing();
+        updateContextGuardChip();
       }
     })();
   }
@@ -2456,7 +2535,7 @@
       }
       if (turboBtn.parentElement) {
         for (const sib of turboBtn.parentElement.children) {
-          if (sib === turboBtn || sib.id === 'agy-ctx-ring-pill') continue;
+          if (sib === turboBtn || sib.id === 'agy-ctx-ring-pill' || sib.id === 'agy-ctx-guard') continue;
           const sr = sib.getBoundingClientRect();
           if (sr.width > 0 && sr.right <= tRect.left + 2) {
             maxLeftControlRight = Math.max(maxLeftControlRight, sr.right);
@@ -2465,7 +2544,15 @@
       }
     }
 
-    const availableGap = tRect.left - maxLeftControlRight;
+    let anchorLeft = tRect.left;
+    if (ctxGuardEl && ctxGuardEl.parentElement === turboBtn.parentElement && ctxGuardEl.style.display !== 'none') {
+      const gr = ctxGuardEl.getBoundingClientRect();
+      if (gr.width > 0 && gr.left < anchorLeft) {
+        anchorLeft = gr.left;
+      }
+    }
+
+    const availableGap = anchorLeft - maxLeftControlRight;
     if (availableGap < 30) {
       ctxRingPill.style.display = 'none';
       return;
@@ -2521,8 +2608,458 @@
       ctxRingPill.style.display = 'none';
       return;
     }
-    ctxRingPill.style.left = `${Math.round(tRect.left - actualPillWidth - 6)}px`;
+    ctxRingPill.style.left = `${Math.round(anchorLeft - actualPillWidth - 6)}px`;
     ctxRingPill.style.top = `${Math.round(tRect.top + (tRect.height - 24) / 2)}px`;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 6b. Inline Context Guard Chip (#agy-ctx-guard) & One-Click Handoff Filler
+  // ---------------------------------------------------------------------------
+  const CTX_GUARD_HANDOFF_PROMPT =
+    '请现在收尾并存档换窗：\n' +
+    '1. 提交已完成的改动，按路径白名单，不推送；\n' +
+    '2. 整理一份简明交接摘要（做到哪、下一步、未决事项），若项目配有工作线存档工具则一并原子存档；\n' +
+    '3. 把新窗口可直接粘贴的接续唤醒提示词单独贴给我。存档完成前不开新活。';
+
+  // Layout mode: 'hud-top' (方案三·默认，收在输入框顶部任务条右上角) | 'footer-always' (方案一) | 'footer-threshold' (方案二)
+  let ctxGuardLayout = 'hud-top';
+  let ctxGuardEl = null;
+  let ctxGuardTextEl = null;
+  let ctxGuardBtnEl = null;
+  let ctxGuardResetTimer = null;
+  let composerComposing = false;
+
+  function onCompositionStart() {
+    composerComposing = true;
+  }
+  function onCompositionEnd() {
+    composerComposing = false;
+  }
+
+  function formatKCompact(tokens) {
+    if (!Number.isFinite(tokens) || tokens <= 0) return '--';
+    const k = tokens / 1000;
+    return k >= 100 ? `${Math.round(k)}K` : `${k.toFixed(1).replace(/\.0$/, '')}K`;
+  }
+
+  function deriveCompactionCount(cid, tokenState) {
+    // 1. Authoritative compactionInfo.compactedAtStepIndices from buffered AgentStateUpdate
+    try {
+      const records = cid && (globalThis.__asu?.conversations?.get?.(cid) || globalThis.__asu?.[cid]);
+      if (Array.isArray(records)) {
+        let best = null;
+        for (let i = records.length - 1; i >= 0; i--) {
+          const u = records[i]?.update || records[i];
+          const idxs = u?.compactionInfo?.compactedAtStepIndices;
+          if (Array.isArray(idxs)) {
+            best = idxs.length;
+            break;
+          }
+        }
+        if (typeof best === 'number') return best;
+      }
+    } catch (_) {}
+
+    // 2. Steep-drop count across tokenCacheByConvo pagination history using effective retry usage & responseId dedup (prev > 200K && next < prev * 0.5)
+    try {
+      if (tokenState && tokenState.entriesByIndex instanceof Map && tokenState.entriesByIndex.size >= 2) {
+        const keys = Array.from(tokenState.entriesByIndex.keys()).sort((a, b) => a - b);
+        const seenRespIds = new Set();
+        let prevTok = null;
+        let drops = 0;
+        for (const k of keys) {
+          const item = tokenState.entriesByIndex.get(k);
+          if (!item?.chatModel) continue;
+          const prepared =
+            typeof prepareChatModelMetadataForNormalize === 'function'
+              ? prepareChatModelMetadataForNormalize(item.chatModel)
+              : item.chatModel;
+          let u = prepared?.usage || item.chatModel.usage;
+          const retries = prepared?.retryInfos ?? item.chatModel.retryInfos ?? [];
+          for (let i = retries.length - 1; i >= 0; --i) {
+            if (retries[i]?.usage) {
+              u = retries[i].usage;
+              break;
+            }
+          }
+          if (!u) continue;
+          const respId = String(u.responseId || u.messageId || '');
+          if (respId) {
+            if (seenRespIds.has(respId)) continue;
+            seenRespIds.add(respId);
+          }
+          const total = Number(u.inputTokens || 0) + Number(u.cacheReadTokens || 0) + Number(u.outputTokens || 0);
+          if (!Number.isFinite(total) || total <= 0) continue;
+          if (prevTok !== null && prevTok > 200000 && total < prevTok * 0.5) {
+            drops += 1;
+          }
+          prevTok = total;
+        }
+        return drops;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function deriveSessionDurationLabel(cid) {
+    try {
+      const records = cid && (globalThis.__asu?.conversations?.get?.(cid) || globalThis.__asu?.[cid]);
+      if (!Array.isArray(records) || records.length === 0) return '';
+      let earliestMs = null;
+      for (const rec of records) {
+        const u = rec?.update || rec;
+        const steps = u?.mainTrajectoryUpdate?.stepsUpdate?.steps;
+        if (Array.isArray(steps)) {
+          for (const s of steps) {
+            const rawTs = s?.metadata?.createdAt || s?.createdAt;
+            if (!rawTs) continue;
+            let ms = null;
+            if (typeof rawTs === 'string') {
+              const parsed = Date.parse(rawTs);
+              if (Number.isFinite(parsed)) ms = parsed;
+            } else if (typeof rawTs === 'object' && typeof rawTs.seconds === 'number') {
+              ms = rawTs.seconds * 1000;
+            }
+            if (ms !== null && (earliestMs === null || ms < earliestMs)) {
+              earliestMs = ms;
+            }
+          }
+        }
+      }
+      if (earliestMs === null) return '';
+      const mins = Math.max(0, Math.floor((Date.now() - earliestMs) / 60000));
+      if (mins < 60) return `${mins}m`;
+      return `${Math.floor(mins / 60)}h`;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function computeGuardState(cid) {
+    const tokenState = cid ? tokenCacheByConvo.get(cid) : null;
+    let norm = tokenState?.normalized || { kind: 'unknown', usedTokens: null, maxTokens: null };
+    const liveNorm = extractRealtimeFiberUsage(cid);
+    if (liveNorm && liveNorm.usedTokens !== null) {
+      norm = liveNorm;
+    }
+    const used = Number(norm?.usedTokens || 0);
+    const max = Number(norm?.maxTokens || 983040) || 983040;
+    if (!Number.isFinite(used) || used <= 0) {
+      return null;
+    }
+
+    const amberLine = max >= 900000 ? 500000 : Math.round(max * 0.51);
+    const redLine = max >= 900000 ? 650000 : Math.round(max * 0.66);
+    const level = used >= redLine ? 'red' : used >= amberLine ? 'amber' : 'normal';
+    const ckptCount = deriveCompactionCount(cid, tokenState);
+    const dur = deriveSessionDurationLabel(cid);
+
+    const parts = [`${formatKCompact(used)} / ${formatKCompact(max)}`];
+    if (typeof ckptCount === 'number') parts.push(`压${ckptCount}`);
+    if (dur) parts.push(dur);
+
+    return {
+      used,
+      max,
+      level,
+      ckptCount,
+      dur,
+      label: parts.join(' · ')
+    };
+  }
+
+  function findActiveComposerEditor() {
+    const turboBtn = findActiveComposerTurboButton();
+    const box =
+      (turboBtn && turboBtn.closest && turboBtn.closest('[data-testid="agent-input-box"]')) ||
+      document.querySelector('[data-testid="agent-input-box"]') ||
+      document.getElementById('antigravity.agentSidePanelInputBox')?.parentElement ||
+      null;
+    const scope = box || document;
+    const candidates = scope.querySelectorAll
+      ? scope.querySelectorAll('textarea, input[type="text"], [contenteditable="true"], [contenteditable=""], [role="textbox"]')
+      : [];
+    for (const el of candidates) {
+      if (el.id && el.id.startsWith('agy-')) continue;
+      if (el.disabled || el.readOnly) continue;
+      const r = el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 1, height: 1 };
+      if (r.width > 0 && r.height > 0) return el;
+    }
+    return null;
+  }
+
+  function readComposerDraft(editor) {
+    if (!editor) return '';
+    const tag = (editor.tagName || '').toUpperCase();
+    if (tag === 'TEXTAREA' || tag === 'INPUT') {
+      return String(editor.value || '').trim();
+    }
+    return String(editor.textContent || '').trim();
+  }
+
+  function flashGuardBtnCopied(label = '已复制，粘贴发送') {
+    if (!ctxGuardBtnEl) return;
+    ctxGuardBtnEl.textContent = label;
+    if (ctxGuardResetTimer) clearTimeout(ctxGuardResetTimer);
+    ctxGuardResetTimer = setTimeout(() => {
+      ctxGuardResetTimer = null;
+      if (ctxGuardBtnEl) ctxGuardBtnEl.textContent = '存档换窗';
+    }, 3000);
+  }
+
+  function fallbackCopyHandoffPrompt() {
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        const p = navigator.clipboard.writeText(CTX_GUARD_HANDOFF_PROMPT);
+        if (p && typeof p.then === 'function') {
+          p.then(
+            () => flashGuardBtnCopied('已复制，粘贴发送'),
+            () => flashGuardBtnCopied('复制失败，请手动输入')
+          );
+          return 'clipboard-pending';
+        }
+        flashGuardBtnCopied('已复制，粘贴发送');
+        return 'clipboard';
+      }
+    } catch (_) {}
+    flashGuardBtnCopied('复制失败，请手动输入');
+    return 'clipboard-failed';
+  }
+
+  function normalizePromptForCompare(text) {
+    // Strip all whitespace so rich-text contenteditable blocks (e.g. Lexical <p>/<div> where textContent drops \n)
+    // still match exact character-for-character content while any truncated/dropped character fails strictly.
+    return String(text || '').replace(/\s+/g, '');
+  }
+
+  function isCompleteHandoffDraft(text) {
+    const actual = normalizePromptForCompare(text);
+    const expected = normalizePromptForCompare(CTX_GUARD_HANDOFF_PROMPT);
+    return Boolean(actual) && actual === expected;
+  }
+
+  function fillComposerWithHandoffPrompt() {
+    // Guard 1: Never interfere while IME composition is active
+    if (composerComposing) {
+      return 'composing';
+    }
+    const editor = findActiveComposerEditor();
+    if (!editor) {
+      return fallbackCopyHandoffPrompt();
+    }
+    // Guard 2: Never overwrite non-empty existing user draft -> fall back to clipboard
+    if (readComposerDraft(editor).length > 0) {
+      return fallbackCopyHandoffPrompt();
+    }
+
+    const tag = (editor.tagName || '').toUpperCase();
+    try {
+      if (tag === 'TEXTAREA' || tag === 'INPUT') {
+        const proto = tag === 'TEXTAREA' ? window.HTMLTextAreaElement?.prototype : window.HTMLInputElement?.prototype;
+        const setter = proto && Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+        if (setter) {
+          setter.call(editor, CTX_GUARD_HANDOFF_PROMPT);
+        } else {
+          editor.value = CTX_GUARD_HANDOFF_PROMPT;
+        }
+        if (typeof editor.focus === 'function') editor.focus();
+        if (typeof editor.setSelectionRange === 'function') {
+          editor.setSelectionRange(CTX_GUARD_HANDOFF_PROMPT.length, CTX_GUARD_HANDOFF_PROMPT.length);
+        }
+        const ev = typeof Event === 'function' ? new Event('input', { bubbles: true }) : { type: 'input', bubbles: true };
+        editor.dispatchEvent(ev);
+      } else {
+        if (typeof editor.focus === 'function') editor.focus();
+        let inserted = false;
+        if (typeof document.execCommand === 'function') {
+          try {
+            inserted = Boolean(document.execCommand('insertText', false, CTX_GUARD_HANDOFF_PROMPT));
+          } catch (_) {
+            inserted = false;
+          }
+        }
+        if (!inserted && readComposerDraft(editor).length === 0) {
+          try {
+            const dt = typeof DataTransfer === 'function' ? new DataTransfer() : null;
+            if (dt) dt.setData('text/plain', CTX_GUARD_HANDOFF_PROMPT);
+            const pasteEvt =
+              typeof ClipboardEvent === 'function'
+                ? new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt })
+                : { type: 'paste', bubbles: true, clipboardData: { getData: () => CTX_GUARD_HANDOFF_PROMPT } };
+            editor.dispatchEvent(pasteEvt);
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+
+    // Guard 3: Read back full prompt after filling; partial or rejected fill falls back to clipboard (NEVER auto-send!)
+    if (isCompleteHandoffDraft(readComposerDraft(editor))) {
+      flashGuardBtnCopied('已填入，按回车发送');
+      return 'filled';
+    }
+    return fallbackCopyHandoffPrompt();
+  }
+
+  function isElementVisiblyDisplayed(el) {
+    if (!el) return false;
+    const r = el.getBoundingClientRect ? el.getBoundingClientRect() : { width: el.offsetWidth || 0, height: el.offsetHeight || 0 };
+    if (r.width <= 0 || r.height <= 0) return false;
+    let cur = el;
+    const seen = new Set();
+    while (cur && !seen.has(cur)) {
+      seen.add(cur);
+      if (cur.hidden) return false;
+      if (cur.getAttribute && cur.getAttribute('aria-hidden') === 'true') return false;
+      if (typeof getComputedStyle === 'function') {
+        try {
+          const st = getComputedStyle(cur);
+          if (
+            st.display === 'none' ||
+            st.visibility === 'hidden' ||
+            st.visibility === 'collapse' ||
+            parseFloat(st.opacity) <= 0.05
+          ) {
+            return false;
+          }
+        } catch (_) {}
+      }
+      cur = cur.parentElement;
+    }
+    return true;
+  }
+
+  function ensureGuardChipMounted() {
+    if (disposed || !globalPrefs.enabled) return null;
+
+    if (!ctxGuardEl) {
+      const existing = document.getElementById('agy-ctx-guard');
+      if (existing) existing.remove();
+      ctxGuardEl = document.createElement('span');
+      ctxGuardEl.id = 'agy-ctx-guard';
+      ctxGuardEl.setAttribute('data-level', 'normal');
+
+      ctxGuardTextEl = document.createElement('span');
+      ctxGuardTextEl.id = 'agy-ctx-guard-text';
+
+      ctxGuardBtnEl = document.createElement('button');
+      ctxGuardBtnEl.id = 'agy-ctx-guard-btn';
+      ctxGuardBtnEl.type = 'button';
+      ctxGuardBtnEl.textContent = '存档换窗';
+      ctxGuardBtnEl.title = '仅填入交接提示词到输入框，绝不自动发送';
+      ctxGuardBtnEl.addEventListener('click', (e) => {
+        if (e && typeof e.preventDefault === 'function') e.preventDefault();
+        if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+        fillComposerWithHandoffPrompt();
+      });
+
+      ctxGuardEl.appendChild(ctxGuardTextEl);
+      ctxGuardEl.appendChild(ctxGuardBtnEl);
+    }
+
+    // Mount inline before visible official context-usage-indicator (skipping hidden ancestors),
+    // falling back to before visible permissions-selector-trigger
+    const turboBtn = findActiveComposerTurboButton();
+    const footerScope =
+      (turboBtn && turboBtn.closest && turboBtn.closest('[class*="@container/input-footer"]')) ||
+      (turboBtn && turboBtn.parentElement) ||
+      document;
+    let anchor = null;
+    const indNodes = footerScope.querySelectorAll
+      ? footerScope.querySelectorAll('[data-testid="context-usage-indicator"]')
+      : [];
+    for (const cand of indNodes) {
+      if (cand.parentElement && isElementVisiblyDisplayed(cand)) {
+        anchor = cand;
+        break;
+      }
+    }
+    if (!anchor && turboBtn && turboBtn.parentElement && isElementVisiblyDisplayed(turboBtn)) {
+      anchor = turboBtn;
+    }
+    if (!anchor || !anchor.parentElement) {
+      return null;
+    }
+
+    const parent = anchor.parentElement;
+    if (ctxGuardEl.parentElement !== parent || ctxGuardEl.nextElementSibling !== anchor) {
+      parent.insertBefore(ctxGuardEl, anchor);
+    }
+    return ctxGuardEl;
+  }
+
+  function syncHudContextGuard(gs) {
+    const hudChip = missionHudRefs.ctxGuard;
+    const hudText = missionHudRefs.ctxGuardText;
+    const hudBtn = missionHudRefs.ctxGuardBtn;
+    if (!hudChip) return;
+
+    if (ctxGuardLayout !== 'hud-top' || disposed || !globalPrefs.enabled || !gs) {
+      hudChip.style.display = 'none';
+      return;
+    }
+
+    ctxGuardEl = hudChip;
+    ctxGuardTextEl = hudText || null;
+    ctxGuardBtnEl = hudBtn || null;
+
+    hudChip.style.display = 'inline-flex';
+    if (hudChip.getAttribute('data-level') !== gs.level) {
+      hudChip.setAttribute('data-level', gs.level);
+    }
+    if (hudText && hudText.textContent !== gs.label) {
+      hudText.textContent = gs.label;
+    }
+    if (hudBtn) {
+      hudBtn.style.display = 'inline-block';
+    }
+  }
+
+  function updateContextGuardChip() {
+    if (ctxGuardLayout === 'hud-top') {
+      const staleFooterChip = document.getElementById('agy-ctx-guard');
+      if (staleFooterChip) staleFooterChip.remove();
+      if (disposed || !globalPrefs.enabled || globalPrefs.lang === 'en' || globalPrefs.bossMode) {
+        syncHudContextGuard(null);
+        return;
+      }
+      const cid = getActiveConversationId();
+      const gs = computeGuardState(cid);
+      if (!gs) {
+        syncHudContextGuard(null);
+        return;
+      }
+      if (!missionHudHost || !missionHudRefs.ctxGuard || missionHudHost.style.display === 'none') {
+        updateMissionHud();
+      }
+      syncHudContextGuard(gs);
+      return;
+    }
+
+    syncHudContextGuard(null);
+    if (disposed || !globalPrefs.enabled) {
+      if (ctxGuardEl) ctxGuardEl.style.display = 'none';
+      return;
+    }
+    const cid = getActiveConversationId();
+    const gs = computeGuardState(cid);
+    if (!gs) {
+      if (ctxGuardEl) ctxGuardEl.style.display = 'none';
+      return;
+    }
+    const chip = ensureGuardChipMounted();
+    if (!chip) return;
+
+    chip.style.display = 'inline-flex';
+    if (chip.getAttribute('data-level') !== gs.level) {
+      chip.setAttribute('data-level', gs.level);
+    }
+    if (ctxGuardTextEl && ctxGuardTextEl.textContent !== gs.label) {
+      ctxGuardTextEl.textContent = gs.label;
+    }
+    if (ctxGuardBtnEl) {
+      const showBtn = ctxGuardLayout === 'footer-always' || gs.level !== 'normal';
+      ctxGuardBtnEl.style.display = showBtn ? 'inline-block' : 'none';
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -4510,6 +5047,93 @@
           color: #93c5fd;
           background: rgba(147, 197, 253, 0.12);
         }
+        /* Option 3: 1M Context Guard Chip embedded in Mission HUD top-right (zero footer footprint) */
+        .ctx-guard {
+          display: none;
+          align-items: center;
+          gap: 5px;
+          height: 22px;
+          padding: 0 6px;
+          border-radius: 6px;
+          font-family: "JetBrains Mono", "SF Mono", "Consolas", "PingFang SC", "Microsoft YaHei", monospace, system-ui;
+          font-size: 11px;
+          font-weight: 500;
+          line-height: 1;
+          white-space: nowrap;
+          flex-shrink: 0;
+          cursor: default;
+          background: #f4f4f5;
+          color: #52525b;
+          border: 1px solid #e4e4e7;
+        }
+        .mission-box.dark .ctx-guard {
+          background: rgba(255, 255, 255, 0.05);
+          color: #a1a1aa;
+          border-color: rgba(255, 255, 255, 0.10);
+        }
+        .ctx-guard[data-level="amber"] {
+          background: #fffbeb;
+          color: #b45309;
+          border-color: #f59e0b;
+        }
+        .mission-box.dark .ctx-guard[data-level="amber"] {
+          background: rgba(245, 158, 11, 0.15);
+          color: #fbbf24;
+          border-color: rgba(245, 158, 11, 0.45);
+        }
+        .ctx-guard[data-level="red"] {
+          background: #fef2f2;
+          color: #b91c1c;
+          border-color: #ef4444;
+        }
+        .mission-box.dark .ctx-guard[data-level="red"] {
+          background: rgba(239, 68, 68, 0.16);
+          color: #f87171;
+          border-color: rgba(239, 68, 68, 0.48);
+        }
+        .ctx-guard-btn {
+          appearance: none;
+          border: 1px solid #d4d4d8;
+          background: #ffffff;
+          color: #27272a;
+          border-radius: 4px;
+          padding: 2px 6px;
+          font-size: 10.5px;
+          font-weight: 600;
+          line-height: 1.1;
+          cursor: pointer;
+          font-family: inherit;
+          white-space: nowrap;
+          transition: opacity 0.12s ease, background 0.12s ease;
+        }
+        .mission-box.dark .ctx-guard-btn {
+          border-color: rgba(255, 255, 255, 0.16);
+          background: rgba(255, 255, 255, 0.09);
+          color: #e4e4e7;
+        }
+        .ctx-guard-btn:hover {
+          opacity: 0.9;
+        }
+        .ctx-guard[data-level="amber"] .ctx-guard-btn {
+          background: #f59e0b;
+          color: #ffffff;
+          border-color: #d97706;
+        }
+        .mission-box.dark .ctx-guard[data-level="amber"] .ctx-guard-btn {
+          background: #d97706;
+          color: #ffffff;
+          border-color: #f59e0b;
+        }
+        .ctx-guard[data-level="red"] .ctx-guard-btn {
+          background: #ef4444;
+          color: #ffffff;
+          border-color: #dc2626;
+        }
+        .mission-box.dark .ctx-guard[data-level="red"] .ctx-guard-btn {
+          background: #dc2626;
+          color: #ffffff;
+          border-color: #ef4444;
+        }
       </style>
       <div class="mission-box" id="m-box">
         <div class="mission-top" id="m-top" title="点击收起或展开阶段任务清单">
@@ -4520,6 +5144,10 @@
           <div class="top-right">
             <span id="m-wd" class="wd-pill" hidden></span>
             <span id="m-phase"></span>
+            <span id="agy-ctx-guard" class="ctx-guard" data-level="normal">
+              <span id="agy-ctx-guard-text" class="ctx-guard-text"></span>
+              <button id="agy-ctx-guard-btn" class="ctx-guard-btn" type="button" title="仅填入交接提示词到输入框，绝不自动发送">存档换窗</button>
+            </span>
             <span id="m-fold">▾</span>
           </div>
         </div>
@@ -4539,14 +5167,45 @@
       wd: missionHudShadow.getElementById('m-wd'),
       phase: missionHudShadow.getElementById('m-phase'),
       fold: missionHudShadow.getElementById('m-fold'),
+      ctxGuard: missionHudShadow.getElementById('agy-ctx-guard'),
+      ctxGuardText: missionHudShadow.getElementById('agy-ctx-guard-text'),
+      ctxGuardBtn: missionHudShadow.getElementById('agy-ctx-guard-btn'),
       taskList: missionHudShadow.getElementById('m-task-list'),
       rtBar: missionHudShadow.getElementById('m-rt-bar'),
       rtText: missionHudShadow.getElementById('m-rt-text'),
       rtStatus: missionHudShadow.getElementById('m-rt-status')
     };
 
+    if (missionHudRefs.ctxGuard) {
+      missionHudRefs.ctxGuard.setAttribute('data-level', 'normal');
+      missionHudRefs.ctxGuard.style.display = 'none';
+      missionHudRefs.ctxGuard.addEventListener('click', (e) => {
+        if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+      });
+    }
+    if (missionHudRefs.ctxGuardBtn) {
+      missionHudRefs.ctxGuardBtn.textContent = '存档换窗';
+      missionHudRefs.ctxGuardBtn.addEventListener('click', (e) => {
+        if (e && typeof e.preventDefault === 'function') e.preventDefault();
+        if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+        fillComposerWithHandoffPrompt();
+      });
+    }
     if (missionHudRefs.top) {
-      missionHudRefs.top.addEventListener('click', () => {
+      missionHudRefs.top.addEventListener('click', (e) => {
+        const t = e && e.target;
+        if (
+          t &&
+          (t === missionHudRefs.ctxGuard ||
+            t === missionHudRefs.ctxGuardText ||
+            t === missionHudRefs.ctxGuardBtn ||
+            (typeof t.closest === 'function' && t.closest('#agy-ctx-guard')))
+        ) {
+          return;
+        }
+        if (missionHudRefs.fold && !missionHudRefs.fold.textContent) {
+          return;
+        }
         missionHudCollapsed = !missionHudCollapsed;
         updateMissionHud();
       });
@@ -4605,7 +5264,9 @@
     }
 
     const state = collectLiveSessionMissionState();
-    if (!state.hasData) {
+    const cid = getActiveConversationId();
+    const guardState = ctxGuardLayout === 'hud-top' ? computeGuardState(cid) : null;
+    if (!state.hasData && !guardState) {
       hideMissionHud();
       return;
     }
@@ -4620,19 +5281,23 @@
     missionHudRefs.box.classList.toggle('dark', !isLight);
     missionHudRefs.box.classList.toggle('collapsed', effectiveCollapsed);
     if (missionHudRefs.dot) {
-      missionHudRefs.dot.classList.toggle('running', state.isRunning || totalTasks === 0);
+      missionHudRefs.dot.classList.toggle('running', state.isRunning || (state.hasData && totalTasks === 0));
     }
     if (missionHudRefs.fold) {
       missionHudRefs.fold.textContent = totalTasks === 0 ? '' : (missionHudCollapsed ? '展开 ▴' : '收起 ▾');
     }
+    if (missionHudRefs.top) {
+      missionHudRefs.top.style.cursor = totalTasks > 0 ? 'pointer' : 'default';
+    }
     if (missionHudRefs.goal) {
-      missionHudRefs.goal.textContent = state.globalGoal;
+      missionHudRefs.goal.textContent = state.hasData ? state.globalGoal : '1M 上下文护航';
     }
 
     if (missionHudRefs.phase) {
       missionHudRefs.phase.textContent = totalTasks > 0 ? `${doneTasks} / ${totalTasks}` : '';
     }
     syncMissionHudWatchdogPill();
+    syncHudContextGuard(guardState);
 
     if (missionHudRefs.taskList) {
       const taskHtml = state.tasks
@@ -4677,7 +5342,7 @@
   }
 
   // ---------------------------------------------------------------------------
-  // 8. Native Settings Modal Integration (Language & Widescreen Controls)
+  // 8. Native Settings Modal Integration (Language Controls)
   // ---------------------------------------------------------------------------
   function syncSettingsEnhancementRowsState() {
     const zhBtn = document.getElementById('agy-settings-lang-zh');
@@ -4696,16 +5361,6 @@
         zhBtn.setAttribute('aria-pressed', 'false');
       }
     }
-
-    const wideSwitch = document.getElementById('agy-settings-wide-switch');
-    const wideKnob = document.getElementById('agy-settings-wide-knob');
-    const isWide = Boolean(globalPrefs.widescreen);
-    if (wideSwitch && wideKnob) {
-      wideSwitch.setAttribute('aria-checked', isWide ? 'true' : 'false');
-      wideSwitch.classList.toggle('bg-primary', isWide);
-      wideSwitch.classList.toggle('bg-secondary', !isWide);
-      wideKnob.style.transform = isWide ? 'translateX(24px)' : 'translateX(4px)';
-    }
   }
 
   function ensureSettingsEnhancementRowsMounted() {
@@ -4719,7 +5374,8 @@
     if (!themeCard) return;
 
     let langRow = document.getElementById('agy-settings-lang-row');
-    let wideRow = document.getElementById('agy-settings-wide-row');
+    const staleWideRow = document.getElementById('agy-settings-wide-row');
+    if (staleWideRow) staleWideRow.remove();
 
     if (!langRow || !themeCard.contains(langRow)) {
       if (langRow) langRow.remove();
@@ -4753,35 +5409,6 @@
       if (enBtn) {
         enBtn.addEventListener('click', () => {
           patchGlobalPrefs({ lang: 'en' });
-          applyAllStates();
-        });
-      }
-    }
-
-    if (!wideRow || !themeCard.contains(wideRow)) {
-      if (wideRow) wideRow.remove();
-      wideRow = document.createElement('div');
-      wideRow.id = 'agy-settings-wide-row';
-      wideRow.className = 'py-2 px-3 w-full bg-transparent flex justify-between gap-4 items-center';
-      wideRow.innerHTML = `
-        <div class="flex-1 flex flex-col gap-0.5">
-          <div class="flex items-center gap-1.5">
-            <span class="text-sm">宽屏学术排版</span>
-          </div>
-          <span class="text-xs text-muted-foreground whitespace-pre-wrap">突破默认宽度限制，将会话阅读区与表格扩展至 92% 视口宽度（上限 1480px）。</span>
-        </div>
-        <div class="shrink-0">
-          <button type="button" role="switch" id="agy-settings-wide-switch" aria-checked="false" class="relative inline-flex items-center rounded-full transition-colors duration-200 ease-in-out shrink-0 h-6 w-11 bg-secondary cursor-pointer">
-            <span id="agy-settings-wide-knob" class="inline-block rounded-full bg-white transition-transform duration-200 ease-in-out shadow-sm h-4 w-4" style="transform: translateX(4px);"></span>
-          </button>
-        </div>
-      `;
-      themeCard.appendChild(wideRow);
-
-      const wideSwitch = wideRow.querySelector('#agy-settings-wide-switch');
-      if (wideSwitch) {
-        wideSwitch.addEventListener('click', () => {
-          patchGlobalPrefs({ widescreen: !globalPrefs.widescreen });
           applyAllStates();
         });
       }
@@ -4846,6 +5473,13 @@
     window.removeEventListener('click', onCollapsibleClickCapture, true);
     document.removeEventListener('visibilitychange', onVisibilityChange);
     document.removeEventListener('mousedown', onDocumentMouseDownForRing, true);
+    document.removeEventListener('compositionstart', onCompositionStart, true);
+    document.removeEventListener('compositionend', onCompositionEnd, true);
+    composerComposing = false;
+    if (ctxGuardResetTimer) {
+      clearTimeout(ctxGuardResetTimer);
+      ctxGuardResetTimer = null;
+    }
     ctxRingHovered = false;
     ctxRingPinned = false;
 
@@ -4857,6 +5491,7 @@
     for (const id of [
       'agy-enhance-scoped-style',
       'agy-ctx-ring-pill',
+      'agy-ctx-guard',
       'agy-mission-hud-host',
       'agy-settings-lang-row',
       'agy-settings-wide-row'
@@ -4865,6 +5500,9 @@
       if (el) el.remove();
     }
     ctxRingPill = null;
+    ctxGuardEl = null;
+    ctxGuardTextEl = null;
+    ctxGuardBtnEl = null;
     missionHudHost = null;
     missionHudShadow = null;
     missionHudRefs = {};
@@ -4879,10 +5517,13 @@
       window.addEventListener('click', onCollapsibleClickCapture, true);
       document.addEventListener('visibilitychange', onVisibilityChange);
       document.addEventListener('mousedown', onDocumentMouseDownForRing, true);
+      document.addEventListener('compositionstart', onCompositionStart, true);
+      document.addEventListener('compositionend', onCompositionEnd, true);
 
       ringTimer = setInterval(() => {
         if (disposed || !globalPrefs.enabled || document.hidden) return;
         updateFloatingContextRing();
+        updateContextGuardChip();
         pollLiveAgentState();
       }, 600);
 
@@ -4964,11 +5605,7 @@
     sanitizeWorkspaceAndGoogleCorpClutter();
     restoreNativeTitleBarOverlay();
 
-    if (globalPrefs.widescreen) {
-      document.documentElement.setAttribute('data-agy-widescreen', '1');
-    } else {
-      document.documentElement.removeAttribute('data-agy-widescreen');
-    }
+    document.documentElement.removeAttribute('data-agy-widescreen');
 
     applyLocalizationToSubtree(document.body);
     ensureSettingsEnhancementRowsMounted();
@@ -4984,6 +5621,7 @@
     }
     scheduleTokenMetadataRefresh(false);
     updateFloatingContextRing();
+    updateContextGuardChip();
   }
 
   function onKeyDown(e) {
@@ -4992,10 +5630,6 @@
       e.preventDefault();
       patchGlobalPrefs({ lang: globalPrefs.lang === 'en' ? 'zh-std' : 'en' });
       applyAllStates();
-    } else if (e.altKey && (e.key === 'w' || e.key === 'W' || e.code === 'KeyW')) {
-      e.preventDefault();
-      patchGlobalPrefs({ widescreen: !globalPrefs.widescreen });
-      applyAllStates();
     }
   }
 
@@ -5003,6 +5637,7 @@
     if (!document.hidden && globalPrefs.enabled) {
       scheduleTokenMetadataRefresh(false);
       updateFloatingContextRing();
+      updateContextGuardChip();
       updateMissionHud();
     }
   }
@@ -5010,6 +5645,7 @@
   function onWindowResize() {
     if (!disposed && globalPrefs.enabled) {
       updateFloatingContextRing();
+      updateContextGuardChip();
       updateMissionHud();
     }
   }

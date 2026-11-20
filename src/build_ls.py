@@ -1,4 +1,4 @@
-"""Portable Language Server Binary Patcher & Verifier for Antigravity (Windows PE x86_64 & macOS Mach-O ARM64, v2.24.0–v2.32.1+)."""
+"""Portable Language Server Binary Patcher & Verifier for Antigravity (Windows PE x86_64 & macOS Mach-O ARM64, v2.24.0–v2.33.0+)."""
 from __future__ import annotations
 
 import hashlib
@@ -33,6 +33,8 @@ def sha256_bytes(data: bytes) -> str:
 def _is_valid_site_state(name: str, cur: bytes, before: bytes, after: bytes) -> bool:
     if cur in (before, after):
         return True
+    if "ClampCheckpointConfigForModelInfo" in name and len(cur) == len(after) and cur in p.SITE22_PREV_PATCHES:
+        return True
     if "truncateIfTooLarge" not in name or len(cur) != len(before) or len(before) != len(after):
         return False
     i = 0
@@ -60,9 +62,11 @@ def build_and_verify_ls(orig_ls_path: Path, candidate_ls_path: Path) -> dict:
     patched_sites = []
 
     if p.is_macho_arm64(raw):
+        h2_sites = p.locate_h2ping_sites(raw, funcs)
+        has_gonet_h2 = any("go_net/http2" in s[0] for s in h2_sites)
         media_sites = p.locate_media_compression_sites(raw, funcs)
         all_sites = (
-            p.locate_h2ping_sites(raw, funcs)
+            h2_sites
             + p.locate_1m_context_sites(raw, funcs)
             + media_sites
             + p.locate_utf8_and_uri_sites(raw, funcs)
@@ -86,7 +90,7 @@ def build_and_verify_ls(orig_ls_path: Path, candidate_ls_path: Path) -> dict:
         ):
             if not any(label in site[0] for site in all_sites for label in alternatives):
                 raise RuntimeError(f"{required} must be located on macOS ARM64")
-        min_arm64_sites = 29 if media_sites else 27
+        min_arm64_sites = (29 if media_sites else 27) - (0 if has_gonet_h2 else 3)
         assert len(all_sites) >= min_arm64_sites, f"Expected >={min_arm64_sites} Mach-O ARM64 sites, got {len(all_sites)}"
         for name, off, before, after in all_sites:
             cur = bytes(raw[off : off + len(before)])
@@ -162,15 +166,20 @@ def build_and_verify_ls(orig_ls_path: Path, candidate_ls_path: Path) -> dict:
 
     image_base, sections = p.parse_pe_sections(raw)
 
+    h2_sites = p.locate_h2ping_sites(raw, funcs)
+    has_gonet_h2 = any("go_net/http2" in s[0] for s in h2_sites)
     media_sites = p.locate_media_compression_sites(raw, funcs)
     base_sites = (
-        p.locate_h2ping_sites(raw, funcs)
+        h2_sites
         + p.locate_1m_context_sites(raw, funcs)
         + media_sites
         + p.locate_utf8_and_uri_sites(raw, funcs)
         + [s for s in p.locate_stream_retry_sites(raw, funcs) if "unexpected EOF" in s[0]]
     )
-    expected_base_counts = (15, 16) if media_sites else (13, 14)
+    if has_gonet_h2:
+        expected_base_counts = (15, 16) if media_sites else (13, 14)
+    else:
+        expected_base_counts = (14, 15) if media_sites else (12, 13)
     if len(base_sites) not in expected_base_counts:
         raise RuntimeError(f"Expected {expected_base_counts} base sites, got {len(base_sites)}")
     if not any("modelEntryToModelDetails" in s[0] for s in base_sites):
@@ -190,8 +199,14 @@ def build_and_verify_ls(orig_ls_path: Path, candidate_ls_path: Path) -> dict:
 
     ir_off, ir_sz = funcs["google3/third_party/jetski/cortex/utils/utils.IsRetryableAPIError"]
     ir_bytes = raw[ir_off : ir_off + ir_sz]
-    s14_ctx = bytes.fromhex("48898424d000000048895c2468488b0d")
-    idx14 = ir_bytes.find(s14_ctx)
+    idx14 = -1
+    for s14_ctx in (
+        bytes.fromhex("48898424c800000048895c2468488b0d"),  # v2.33.0+
+        bytes.fromhex("48898424d000000048895c2468488b0d"),  # v2.24.0-v2.32.2
+    ):
+        idx14 = ir_bytes.find(s14_ctx)
+        if idx14 != -1:
+            break
     assert idx14 != -1, "Site 14 context not found"
     lea_pos = ir_off + idx14 + 13
     disp14 = struct.unpack_from("<i", raw, lea_pos + 3)[0]
@@ -199,7 +214,7 @@ def build_and_verify_ls(orig_ls_path: Path, candidate_ls_path: Path) -> dict:
     hdr_raw = p.rva_to_raw(sections, hdr_rva)
     arr_va, arr_len, _ = struct.unpack_from("<QQQ", raw, hdr_raw)
     arr_raw = p.rva_to_raw(sections, arr_va - image_base)
-    assert arr_len in (6, 7, 15, 16), f"Unexpected retryableSubstrings length: {arr_len}"
+    assert arr_len in (6, 7, 15, 16, 17), f"Unexpected retryableSubstrings length: {arr_len}"
 
     entries = [list(struct.unpack_from("<QQ", raw, arr_raw + i * 16)) for i in range(arr_len)]
     pos_sre = raw.find(b"stream reading error: %w")
@@ -211,7 +226,7 @@ def build_and_verify_ls(orig_ls_path: Path, candidate_ls_path: Path) -> dict:
     va_sre = image_base + p.raw_to_rva(sections, pos_sre)
     va_unauth_lower = image_base + p.raw_to_rva(sections, pos_unauth_lower)
 
-    if arr_len in (15, 16):
+    if arr_len in (15, 16, 17):
         assert pos_oneof != -1 and pos_proxyconn != -1 and pos_ctx_deadline != -1
         va_eof = image_base + p.raw_to_rva(sections, pos_oneof + 2)
         va_proxyconn = image_base + p.raw_to_rva(sections, pos_proxyconn)
@@ -234,8 +249,8 @@ def build_and_verify_ls(orig_ls_path: Path, candidate_ls_path: Path) -> dict:
         entries[11] = [va_proxyconn, 12]        # "proxyconnect"
         entries[12] = [orig_va12 + 10, 9]       # "timed out"
         entries[13] = [va13, 6]                 # "http2:"
-        if arr_len == 16:
-            entries[14] = [va_deadline, 17]     # "deadline exceeded"
+        if arr_len in (16, 17):
+            entries[arr_len - 2] = [va_deadline, 17]  # "deadline exceeded"
         entries[arr_len - 1] = [orig_va_last + 4, 7]  # "timeout" (TLS handshake timeout, i/o timeout)
     elif arr_len == 7:
         va0, _ = entries[0]

@@ -128,19 +128,21 @@ ARM64_V36_SITES: tuple[Arm64FixedSite, ...] = (
             "031000b9"  # 10134feac: str   w3, [x0, #0x10]
         ),
         patch_bytes=bytes.fromhex(
-            "65f84051"  # 10134fe8c: sub   w5, w3, #0x3e, lsl #12  (w5 = w3 - 0x3e000)
-            "bf002071"  # 10134fe90: cmp   w5, #0x800              (Z=1 if w3 == 256,000)
-            "6418407a"  # 10134fe94: ccmp  w3, #0x0, #0x4, ne      (Z=1 if w3 == 256,000 || w3 == 0)
-            "c1000054"  # 10134fe98: b.ne  0x10134feb0             (preserve custom w3)
-            "241480b9"  # 10134fe9c: ldrsw x4, [x1, #0x14]         (x4 = model.ContextLength)
-            "854040d1"  # 10134fea0: sub   x5, x4, #0x10, lsl #12  (x5 = ContextLength - 65,536)
-            "9f004171"  # 10134fea4: cmp   w4, #0x40, lsl #12      (is ContextLength > 262,144?)
-            "a4c0841a"  # 10134fea8: csel  w4, w5, w4, gt          (w4 = >262k ? ContextLength-65536 : ContextLength)
-            "041000b9"  # 10134feac: str   w4, [x0, #0x10]          (983,040 for 1M; 200,000 for 200k)
+            "241480b9"  # 10134fe8c: ldrsw x4, [x1, #0x14]         (x4 = model.ContextLength)
+            "9f004171"  # 10134fe90: cmp   w4, #0x40, lsl #12      (is ContextLength > 262,144?)
+            "6c000054"  # 10134fe94: b.gt  +0x0c (-> 10134fea0)    (1M-class path)
+            "c3000035"  # 10134fe98: cbnz  w3, +0x18 (-> 10134feb0)(<=262k: preserve non-zero)
+            "04000014"  # 10134fe9c: b     +0x10 (-> 10134feac)    (<=262k & w3==0: store ContextLength)
+            "85404051"  # 10134fea0: sub   w5, w4, #0x10, lsl #12  (w5 = ContextLength - 65,536 = 983,040)
+            "7f00056b"  # 10134fea4: cmp   w3, w5                  (compare current MaxTokenLimit vs 983,040)
+            "6420851a"  # 10134fea8: csel  w4, w3, w5, hs          (unsigned uint32 max(w3, 983,040); defeats 256k/512k/768k caps)
+            "041000b9"  # 10134feac: str   w4, [x0, #0x10]         (store floor-raised MaxTokenLimit)
         ),
-        description="if MaxTokenLimit in {0, 256000}: MaxTokenLimit = (ContextLength > 262144) ? ContextLength - 65536 : ContextLength (983040 for 1M, 200000 for 200k)",
+        description="for >262,144 models: raise MaxTokenLimit to at least ContextLength - 65,536 (983,040 for 1M, defeating 256k/512k/768k remote caps); preserve <=262,144 (200k) models",
         prev_patch_bytes=(
             bytes.fromhex("65f84051bf0020716418407ac1000054241480b9844040d19f00036b4d000054041000b9"),
+            bytes.fromhex("65f84051bf0020716418407ac1000054241480b9854040d19f004171a4c0841a041000b9"),
+            bytes.fromhex("65f84051bf0020716418407ac1000054241480b9854040d19f004171a4c0841a040c00b9"),
         ),
     ),
 )
@@ -349,7 +351,11 @@ def main() -> int:
         cur = bytes(buf[off : off + len(patch_b)])
         if cur == patch_b:
             base_already += 1
-        elif cur == orig_b or ("Site 23" in label and _is_valid_mixed_site23(cur, orig_b, patch_b)):
+        elif (
+            cur == orig_b
+            or ("Site 23" in label and _is_valid_mixed_site23(cur, orig_b, patch_b))
+            or ("Site 22" in label and len(cur) == len(patch_b) and cur in base_patcher.SITE22_PREV_PATCHES)
+        ):
             buf[off : off + len(patch_b)] = patch_b
             base_patched += 1
         else:
