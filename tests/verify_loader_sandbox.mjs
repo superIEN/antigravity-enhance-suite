@@ -1780,7 +1780,7 @@ async function runVerification() {
   if (savedStorageCache !== undefined) storageMap.set('agy.v3.llmMissionCache.v1', savedStorageCache);
   win.dispatchEvent({ type: 'resize' });
 
-  // Case 3: contenteditable editor via execCommand('insertText')
+  // Case 3: contenteditable editor via execCommand('insertText'), including Lexical-style textContent that drops \n between blocks
   const mockCe = doc.createElement('div');
   mockCe.setAttribute('contenteditable', 'true');
   mockCe.textContent = '';
@@ -1788,13 +1788,18 @@ async function runVerification() {
   agentInputBox.insertBefore(mockCe, footerEl);
   doc.execCommand = (cmd, _ui, val) => {
     if (cmd === 'insertText') {
-      mockCe.textContent = val;
+      // Simulate real Lexical/ProseMirror contenteditable where paragraph blocks lose \n in textContent
+      mockCe.textContent = String(val).replace(/\n+/g, ' ');
       return true;
     }
     return false;
   };
+  const copiedBeforeCe = copiedTexts.length;
   guardBtn.dispatchEvent({ type: 'click', preventDefault: () => {}, stopPropagation: () => {} });
+  await new Promise((r) => setTimeout(r, 10));
   assert.match(mockCe.textContent, /存档换窗/, 'ContentEditable must be filled via execCommand(insertText)');
+  assert.equal(copiedTexts.length, copiedBeforeCe, 'Full Lexical contenteditable fill must NOT fall back to clipboard');
+  assert.match(guardBtn.textContent, /已填入/, 'Successful fill must show 已填入 rather than 已复制');
   mockCe.remove();
 
   console.log('  [PASS 9] 方案三任务顶栏右上角上下文护航条 (#agy-ctx-guard) 零底栏占位、防误折叠与填词守卫 100% 通过');

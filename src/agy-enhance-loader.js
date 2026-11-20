@@ -2827,11 +2827,9 @@
   }
 
   function normalizePromptForCompare(text) {
-    return String(text || '')
-      .replace(/\r\n/g, '\n')
-      .replace(/[ \t]+/g, ' ')
-      .replace(/\n{2,}/g, '\n')
-      .trim();
+    // Strip all whitespace so rich-text contenteditable blocks (e.g. Lexical <p>/<div> where textContent drops \n)
+    // still match exact character-for-character content while any truncated/dropped character fails strictly.
+    return String(text || '').replace(/\s+/g, '');
   }
 
   function isCompleteHandoffDraft(text) {
@@ -2896,6 +2894,7 @@
 
     // Guard 3: Read back full prompt after filling; partial or rejected fill falls back to clipboard (NEVER auto-send!)
     if (isCompleteHandoffDraft(readComposerDraft(editor))) {
+      flashGuardBtnCopied('已填入，按回车发送');
       return 'filled';
     }
     return fallbackCopyHandoffPrompt();
