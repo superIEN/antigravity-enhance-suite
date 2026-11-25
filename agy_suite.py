@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Antigravity Enhance Suite v3.6.6 — Unified CLI Installer, Inspector, Rollback, Live Hot-Injector, DB Upgrader & Media Guard (Windows & macOS).
+"""Antigravity Enhance Suite v3.6.7 Unified CLI Installer, Inspector, Rollback, Live Hot-Injector, DB Upgrader & Media Guard (Windows & macOS).
 
 Usage:
     python3 agy_suite.py inspect [--agy-dir PATH]
@@ -42,18 +42,55 @@ def default_runtime_dir() -> Path:
 
 
 def resolve_ls_binaries(agy_dir: Path) -> list[Path]:
+    if agy_dir.is_file() and agy_dir.name.lower() in ("agy.exe", "agy"):
+        return [agy_dir]
     bin_dir = agy_dir / "resources" / "bin"
     bins: list[Path] = []
     for name in ("language_server_windows_x64.exe", "language_server.exe"):
         p = bin_dir / name
         if p.exists():
             bins.append(p)
+    if bins:
+        return bins
+    for cli_rel in (Path("bin") / "agy.exe", Path("agy.exe"), Path("bin") / "agy", Path("agy")):
+        cp = agy_dir / cli_rel
+        if cp.is_file():
+            return [cp]
     return bins
+
+
+def read_cli_version(cli_bin: Path) -> str:
+    try:
+        flags = 0x08000000 if os.name == "nt" else 0
+        out = subprocess.check_output(
+            [str(cli_bin), "--version"],
+            stdin=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=10,
+            creationflags=flags,
+        ).strip()
+        for tok in out.split():
+            cleaned = tok.strip().lstrip("v")
+            if cleaned and cleaned[0].isdigit() and "." in cleaned:
+                return cleaned
+    except Exception:
+        pass
+    try:
+        return f"cli_{sha256_file(cli_bin)[:12]}"
+    except Exception:
+        return "cli"
 
 
 def resolve_agy_paths(agy_dir: Path) -> dict:
     p = agy_dir.resolve()
-    if sys.platform == "darwin" or p.name.endswith(".app") or (p / "Contents" / "Resources" / "app.asar").exists():
+    is_app_bundle = (
+        p.name.endswith(".app")
+        or (p / "Contents" / "Resources" / "app.asar").exists()
+        or (p.name == "Resources" and p.parent.name == "Contents")
+        or (p.name == "Contents" and (p / "Resources" / "app.asar").exists())
+    )
+    if is_app_bundle:
         if p.name == "Resources" and p.parent.name == "Contents":
             app_bundle = p.parent.parent
         elif p.name == "Contents":
@@ -63,6 +100,7 @@ def resolve_agy_paths(agy_dir: Path) -> dict:
         ls_path = app_bundle / "Contents" / "Resources" / "bin" / "language_server"
         return {
             "is_mac_bundle": True,
+            "is_cli_only": False,
             "app_bundle": app_bundle,
             "asar_path": app_bundle / "Contents" / "Resources" / "app.asar",
             "ls_path": ls_path,
@@ -72,10 +110,26 @@ def resolve_agy_paths(agy_dir: Path) -> dict:
             "code_resources_path": app_bundle / "Contents" / "_CodeSignature" / "CodeResources",
         }
     ls_bins = resolve_ls_binaries(p)
+    asar_path = p / "resources" / "app.asar"
+    is_cli_only = bool(ls_bins) and not asar_path.exists() and ls_bins[0].name.lower() in ("agy.exe", "agy")
+    if sys.platform == "darwin" and not is_cli_only and not ls_bins:
+        ls_path = p / "Contents" / "Resources" / "bin" / "language_server"
+        return {
+            "is_mac_bundle": True,
+            "is_cli_only": False,
+            "app_bundle": p,
+            "asar_path": p / "Contents" / "Resources" / "app.asar",
+            "ls_path": ls_path,
+            "ls_bins": [ls_path] if ls_path.exists() else [],
+            "info_plist_path": p / "Contents" / "Info.plist",
+            "main_exec_path": p / "Contents" / "MacOS" / "Antigravity",
+            "code_resources_path": p / "Contents" / "_CodeSignature" / "CodeResources",
+        }
     return {
         "is_mac_bundle": False,
+        "is_cli_only": is_cli_only,
         "app_bundle": None,
-        "asar_path": p / "resources" / "app.asar",
+        "asar_path": None if is_cli_only else asar_path,
         "ls_path": ls_bins[0] if ls_bins else (p / "resources" / "bin" / "language_server.exe"),
         "ls_bins": ls_bins,
     }
@@ -624,10 +678,11 @@ def cmd_inspect(args):
     paths = resolve_agy_paths(Path(args.agy_dir))
     asar_path = paths["asar_path"]
     ls_path = paths["ls_path"]
-    if not asar_path.exists() or not ls_path.exists():
+    is_cli_only = paths.get("is_cli_only", False)
+    if not ls_path.exists() or (not is_cli_only and (asar_path is None or not asar_path.exists())):
         raise FileNotFoundError(f"Antigravity binaries not found under {args.agy_dir}")
 
-    ver = read_asar_version(asar_path)
+    ver = read_cli_version(ls_path) if is_cli_only else read_asar_version(asar_path)
     raw_ls = ls_path.read_bytes()
     funcs = patch_sites.parse_gopclntab(raw_ls)
     sites = (
@@ -641,8 +696,9 @@ def cmd_inspect(args):
     )
     report = {
         "platform": "darwin-arm64" if patch_sites.is_macho_arm64(raw_ls) else "win32-x64",
+        "target_kind": "cli" if is_cli_only else "desktop",
         "antigravity_version": ver,
-        "app_asar": {"path": str(asar_path), "size": asar_path.stat().st_size, "sha256": sha256_file(asar_path)},
+        "app_asar": None if is_cli_only else {"path": str(asar_path), "size": asar_path.stat().st_size, "sha256": sha256_file(asar_path)},
         "language_server": {"path": str(ls_path), "size": len(raw_ls), "sha256": hashlib.sha256(raw_ls).hexdigest()},
         "gopclntab_functions": len(funcs),
         "locatable_sites": len(sites),
@@ -658,8 +714,59 @@ def cmd_install(args):
     prod_asar = paths["asar_path"]
     prod_ls = paths["ls_path"]
     ls_bins = paths["ls_bins"]
-    if not prod_asar.exists() or not ls_bins:
+    is_cli_only = paths.get("is_cli_only", False)
+    if not ls_bins or (not is_cli_only and (prod_asar is None or not prod_asar.exists())):
         raise FileNotFoundError(f"Antigravity installation not found at {args.agy_dir}")
+
+    if is_cli_only:
+        ver = read_cli_version(prod_ls)
+        orig_cli_bak = runtime_dir / f"{prod_ls.name}.orig_{ver}.bak"
+        if not orig_cli_bak.exists():
+            shutil.copy2(prod_ls, orig_cli_bak)
+        cand_cli = runtime_dir / f"{prod_ls.name}.v3.candidate"
+        ls_receipt = build_ls.build_and_verify_ls(orig_cli_bak, cand_cli)
+        ls_deployed_live = False
+        for target_ls in ls_bins:
+            tmp_prod_ls = target_ls.parent / f"{target_ls.name}.tmp.{os.getpid()}"
+            shutil.copy2(cand_cli, tmp_prod_ls)
+            try:
+                os.replace(tmp_prod_ls, target_ls)
+                ls_deployed_live = True
+            except PermissionError:
+                old_ls = target_ls.parent / f"{target_ls.name}.old.{os.getpid()}"
+                if old_ls.exists():
+                    try:
+                        old_ls.unlink()
+                    except OSError:
+                        pass
+                os.rename(target_ls, old_ls)
+                try:
+                    os.replace(tmp_prod_ls, target_ls)
+                except Exception:
+                    if old_ls.exists() and not target_ls.exists():
+                        try:
+                            os.rename(old_ls, target_ls)
+                        except OSError:
+                            pass
+                    if tmp_prod_ls.exists():
+                        tmp_prod_ls.unlink(missing_ok=True)
+                    raise
+                ls_deployed_live = True
+        cli_tx_receipt = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "platform": "darwin-arm64" if patch_sites.is_macho_arm64(orig_cli_bak.read_bytes()[:32]) else "win32-x64",
+            "target_kind": "cli",
+            "version": ver,
+            "runtime_dir": str(runtime_dir),
+            "ls_deployed_live": ls_deployed_live,
+            "ls_receipt": ls_receipt,
+        }
+        receipt_file = runtime_dir / "last_cli_install_receipt.json"
+        tmp_receipt_file = runtime_dir / f"last_cli_install_receipt.json.tmp.{os.getpid()}"
+        tmp_receipt_file.write_text(json.dumps(cli_tx_receipt, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp_receipt_file, receipt_file)
+        print(json.dumps(cli_tx_receipt, ensure_ascii=False, indent=2))
+        return
 
     ver = read_asar_version(prod_asar)
     ls_bak_name = f"language_server.orig_{ver}.bak" if paths["is_mac_bundle"] else f"language_server.exe.orig_{ver}.bak"
@@ -778,7 +885,17 @@ def cmd_install(args):
                     except OSError:
                         pass
                 os.rename(target_ls, old_ls)
-                os.replace(tmp_prod_ls, target_ls)
+                try:
+                    os.replace(tmp_prod_ls, target_ls)
+                except Exception:
+                    if old_ls.exists() and not target_ls.exists():
+                        try:
+                            os.rename(old_ls, target_ls)
+                        except OSError:
+                            pass
+                    if tmp_prod_ls.exists():
+                        tmp_prod_ls.unlink(missing_ok=True)
+                    raise
                 ls_deployed_live = True
 
     deferred_swapper_pid = None
@@ -826,6 +943,20 @@ def cmd_rollback(args):
     prod_asar = paths["asar_path"]
     prod_ls = paths["ls_path"]
     ls_bins = paths["ls_bins"]
+    if paths.get("is_cli_only", False):
+        ver = read_cli_version(prod_ls)
+        orig_cli_bak = runtime_dir / f"{prod_ls.name}.orig_{ver}.bak"
+        if not orig_cli_bak.exists():
+            raise FileNotFoundError(f"CLI baseline backup {orig_cli_bak.name} not found in {runtime_dir}")
+        for target_ls in ls_bins:
+            try:
+                atomic_replace_from_file(orig_cli_bak, target_ls)
+            except PermissionError:
+                old_ls = target_ls.parent / f"{target_ls.name}.old.{os.getpid()}"
+                os.rename(target_ls, old_ls)
+                atomic_replace_from_file(orig_cli_bak, target_ls)
+        print(json.dumps({"status": "rolled_back", "target_kind": "cli", "version": ver, "cli_sha256": sha256_file(prod_ls)}, indent=2))
+        return
     ver = read_asar_version(prod_asar)
 
     ls_bak_name = f"language_server.orig_{ver}.bak" if paths["is_mac_bundle"] else f"language_server.exe.orig_{ver}.bak"
@@ -900,7 +1031,7 @@ def cmd_hot_inject(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Antigravity Enhance Suite CLI (v3.6.6)")
+    parser = argparse.ArgumentParser(description="Antigravity Enhance Suite CLI (v3.6.7)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_ins = sub.add_parser("inspect", help="Inspect current Antigravity installation & patch sites")

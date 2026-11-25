@@ -4,6 +4,21 @@
 
 ---
 
+## [v3.6.7] - 2026-11-25
+
+### 主要更新
+- **官方 Antigravity 桌面端 `v2.34.0`、`v2.35.1` 全栈兼容适配**（`src/patch_sites.py` · `src/build_ls.py` · `src/build_asar.py`）
+  - 适配 Go 服务端 `v2.35.1` 符号与寄存器布局调整，覆盖未导出符号 `(*truncationDecorator).truncateIfTooLarge`（`Site 23` 单会话轨迹体积上限扩容至 `256 MB`，兼容 `cmp rcx` 七处立即数）、`utils.isRetryableAPIError` 动态栈偏移与新增 `transports.IsIncompleteEnvelopeUnexpectedEOF` 流式截断重试（`Site 13`）、`go_utils.IsNetworkError` / `neterr.IsNetworkError` 静态网络错误表扩展（`Site 14`，使用完整 `'stream reading error:'` 子串避免误匹配鉴权链路中的 `'upstream '`）以及 `startMessageWatcherLocked.func2` 立即唤醒检查（`Site 20`）。
+  - 适配 Electron 宿主 `v2.34.0`、`v2.35.1` 生命周期锚点：`ipcHandlers.js` 兼容 `hasCustomWindowControls(win)` 自绘标题栏窗口保护，避免在无原生标题栏覆盖层的窗口上触发异常；`main.js` 对齐新版 `onPortChanged` 回调并保留 `authBootstrap` 令牌签发与附属窗口隔离逻辑。
+- **AGY 无头命令行 `v1.5.17+` 原生支持**（`agy_suite.py` · `src/patch_sites.py` · `src/build_ls.py`）
+  - `agy_suite.py` 的 `inspect`、`install`、`rollback` 原生识别独立 CLI 安装目录与 `agy(.exe)` 二进制，自动归档 `agy.exe.orig_<ver>.bak` 并落盘独立回执 `last_cli_install_receipt.json`，替换受阻时支持安全回退复原。
+  - 适配命令行 `Site 19`（`[r8+0x12]` 唤醒状态机跳转）及被编译器内联至八个精确鉴权调用点的 `newRefreshingTokenSource` OAuth 预刷新窗口（`Site 17`，`5m -> 20m`）。
+- **二次定位逐字节还原加固与跨页重编码修复**（`src/patch_sites.py` · `tests/test_harness_guardrails.py`）
+  - 修正 `x86_64` 下 `Site 16` 已补丁态符号特征回填与 `Site 21` 对 `.(*AgentState).SubagentsAndTasksIdle` 相对调用偏移的二次还原，确保已打补丁二进制二次定位生成的 `before` 字节与原厂文件 `SHA-256` 逐字节一致。
+  - 将 macOS `ARM64` 动态 `Site 13` 升级为 `(ADRP, ADD, MOV)` 整体重编码以支持跨 `4KB` 页边界寻址；扩充 `V234AdaptationTests`、`V2351AdaptationTests` 回归单测并全部通过。
+
+---
+
 ## [v3.6.6] - 2026-11-20
 
 ### 新增与优化 (Added & Changed)

@@ -423,8 +423,16 @@ def locate_1m_context_sites(data: bytes, funcs: dict):
                     )
                     break
 
-        # Site 23 (ARM64): (*TruncationDecorator).truncateIfTooLarge trajectory byte cap (25MB 0x01900000 -> 256MB 0x10000000)
-        td_key = next((k for k in funcs if k.endswith("(*TruncationDecorator).truncateIfTooLarge")), None)
+        # Site 23 (ARM64): (*TruncationDecorator|*truncationDecorator).truncateIfTooLarge trajectory byte cap (25MB 0x01900000 -> 256MB 0x10000000)
+        td_key = next(
+            (
+                k
+                for k in funcs
+                if k.endswith("(*TruncationDecorator).truncateIfTooLarge")
+                or k.endswith("(*truncationDecorator).truncateIfTooLarge")
+            ),
+            None,
+        )
         if td_key:
             td_off, td_sz = funcs[td_key]
             if td_off % 4 == 0 and td_sz >= 4:
@@ -444,7 +452,7 @@ def locate_1m_context_sites(data: bytes, funcs: dict):
                         struct.pack_into("<I", td_orig, off4, 0x52A03200 | rd)
                         struct.pack_into("<I", td_patch, off4, 0x52A20000 | rd)
                         arm_hits += 1
-                if arm_hits > 0 and (td_sz < 512 or arm_hits in (3, 4, 5, 6)):
+                if arm_hits > 0 and (td_sz < 512 or arm_hits in (3, 4, 5, 6, 7)):
                     sites.append(
                         (
                             "Site 23 (*TruncationDecorator).truncateIfTooLarge (trajectory byte cap 25MB -> 256MB)",
@@ -564,8 +572,16 @@ def locate_1m_context_sites(data: bytes, funcs: dict):
                 )
                 break
 
-    # Site 23 (x64): (*TruncationDecorator).truncateIfTooLarge trajectory byte cap (25MB 0x01900000 -> 256MB 0x10000000)
-    td_key = next((k for k in funcs if k.endswith("(*TruncationDecorator).truncateIfTooLarge")), None)
+    # Site 23 (x64): (*TruncationDecorator|*truncationDecorator).truncateIfTooLarge trajectory byte cap (25MB 0x01900000 -> 256MB 0x10000000)
+    td_key = next(
+        (
+            k
+            for k in funcs
+            if k.endswith("(*TruncationDecorator).truncateIfTooLarge")
+            or k.endswith("(*truncationDecorator).truncateIfTooLarge")
+        ),
+        None,
+    )
     if td_key:
         td_off, td_sz = funcs[td_key]
         td_bytes = bytes(data[td_off : td_off + td_sz])
@@ -574,6 +590,7 @@ def locate_1m_context_sites(data: bytes, funcs: dict):
         x64_patterns = (
             (b"\x48\x3d", b""),
             (b"\x48\x81\xfa", b""),
+            (b"\x48\x81\xf9", b""),
             (b"\x48\x81\xf8", b""),
             (b"\x48\xc7\xc0", b""),
             (b"\x48\xb8", b"\x00\x00\x00\x00"),
@@ -602,11 +619,21 @@ def locate_1m_context_sites(data: bytes, funcs: dict):
                 ):
                     idx = pos_p + 1
                     continue
+                if any(
+                    (
+                        (td_bytes[m] == 0xC7 and (td_bytes[m + 1] & 0xF8) == 0x80)
+                        or (td_bytes[m] == 0x81 and (td_bytes[m + 1] & 0xC0) == 0x80)
+                    )
+                    and (pos_p - m) < (11 if (td_bytes[m + 1] & 0x07) == 4 else 10)
+                    for m in range(max(0, pos_p - 10), pos_p)
+                ):
+                    idx = pos_p + 1
+                    continue
                 spans.append((pos_p, pos_p + len(p_orig), p_orig, p_patch))
                 idx = pos_p + len(p_orig)
         spans.sort(key=lambda s: s[0])
         non_overlapping = all(spans[i][1] <= spans[i + 1][0] for i in range(len(spans) - 1))
-        if spans and non_overlapping and (td_sz < 512 or len(spans) in (4, 6)):
+        if spans and non_overlapping and (td_sz < 512 or len(spans) in (4, 6, 7)):
             for s_start, s_end, p_orig, p_patch in spans:
                 td_orig[s_start:s_end] = p_orig
                 td_patch[s_start:s_end] = p_patch
@@ -736,7 +763,23 @@ def locate_utf8_and_uri_sites(data: bytes, funcs: dict):
 
 def locate_stream_retry_sites(data: bytes, funcs: dict):
     sites = []
-    ir_key = next((k for k in funcs if k.endswith("/utils.IsRetryableAPIError")), None)
+    ir_key = next(
+        (
+            k
+            for k in funcs
+            if k.endswith("/utils.IsRetryableAPIError") or k.endswith("/utils.isRetryableAPIError")
+        ),
+        None,
+    )
+    ie_key = next(
+        (
+            k
+            for k in funcs
+            if k.endswith("/transports.IsIncompleteEnvelopeUnexpectedEOF")
+            or k.endswith("/transports.isIncompleteEnvelopeUnexpectedEOF")
+        ),
+        None,
+    )
     if not ir_key:
         return sites
     ir_off, ir_sz = funcs[ir_key]
@@ -745,6 +788,14 @@ def locate_stream_retry_sites(data: bytes, funcs: dict):
     if is_macho_arm64(data):
         sections = parse_macho_sections(data)
         fn_va = macho_raw_to_va(sections, ir_off)
+        def _encode_arm64_adrp_add_x2(pc_va: int, target_va: int) -> tuple[int, int]:
+            page_delta = ((target_va & ~0xFFF) - (pc_va & ~0xFFF)) >> 12
+            immlo = page_delta & 0x3
+            immhi = (page_delta >> 2) & 0x7FFFF
+            adrp_w = 0x90000002 | (immlo << 29) | (immhi << 5)
+            add_w = 0x91000042 | ((target_va & 0xFFF) << 10)
+            return adrp_w, add_w
+
         # Site 13: unexpected EOF suffix match
         s13_arm_orig = bytes.fromhex("42f00c91630480d2")
         s13_arm_patch = bytes.fromhex("42440d91c30180d2")
@@ -768,21 +819,48 @@ def locate_stream_retry_sites(data: bytes, funcs: dict):
                     imm = ((immhi << 2) | immlo) << 12
                     if imm & (1 << 32):
                         imm -= 1 << 33
-                    page = ((fn_va + i) & ~0xFFF) + imm
-                    add_imm = (w2 >> 10) & 0xFFF
-                    orig_add_imm = add_imm if w3 == 0xD2800463 else (add_imm - 21)
-                    str_raw = macho_va_to_raw(sections, page + orig_add_imm)
+                    cur_va = (((fn_va + i) & ~0xFFF) + imm) + ((w2 >> 10) & 0xFFF)
+                    orig_va = cur_va if w3 == 0xD2800463 else (cur_va - 21)
+                    str_raw = macho_va_to_raw(sections, orig_va)
                     if str_raw is not None and data[str_raw : str_raw + 35] == b"incomplete envelope: unexpected EOF":
-                        w2_orig = (w2 & 0xFFC003FF) | ((orig_add_imm & 0xFFF) << 10)
-                        w2_patch = (w2 & 0xFFC003FF) | (((orig_add_imm + 21) & 0xFFF) << 10)
-                        dyn13_orig = struct.pack("<II", w2_orig, 0xD2800463)
-                        dyn13_patch = struct.pack("<II", w2_patch, 0xD28001C3)
+                        w1_orig, w2_orig = _encode_arm64_adrp_add_x2(fn_va + i, orig_va)
+                        w1_patch, w2_patch = _encode_arm64_adrp_add_x2(fn_va + i, orig_va + 21)
+                        dyn13_orig = struct.pack("<III", w1_orig, w2_orig, 0xD2800463)
+                        dyn13_patch = struct.pack("<III", w1_patch, w2_patch, 0xD28001C3)
                         sites.append(
                             (
                                 "utils.IsRetryableAPIError ('unexpected EOF' mid-stream auto-retry)",
-                                ir_off + i + 4,
+                                ir_off + i,
                                 dyn13_orig,
                                 dyn13_patch,
+                            )
+                        )
+                        break
+
+        if ie_key:
+            ie_off, ie_sz = funcs[ie_key]
+            ie_bytes = data[ie_off : ie_off + ie_sz]
+            ie_va = macho_raw_to_va(sections, ie_off)
+            for i in range(0, len(ie_bytes) - 12, 4):
+                w1, w2, w3 = struct.unpack_from("<III", ie_bytes, i)
+                if (w1 & 0x9F00001F) == 0x90000002 and (w2 & 0xFFC003FF) == 0x91000042 and w3 in (0xD2800463, 0xD28001C3):
+                    immlo = (w1 >> 29) & 0x3
+                    immhi = (w1 >> 5) & 0x7FFFF
+                    imm = ((immhi << 2) | immlo) << 12
+                    if imm & (1 << 32):
+                        imm -= 1 << 33
+                    cur_va = (((ie_va + i) & ~0xFFF) + imm) + ((w2 >> 10) & 0xFFF)
+                    orig_va = cur_va if w3 == 0xD2800463 else (cur_va - 21)
+                    str_raw = macho_va_to_raw(sections, orig_va)
+                    if str_raw is not None and data[str_raw : str_raw + 35] == b"incomplete envelope: unexpected EOF":
+                        w1_orig, w2_orig = _encode_arm64_adrp_add_x2(ie_va + i, orig_va)
+                        w1_patch, w2_patch = _encode_arm64_adrp_add_x2(ie_va + i, orig_va + 21)
+                        sites.append(
+                            (
+                                "transports.IsIncompleteEnvelopeUnexpectedEOF ('unexpected EOF' envelope auto-retry)",
+                                ie_off + i,
+                                struct.pack("<III", w1_orig, w2_orig, 0xD2800463),
+                                struct.pack("<III", w1_patch, w2_patch, 0xD28001C3),
                             )
                         )
                         break
@@ -914,16 +992,27 @@ def locate_stream_retry_sites(data: bytes, funcs: dict):
 
     # Site 13: utils.IsRetryableAPIError ("incomplete envelope: unexpected EOF" len 35 -> "unexpected EOF" len 14)
     s13_candidates = (
-        bytes.fromhex("488b8c2440010000488b4918488b842448010000ffd1488d0d"),  # v2.33.0+
+        bytes.fromhex("488b8c2440010000488b4918488b842448010000ffd1488d0d"),  # v2.33.0
         bytes.fromhex("488b8c2448010000488b4918488b842450010000ffd1488d0d"),  # v2.24.0-v2.32.2
     )
-    idx13 = -1
+    site13_offsets = []
     for s13_ctx in s13_candidates:
         idx13 = ir_bytes.find(s13_ctx)
         if idx13 != -1:
+            site13_offsets.append(ir_off + idx13 + 22)
             break
-    if idx13 != -1:
-        site13_off = ir_off + idx13 + 22
+    if not site13_offsets:
+        # v2.34.0+ dynamic locator: resilient to stack offset shifts and alignment NOPs before `call rcx`.
+        scan_pos = 0
+        while True:
+            hit = ir_bytes.find(b"\x48\x8d\x0d", scan_pos)
+            if hit == -1 or hit + 12 > len(ir_bytes):
+                break
+            if ir_bytes[hit + 7 : hit + 12] in (b"\xbf\x23\x00\x00\x00", b"\xbf\x0e\x00\x00\x00"):
+                site13_offsets.append(ir_off + hit)
+            scan_pos = hit + 1
+
+    for site13_off in site13_offsets:
         disp_val = struct.unpack_from("<i", data, site13_off + 3)[0]
         len_op = data[site13_off + 7 : site13_off + 12]
         if len_op == b"\xbf\x23\x00\x00\x00":
@@ -939,10 +1028,41 @@ def locate_stream_retry_sites(data: bytes, funcs: dict):
                 s13_orig = b"\x48\x8d\x0d" + struct.pack("<i", orig_disp) + b"\xbf\x23\x00\x00\x00"
                 s13_patch = b"\x48\x8d\x0d" + struct.pack("<i", orig_disp + 21) + b"\xbf\x0e\x00\x00\x00"
                 sites.append(("utils.IsRetryableAPIError ('unexpected EOF' mid-stream auto-retry)", site13_off, s13_orig, s13_patch))
+                break
 
-    # Site 14: utils.IsRetryableAPIError retryableSubstrings .data table expansion
+    if ie_key:
+        ie_off, ie_sz = funcs[ie_key]
+        ie_bytes = data[ie_off : ie_off + ie_sz]
+        scan_pos = 0
+        while True:
+            hit = ie_bytes.find(b"\x48\x8d\x0d", scan_pos)
+            if hit == -1 or hit + 12 > len(ie_bytes):
+                break
+            len_op = ie_bytes[hit + 7 : hit + 12]
+            if len_op in (b"\xbf\x23\x00\x00\x00", b"\xbf\x0e\x00\x00\x00"):
+                site_ie_off = ie_off + hit
+                disp_val = struct.unpack_from("<i", data, site_ie_off + 3)[0]
+                orig_disp = disp_val if len_op == b"\xbf\x23\x00\x00\x00" else (disp_val - 21)
+                str_rva = raw_to_rva(sections, site_ie_off) + 7 + orig_disp
+                str_raw = rva_to_raw(sections, str_rva)
+                if str_raw is not None and data[str_raw : str_raw + 35] == b"incomplete envelope: unexpected EOF":
+                    ie_orig = b"\x48\x8d\x0d" + struct.pack("<i", orig_disp) + b"\xbf\x23\x00\x00\x00"
+                    ie_patch = b"\x48\x8d\x0d" + struct.pack("<i", orig_disp + 21) + b"\xbf\x0e\x00\x00\x00"
+                    sites.append(
+                        (
+                            "transports.IsIncompleteEnvelopeUnexpectedEOF ('unexpected EOF' envelope auto-retry)",
+                            site_ie_off,
+                            ie_orig,
+                            ie_patch,
+                        )
+                    )
+                    break
+            scan_pos = hit + 1
+
+    # Site 14: retryable network/stream substring table expansion
+    # Path A (v2.24.0-v2.33.0): .data slice referenced directly in utils.IsRetryableAPIError
     s14_candidates = (
-        bytes.fromhex("48898424c800000048895c2468488b0d"),  # v2.33.0+
+        bytes.fromhex("48898424c800000048895c2468488b0d"),  # v2.33.0
         bytes.fromhex("48898424d000000048895c2468488b0d"),  # v2.24.0-v2.32.2
     )
     idx14 = -1
@@ -997,7 +1117,7 @@ def locate_stream_retry_sites(data: bytes, funcs: dict):
                 )
                 sites.append(("utils.IsRetryableAPIError (retryableSubstrings table expansion)", arr_raw, s14_orig, s14_patch))
             elif arr_raw is not None and arr_len in (15, 16, 17):
-                # v2.26.0–v2.33.0+: 15/16/17-slot lowercase table after strings.ToLower
+                # v2.26.0–v2.33.0: 15/16/17-slot lowercase table after strings.ToLower
                 entries = [list(struct.unpack_from("<QQ", data, arr_raw + i * 16)) for i in range(arr_len)]
                 va0, _ = entries[0]
                 va4, len4 = entries[4]
@@ -1047,6 +1167,101 @@ def locate_stream_retry_sites(data: bytes, funcs: dict):
                 s14_26_orig = b"".join(struct.pack("<QQ", v, l) for v, l in orig_entries)
                 s14_26_patch = b"".join(struct.pack("<QQ", v, l) for v, l in patch_entries)
                 sites.append((f"utils.IsRetryableAPIError (v2.26.0+ {arr_len}-slot retryableSubstrings expansion)", arr_raw, s14_26_orig, s14_26_patch))
+    else:
+        # Path B (v2.34.0+): retryable substrings moved to 30-slot static table in go_utils.IsNetworkError (.rdata, DIR64 relocated).
+        # Note: language_server.isOfflineAuthFailure also calls go_utils.IsNetworkError, so only pure network/proxy/stream/timeout
+        # patterns are added here (never "unauthenticated"; OAuth token expiry is prevented upstream by Site 17).
+        ne_key = next(
+            (
+                k
+                for k in funcs
+                if k.endswith("/go_utils.IsNetworkError") or k.endswith("/neterr.IsNetworkError")
+            ),
+            None,
+        )
+        if ne_key:
+            ne_off, ne_sz = funcs[ne_key]
+            ne_bytes = data[ne_off : ne_off + ne_sz]
+            ne_rva = raw_to_rva(sections, ne_off)
+            arr_raw = None
+            for i in range(len(ne_bytes) - 13):
+                if ne_bytes[i : i + 3] == b"\x48\x8d\x35" and ne_bytes[i + 7 : i + 13] == b"\x41\xb8\x07\x00\x00\x00":
+                    disp_ne = struct.unpack_from("<i", ne_bytes, i + 3)[0]
+                    cand_raw = rva_to_raw(sections, ne_rva + i + 7 + disp_ne)
+                    if cand_raw is not None and cand_raw + 30 * 16 <= len(data):
+                        arr_raw = cand_raw
+                        break
+            if arr_raw is not None:
+                entries = [list(struct.unpack_from("<QQ", data, arr_raw + i * 16)) for i in range(30)]
+
+                def _read_entry_bytes(entry):
+                    sv, sl = entry
+                    if sv <= image_base or sl > 128:
+                        return None
+                    sr = rva_to_raw(sections, sv - image_base)
+                    return bytes(data[sr : sr + sl]) if sr is not None else None
+
+                anchors_ok = (
+                    _read_entry_bytes(entries[2]) == b"broken pipe"
+                    and _read_entry_bytes(entries[22]) == b"bad record mac"
+                    and _read_entry_bytes(entries[25]) == b"no such host"
+                    and _read_entry_bytes(entries[28]) == b"unexpected eof"
+                    and _read_entry_bytes(entries[29]) == b": eof"
+                )
+                if anchors_ok:
+                    va0, len0 = entries[0]
+                    orig_va0 = va0 if len0 == 19 else (va0 - 10)
+                    va8, len8 = entries[8]
+                    orig_va8 = va8 if len8 == 11 else (va8 - 4)
+                    va9, len9 = entries[9]
+                    orig_va9 = va9 if len9 == 20 else (image_base + raw_to_rva(sections, _require_bytes(data, b"connection timed out")))
+                    va12, _ = entries[12]
+                    va13, len13 = entries[13]
+                    orig_va13 = va13 if len13 == 37 else (image_base + raw_to_rva(sections, _require_bytes(data, b"http2: client connection force closed")))
+                    va23, _ = entries[23]
+                    va24, len24 = entries[24]
+                    orig_va24 = (
+                        va24
+                        if (len24 == 7 and _read_entry_bytes(entries[24]) == b"wsarecv")
+                        else (image_base + raw_to_rva(sections, _require_bytes(data, b"wsarecv")))
+                    )
+                    va26, len26 = entries[26]
+                    orig_va26 = va26 if len26 == 32 else (va26 - 22)
+
+                    va_proxyconn = image_base + raw_to_rva(sections, _require_bytes(data, b"proxyconnect"))
+                    va_deadline = image_base + raw_to_rva(sections, _require_bytes(data, b"context deadline exceeded") + 8)
+                    va_sre = image_base + raw_to_rva(sections, _require_bytes(data, b"stream reading error: %w"))
+
+                    orig_entries = [list(e) for e in entries]
+                    orig_entries[0] = [orig_va0, 19]     # "operation timed out"
+                    orig_entries[8] = [orig_va8, 11]     # "i/o timeout"
+                    orig_entries[9] = [orig_va9, 20]     # "connection timed out"
+                    orig_entries[12] = [va12, 29]        # "http2: client connection lost"
+                    orig_entries[13] = [orig_va13, 37]   # "http2: client connection force closed"
+                    orig_entries[23] = [va23, 7]         # "wsasend"
+                    orig_entries[24] = [orig_va24, 7]    # "wsarecv"
+                    orig_entries[26] = [orig_va26, 32]   # "use of closed network connection"
+
+                    patch_entries = [list(e) for e in entries]
+                    patch_entries[0] = [orig_va0 + 10, 9]    # "timed out"
+                    patch_entries[8] = [orig_va8 + 4, 7]     # "timeout"
+                    patch_entries[9] = [va_proxyconn, 12]    # "proxyconnect"
+                    patch_entries[12] = [va12, 6]            # "http2:"
+                    patch_entries[13] = [va_deadline, 17]    # "deadline exceeded"
+                    patch_entries[23] = [va23, 3]            # "wsa"
+                    patch_entries[24] = [va_sre, 21]         # "stream reading error:" (avoids matching "upstream ")
+                    patch_entries[26] = [orig_va26 + 22, 10] # "connection"
+
+                    s14_30_orig = b"".join(struct.pack("<QQ", v, l) for v, l in orig_entries)
+                    s14_30_patch = b"".join(struct.pack("<QQ", v, l) for v, l in patch_entries)
+                    sites.append(
+                        (
+                            "go_utils.IsNetworkError (v2.34.0+ 30-slot network retry table expansion)",
+                            arr_raw,
+                            s14_30_orig,
+                            s14_30_patch,
+                        )
+                    )
 
     return sites
 
@@ -1328,6 +1543,12 @@ def locate_bg_task_timeout_sites(data: bytes, funcs: dict):
             wib_orig = wib_orig_v231
         elif wib_orig_v230 in wib_bytes:
             wib_orig = wib_orig_v230
+        elif wib_orig_v228 in wib_bytes:
+            wib_orig = wib_orig_v228
+        elif any(k.endswith(".GatewayModelDetails") or k.endswith(".(*AgentState).SubagentsAndTasksIdle") for k in funcs):
+            wib_orig = wib_orig_v231
+        elif any(k.endswith("/media.smallerAsJPEG") for k in funcs):
+            wib_orig = wib_orig_v230
         else:
             wib_orig = wib_orig_v228
         pos_wib = wib_bytes.find(wib_orig)
@@ -1351,6 +1572,11 @@ def locate_bg_task_timeout_sites(data: bytes, funcs: dict):
             (
                 bytes.fromhex("4c8b8424d80000004180781a000f1f000f84cb000000"),
                 bytes.fromhex("4c8b8424d80000004180781a000f1f00e9cc00000090"),
+            ),
+            # agy CLI v1.5.17+: mov r8, [rsp+0xd8]; cmp byte ptr [r8+0x12], 0; jz +0xcb -> jmp +0xcc; nop
+            (
+                bytes.fromhex("4c8b8424d800000041807812000f84cb000000"),
+                bytes.fromhex("4c8b8424d80000004180781200e9cc00000090"),
             ),
             # v2.30.0+: movzx r8d, byte ptr [rsp+0xca]; jz +0xcb -> jmp +0xcc; nop
             (
@@ -1385,7 +1611,12 @@ def locate_bg_task_timeout_sites(data: bytes, funcs: dict):
         mw2_off, mw2_sz = funcs[mw2_key]
         mw2_bytes = data[mw2_off : mw2_off + mw2_sz]
         mw2_candidates = [
-            # v2.33.0+: movzx edx, byte ptr [rsp+0x32]; test dl, dl; jz +0x53; mov rax, [rsp+0xb0]
+            # v2.35.1+ / agy CLI v1.5.17+: movzx ecx, byte ptr [rsp+0x32]; xchg ax, ax; test cl, cl; jz +0x53; mov rax, [rsp+0xb0]
+            (
+                bytes.fromhex("0fb64c2432669084c97453488b8424b0000000"),
+                bytes.fromhex("0fb64c2432669084c99090488b8424b0000000"),
+            ),
+            # v2.33.0-v2.34.0: movzx edx, byte ptr [rsp+0x32]; test dl, dl; jz +0x53; mov rax, [rsp+0xb0]
             (
                 bytes.fromhex("0fb654243284d27453488b8424b0000000"),
                 bytes.fromhex("0fb654243284d29090488b8424b0000000"),
@@ -1425,9 +1656,12 @@ def locate_bg_task_timeout_sites(data: bytes, funcs: dict):
             mwr_orig = bytes(mwr_bytes[pos_mwr : pos_mwr + len(mwr_patch)])
         else:
             pos_mwr = mwr_bytes.find(mwr_patch)
-            is_run_key = next((k for k in funcs if k.endswith(".(*AgentState).IsRunning")), None)
-            if is_run_key and pos_mwr != -1:
-                disp32 = funcs[is_run_key][0] - (mwr_off + pos_mwr + 5)
+            idle_fn_key = next(
+                (k for k in funcs if k.endswith(".(*AgentState).SubagentsAndTasksIdle")),
+                None,
+            ) or next((k for k in funcs if k.endswith(".(*AgentState).IsRunning")), None)
+            if idle_fn_key and pos_mwr != -1:
+                disp32 = funcs[idle_fn_key][0] - (mwr_off + pos_mwr + 5)
                 call_orig = b"\xe8" + struct.pack("<i", disp32)
             else:
                 call_orig = bytes.fromhex("e8a7bb70ff")
@@ -1516,4 +1750,53 @@ def locate_oauth_token_sites(data: bytes, funcs: dict):
                             )
                         )
                         break
+    if not is_macho_arm64(data):
+        # agy CLI v1.5.17+ x64: RefreshingTokenSource(src, 5*time.Minute) is inlined into known auth callers as:
+        # mov [rdx/rcx+0x10], rax; movabs rsi/rdi/r8, 300_000_000_000; mov [rdx/rcx+0x18], rsi/rdi/r8
+        ns_5m = struct.pack("<Q", 300_000_000_000)
+        ns_20m = struct.pack("<Q", 1_200_000_000_000)
+        inlined_patterns = (
+            (b"\x48\x89\x42\x10\x48\xbe", b"\x48\x89\x72\x18"),
+            (b"\x48\x89\x42\x10\x48\xbf", b"\x48\x89\x7a\x18"),
+            (b"\x48\x89\x42\x10\x49\xb8", b"\x4c\x89\x42\x18"),
+            (b"\x48\x89\x41\x10\x48\xbe", b"\x48\x89\x71\x18"),
+            (b"\x48\x89\x41\x10\x48\xbf", b"\x48\x89\x79\x18"),
+            (b"\x48\x89\x41\x10\x49\xb8", b"\x4c\x89\x41\x18"),
+        )
+        allowed_inlined_suffixes = (
+            "/auth.(*Manager).authenticateOAuthBusiness",
+            "/auth.(*keyringAuth).TryAuth.func1",
+            "/auth.(*oauthMethod).completeOAuth.func1.1",
+            "/auth.(*wifOAuthMethod).completeOAuth.func1.1",
+            "/auth.refreshAndSaveStoredToken",
+            "/codeassistclient.(*AntigravityHubAuthProvider).GetTokenSource",
+            "/codeassistclient.(*HostAuthProvider).GetTokenSource",
+            "/codeassistclient.(*StandaloneAuthProvider).ensureValidToken",
+        )
+        for fn_name in sorted(funcs):
+            if fn_name == ca_key or not fn_name.endswith(allowed_inlined_suffixes):
+                continue
+            fn_off, fn_sz = funcs[fn_name]
+            fn_bytes = data[fn_off : fn_off + fn_sz]
+            short_fn = fn_name.rsplit("/", 1)[-1]
+            for pre, post in inlined_patterns:
+                seq_orig = pre + ns_5m + post
+                seq_patch = pre + ns_20m + post
+                pos = 0
+                while True:
+                    i_orig = fn_bytes.find(seq_orig, pos)
+                    i_patch = fn_bytes.find(seq_patch, pos)
+                    cands = [x for x in (i_orig, i_patch) if x != -1]
+                    if not cands:
+                        break
+                    hit = min(cands)
+                    sites.append(
+                        (
+                            f"{short_fn} (inlined newRefreshingTokenSource 5m -> 20m @+0x{hit:x})",
+                            fn_off + hit,
+                            seq_orig,
+                            seq_patch,
+                        )
+                    )
+                    pos = hit + len(seq_orig)
     return sites
