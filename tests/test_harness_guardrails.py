@@ -1093,5 +1093,541 @@ class V233AdaptationTests(unittest.TestCase):
         self.assertEqual(lock_events, ["lock", "unlock", "lock", "unlock"])
 
 
+class V234AdaptationTests(unittest.TestCase):
+    """Regression tests for Antigravity v2.34.0 Site 13/14 (go_utils.IsNetworkError) & AuthBootstrap ASAR patches."""
+
+    def test_v234_asar_patchers_preserve_auth_bootstrap_and_host_bridge_stdin(self) -> None:
+        from src import build_asar
+
+        # 1. ipcHandlers.js v2.34.0 dynamic height & non-macOS overlay
+        sample_ipc = """
+    electron_1.ipcMain.handle('window:set-title-bar-overlay', async (event, options) => {
+        // The sender's own window: each window has its own overlay, and a theme
+        // change reaches every window's renderer, focused or not.
+        const win = windowForSender(event?.sender);
+        // Windows and Linux windows both get a native caption-button overlay
+        // (see createWindow in utils.ts), so keep them in sync; macOS has none.
+        if (win && !(0, utils_1.isMacOS)()) {
+            // Omit a missing height: Electron keeps the fields it isn't given, so
+            // a colors-only update must not reset a taller titlebar's buttons.
+            // The key is left out rather than set to `undefined`: Electron checks
+            // whether each field is present, and today an `undefined` one is only
+            // skipped because converting it to an int fails quietly.
+            const height = (0, windowState_1.titleBarOverlayHeight)(options.height);
+            win.setTitleBarOverlay({
+                color: options.color,
+                symbolColor: options.symbolColor,
+                ...(height !== undefined ? { height } : {}),
+            });
+        }
+    });
+"""
+        patched_ipc = build_asar.patch_ipc_handlers_js(sample_ipc)
+        self.assertIn("titleBarOverlayHeight", patched_ipc)
+        self.assertIn("isTrustedAgySender", patched_ipc)
+        self.assertIn("agy:get-preferences", patched_ipc)
+
+        # 2. utils.js v2.34.0 loadHubWindowUrl bootstrap mint hook
+        sample_utils = """
+function createWindow(url, storageManager, options) {
+    devTools: (0, debugConsole_1.isDebugConsoleEnabled)(),
+    const maxLength = 25;
+    const skipBootstrapMint = Boolean(options?.partition || options?.navigationPolicy);
+    void loadHubWindowUrl(win, url, { skipBootstrapMint });
+    return win;
+}
+"""
+        patched_utils = build_asar.patch_utils_js(sample_utils, "a" * 64, 1234)
+        self.assertIn("if (!_agyIsRemoteWin) attachControlledEnhancement(win);\n    const skipBootstrapMint =", patched_utils)
+        self.assertIn("void loadHubWindowUrl(win, url, { skipBootstrapMint });", patched_utils)
+
+        # 3. main.js v2.34.0 onPortChanged preserves browserViewer reset + buildLsRestartWindowUrl + loadHubWindowUrl
+        sample_main = """
+            onPortChanged: (newPort) => {
+                lsExited = false;
+                void (0, browserViewerHandler_1.resetBrowserViewerSessions)();
+                (0, captureWindow_1.disposeCaptureWindow)();
+                mendelFlagSync?.onPortChanged(newPort);
+                const newBaseUrl = `${constants_1.WINDOW_ORIGIN}:${newPort}`;
+                console.log(`[Auto-Restart] Port changed! Reloading all windows with URL: ${newBaseUrl}/`);
+                // Apply cert trust
+                (0, languageServer_1.setupLocalCertTrust)();
+                // Main-process ActuatorService streams follow the LS to its new port.
+                (0, mainClient_1.mainActuatorClientPortChanged)(newPort);
+                if (!HEADLESS) {
+                    // Hub windows only: the desktop HUD and SSH windows keep their own pages.
+                    const windows = (0, utils_1.getLocalHubWindows)();
+                    if (windows.length === 0 && pendingDeepLink !== null) {
+                        (0, utils_1.createWindow)(`${newBaseUrl}/`, storageManager);
+                        electron_1.app.focus({ steal: true });
+                    }
+                    else {
+                        for (const win of windows) {
+                            const currentUrl = (0, utils_1.getHubWebContents)(win)?.getURL?.();
+                            const targetUrl = (0, authBootstrap_1.buildLsRestartWindowUrl)(currentUrl, newBaseUrl);
+                            if (targetUrl) {
+                                void (0, utils_1.loadHubWindowUrl)(win, targetUrl);
+                            }
+                        }
+                    }
+                }
+            },
+"""
+        patched_main = build_asar.patch_main_js(sample_main)
+        self.assertIn("resetBrowserViewerSessions", patched_main)
+        self.assertIn("disposeCaptureWindow", patched_main)
+        self.assertIn("buildLsRestartWindowUrl", patched_main)
+        self.assertIn("loadHubWindowUrl", patched_main)
+        self.assertIn("agy:preferences-changed", patched_main)
+        self.assertNotIn("skipping window reload", patched_main)
+
+        # 4. languageServer.js v2.34.0 preserves hostBridgeToken stdin + setActiveLanguageServerAuth (no _lsPort)
+        sample_ls = """
+let _lsStdinIsLiveness = false;
+function clearLsProcess() {
+    _lsProcess = null;
+}
+async function startLanguageServer(port, csrf, options = {}) {
+    const logStream = fs.createWriteStream((0, paths_1.getLsLogPath)(), { flags: 'w' });
+        _lsProcess = (0, child_process_1.spawn)(spawnCmd, spawnArgs, {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            env,
+        });
+        _lsStdinIsLiveness = !!wsl;
+        _lsProcess.stdin?.on?.('error', () => {
+            // Ignore EPIPE if the child exits before consuming stdin.
+        });
+        if (hasHostBridgeToken && hostBridgeToken) {
+            if (wsl) {
+                // `--exit_on_stdin_close` is true: `readHostTokensFromStdin` returns
+                // immediately after line 1, and stdin must stay open for liveness.
+                _lsProcess.stdin?.write?.(`${hostBridgeToken}\\n`);
+            }
+            else if (headless) {
+                // `--exit_on_stdin_close` is false, and stdin stays open for headless
+                // OAuth input: send line 1 + empty line 2 so LS startup does not block.
+                _lsProcess.stdin?.write?.(`${hostBridgeToken}\\n\\n`);
+            }
+            else {
+                // Desktop local mode: write hostBridgeToken + empty line 2 and close stdin.
+                _lsProcess.stdin?.end?.(`${hostBridgeToken}\\n\\n`);
+            }
+        }
+        else if (!headless && !wsl) {
+            // Close stdin immediately — the LS may block waiting for metadata on stdin.
+            // In WSL mode stdin must stay open: it is the LS's liveness signal.
+            _lsProcess.stdin?.end?.();
+        }
+        const combined = new stream_1.PassThrough();
+        _lsProcess.stdout.pipe(combined, { end: false });
+        _lsProcess.stderr.pipe(combined, { end: false });
+        // Buffer stderr for crash log extraction (ring buffer)
+        const stderrChunks = [];
+        let stderrLength = 0;
+        _lsProcess.stderr.on('data', (data) => {
+            const str = data.toString();
+            stderrChunks.push(str);
+            stderrLength += str.length;
+            while (stderrChunks.length > 0 && stderrLength > MAX_STDERR_BUFFER) {
+                stderrLength -= stderrChunks.shift().length;
+            }
+        });
+        let resolved = false;
+        let logStreamEnded = false;
+        const timer = setTimeout(() => {
+            if (!resolved) {
+                resolved = true;
+                reject(new Error(`Timeout: language server did not report its port within ${LS_STARTUP_TIMEOUT_MS / 1000}s`));
+            }
+        }, LS_STARTUP_TIMEOUT_MS);
+        const rl = readline.createInterface({ input: combined, crlfDelay: Infinity });
+        rl.on('close', () => {
+            if (!logStreamEnded) {
+                logStreamEnded = true;
+                logStream.end();
+            }
+        });
+        rl.on('line', (line) => {
+            if (!logStreamEnded) {
+                logStream.write(line + '\\n');
+            }
+            if (!resolved) {
+                const m = PORT_PATTERN.exec(line);
+                if (m) {
+                    resolved = true;
+                    clearTimeout(timer);
+                    const actualPort = parseInt(m[1], 10);
+                    (0, authBootstrap_1.setActiveLanguageServerAuth)({ port: actualPort, csrfToken: csrf });
+                    resolve({
+                        port: actualPort,
+                        process: _lsProcess,
+                        exitPromise,
+                    });
+                }
+            }
+            const authMatch = AUTH_URL_PATTERN.exec(line);
+            if (authMatch) {
+                console.log('\\n' + '='.repeat(60));
+                console.log('  Please visit the following URL to authorize.');
+                console.log('  After authorizing, paste the authorization code below.');
+                console.log(`  ${authMatch[0]}`);
+                console.log('='.repeat(60) + '\\n');
+            }
+            const openUrl = extractOpenUrl(line);
+            if (openUrl) {
+                console.log(`Opening URL requested by the language server: ${openUrl}`);
+                void electron_1.shell.openExternal(openUrl);
+            }
+        });
+        // Exit promise — resolves whenever the process exits (whether during
+        // startup or after). Includes crash stack trace extraction.
+        const proc = _lsProcess;
+        const exitPromise = new Promise((exitResolve) => {
+            proc.on('exit', (code, signal) => {
+                if (_lsProcess === proc) {
+                    clearLsProcess();
+                }
+                if (!logStreamEnded) {
+                    logStreamEnded = true;
+                    logStream.end();
+                }
+                const fullStderr = stderrChunks.join('');
+                const crashStackTrace = extractCrashStackTrace(fullStderr);
+                // If we haven't resolved the startup promise yet, reject it.
+                if (!resolved) {
+                    resolved = true;
+                    clearTimeout(timer);
+                    reject(new Error(`Language server exited unexpectedly (code=${code}, signal=${signal})`));
+                }
+                exitResolve({ code, signal, crashStackTrace });
+            });
+        });
+}
+function monitorLsCrashInternal(handle, port, csrf, options) {
+    monitorLsCrashInternal(handle, port, csrf, options);
+    void handle.exitPromise.then(async (exitInfo) => {
+        clearLsProcess();
+            const newHandle = await startLanguageServer(port, csrf, options);
+            (0, authBootstrap_1.setActiveLanguageServerAuth)({ port: newHandle.port, csrfToken: csrf });
+            if (options.onPortChanged) {
+                options.onPortChanged(newHandle.port);
+            }
+            // Recurse
+            monitorLsCrashInternal(newHandle, port, csrf, options);
+    });
+}
+"""
+        patched_ls = build_asar.patch_language_server_js(sample_ls)
+        self.assertIn("child.stdin?.end?.(`${hostBridgeToken}\\n\\n`);", patched_ls)
+        self.assertIn("(0, authBootstrap_1.setActiveLanguageServerAuth)({ port: actualPort, csrfToken: csrf });", patched_ls)
+        self.assertIn("(0, authBootstrap_1.setActiveLanguageServerAuth)({ port: newHandle.port, csrfToken: csrf });", patched_ls)
+        self.assertNotIn("_lsPort =", patched_ls)
+        self.assertIn("terminateChildBounded", patched_ls)
+
+    def test_v234_site13_dynamic_and_site14_30slot_isnetworkerror_idempotence(self) -> None:
+        import struct
+        from src import patch_sites
+
+        # Synthesize a minimal valid PE64 image with .text (rva=0x1000, raw=0x200) and .rdata (rva=0x2000, raw=0x1200)
+        image_base = 0x140000000
+        buf = bytearray(0x4000)
+        pe_off = 0x80
+        struct.pack_into("<I", buf, 0x3C, pe_off)
+        struct.pack_into("<H", buf, pe_off + 6, 2)      # num_sec = 2
+        struct.pack_into("<H", buf, pe_off + 20, 0xF0)  # opt_sz
+        struct.pack_into("<Q", buf, pe_off + 48, image_base)
+        sec_off = pe_off + 24 + 0xF0
+        # Section 0: .text
+        buf[sec_off : sec_off + 5] = b".text"
+        struct.pack_into("<IIII", buf, sec_off + 8, 0x1000, 0x1000, 0x1000, 0x200)
+        # Section 1: .rdata
+        sec1 = sec_off + 40
+        buf[sec1 : sec1 + 6] = b".rdata"
+        struct.pack_into("<IIII", buf, sec1 + 8, 0x2000, 0x2000, 0x2000, 0x1200)
+
+        # Populate .rdata strings starting at raw=0x1200 (rva=0x2000)
+        strings_30 = [
+            b"operation timed out",
+            b"connection reset by peer",
+            b"broken pipe",
+            b"software caused connection abort",
+            b"network is down",
+            b"no route to host",
+            b"connection refused",
+            b"network is unreachable",
+            b"i/o timeout",
+            b"connection timed out",
+            b"tls: handshake timeout",
+            b"tls handshake timeout",
+            b"http2: client connection lost",
+            b"http2: client connection force closed",
+            b"http2: timeout awaiting response headers",
+            b"http2: server sent goaway",
+            b"stream error: stream id ",
+            b"http: server closed idle connection",
+            b"http: idle connection timeout",
+            b"cannot rewind body after connection loss",
+            b"can't assign requested address",
+            b"cannot assign requested address",
+            b"bad record mac",
+            b"wsasend",
+            b"wsarecv",
+            b"no such host",
+            b"use of closed network connection",
+            b"dial tcp",
+            b"unexpected eof",
+            b": eof",
+        ]
+        extras = [
+            b"incomplete envelope: unexpected EOF",
+            b"proxyconnect",
+            b"context deadline exceeded",
+            b"stream reading error: %w",
+        ]
+        cursor = 0x1200
+        str_vas = {}
+        for s in strings_30 + extras:
+            buf[cursor : cursor + len(s)] = s
+            str_vas[s] = image_base + 0x2000 + (cursor - 0x1200)
+            cursor += len(s) + 1
+
+        # 30-slot array at raw=0x1800 (rva=0x2600)
+        arr_raw = 0x1800
+        arr_rva = 0x2600
+        for idx, s in enumerate(strings_30):
+            struct.pack_into("<QQ", buf, arr_raw + idx * 16, str_vas[s], len(s))
+
+        # IsRetryableAPIError at raw=0x300 (rva=0x1100): alignment NOP + Site 13 lea rcx,[rip+disp]; mov edi, 35
+        ir_off = 0x300
+        ir_rva = 0x1100
+        s13_str_rva = str_vas[b"incomplete envelope: unexpected EOF"] - image_base
+        disp13 = s13_str_rva - (ir_rva + 4 + 7)
+        ir_code = b"\x90\xff\xd1\x90" + b"\x48\x8d\x0d" + struct.pack("<i", disp13) + b"\xbf\x23\x00\x00\x00\xc3"
+        buf[ir_off : ir_off + len(ir_code)] = ir_code
+
+        # go_utils.IsNetworkError at raw=0x400 (rva=0x1200): lea rsi, [rip+disp]; mov r8d, 7
+        ne_off = 0x400
+        ne_rva = 0x1200
+        disp_ne = arr_rva - (ne_rva + 2 + 7)
+        ne_code = b"\x90\x90" + b"\x48\x8d\x35" + struct.pack("<i", disp_ne) + b"\x41\xb8\x07\x00\x00\x00\xc3"
+        buf[ne_off : ne_off + len(ne_code)] = ne_code
+
+        funcs = {
+            "google3/third_party/jetski/cortex/utils/utils.IsRetryableAPIError": (ir_off, len(ir_code)),
+            "google3/third_party/jetski/go_utils/go_utils.IsNetworkError": (ne_off, len(ne_code)),
+        }
+
+        sites1 = patch_sites.locate_stream_retry_sites(bytes(buf), funcs)
+        self.assertEqual(len(sites1), 2)
+        s13, s14 = sites1[0], sites1[1]
+        self.assertIn("unexpected EOF", s13[0])
+        self.assertIn("IsNetworkError", s14[0])
+
+        # Apply both patches and verify decoded patched substrings + pass-2 idempotence
+        buf[s13[1] : s13[1] + len(s13[3])] = s13[3]
+        buf[s14[1] : s14[1] + len(s14[3])] = s14[3]
+
+        patched_strings = []
+        for idx in range(30):
+            sv, sl = struct.unpack_from("<QQ", buf, arr_raw + idx * 16)
+            sr = 0x1200 + (sv - image_base - 0x2000)
+            patched_strings.append(bytes(buf[sr : sr + sl]).decode("ascii"))
+        for expected_sub in ("timed out", "timeout", "proxyconnect", "http2:", "deadline exceeded", "wsa", "stream reading error:", "connection", "unexpected eof", ": eof"):
+            self.assertIn(expected_sub, patched_strings)
+        self.assertNotIn("stream ", patched_strings)
+        self.assertNotIn("unauthenticated", patched_strings)
+
+        sites2 = patch_sites.locate_stream_retry_sites(bytes(buf), funcs)
+        self.assertEqual(sites2, sites1)
+
+
+class V2351AdaptationTests(unittest.TestCase):
+    """Regression tests for Antigravity v2.35.1 & agy CLI v1.5.17 binary and Electron ASAR sites."""
+
+    def test_v2351_asar_custom_window_controls_and_aux_windows_onportchanged(self) -> None:
+        from src import build_asar
+
+        sample_ipc_235 = """
+    electron_1.ipcMain.handle('window:set-title-bar-overlay', async (event, options) => {
+        // The sender's own window: each window has its own overlay, and a theme
+        // change reaches every window's renderer, focused or not.
+        const win = windowForSender(event?.sender);
+        // Windows and Linux windows both get a native caption-button overlay
+        // (see createWindow in utils.ts), so keep them in sync; macOS has none.
+        // A window whose page draws its own buttons (Insiders by default, or
+        // --custom-window-controls) has no overlay to update (Electron would
+        // throw), so do nothing for it. Asked per window, not per app: SSH
+        // windows keep the native buttons (see createWindow), so update theirs.
+        if (win && !(0, utils_1.isMacOS)() && !(0, utils_1.hasCustomWindowControls)(win)) {
+            // Omit a missing height: Electron keeps the fields it isn't given, so
+            // a colors-only update must not reset a taller titlebar's buttons.
+            // The key is left out rather than set to `undefined`: Electron checks
+            // whether each field is present, and today an `undefined` one is only
+            // skipped because converting it to an int fails quietly.
+            const height = (0, windowState_1.titleBarOverlayHeight)(options.height);
+            win.setTitleBarOverlay({
+                color: options.color,
+                symbolColor: options.symbolColor,
+                ...(height !== undefined ? { height } : {}),
+            });
+        }
+    });
+"""
+        patched_ipc = build_asar.patch_ipc_handlers_js(sample_ipc_235)
+        self.assertIn("hasCustomWindowControls", patched_ipc)
+        self.assertIn("const supportsOverlay = !hasCustomControls &&", patched_ipc)
+        self.assertIn("titleBarOverlayHeight", patched_ipc)
+
+        sample_main_235 = """
+            onPortChanged: (newPort) => {
+                lsExited = false;
+                void (0, browserViewerHandler_1.resetBrowserViewerSessions)();
+                (0, captureWindow_1.disposeCaptureWindow)();
+                mendelFlagSync?.onPortChanged(newPort);
+                const newBaseUrl = `${constants_1.WINDOW_ORIGIN}:${newPort}`;
+                console.log(`[Auto-Restart] Port changed! Reloading all windows with URL: ${newBaseUrl}/`);
+                // Apply cert trust
+                (0, languageServer_1.setupLocalCertTrust)();
+                // Main-process ActuatorService streams follow the LS to its new port.
+                (0, mainClient_1.mainActuatorClientPortChanged)(newPort);
+                if (!HEADLESS) {
+                    // Hub windows only: aux windows and SSH windows keep their own pages.
+                    const windows = (0, utils_1.getLocalHubWindows)();
+                    if (windows.length === 0 && pendingDeepLink !== null) {
+                        (0, utils_1.createWindow)(`${newBaseUrl}/`, storageManager);
+                        electron_1.app.focus({ steal: true });
+                    }
+                    else {
+                        for (const win of windows) {
+                            const currentUrl = (0, utils_1.getHubWebContents)(win)?.getURL?.();
+                            const targetUrl = (0, authBootstrap_1.buildLsRestartWindowUrl)(currentUrl, newBaseUrl);
+                            if (targetUrl) {
+                                void (0, utils_1.loadHubWindowUrl)(win, targetUrl);
+                            }
+                        }
+                    }
+                }
+            },
+"""
+        patched_main = build_asar.patch_main_js(sample_main_235)
+        self.assertIn("aux windows and SSH windows keep their own pages", patched_main)
+        self.assertIn("agy:preferences-changed", patched_main)
+        self.assertIn("buildLsRestartWindowUrl", patched_main)
+
+    def test_v2351_go_unexported_site13_helper_site14_neterr_site20_site23_and_cli_inlined_oauth(self) -> None:
+        import struct
+        from src import build_ls, patch_sites
+
+        # 1. Site 23 unexported (*truncationDecorator).truncateIfTooLarge with 7 spans (including cmp rcx, imm32 `48 81 f9`)
+        td_sym = "google3/third_party/jetski/cortex/trajectory/decorators/decorators.(*truncationDecorator).truncateIfTooLarge"
+        body_orig = (
+            bytes.fromhex("483d0000900190")
+            + bytes.fromhex("b80000900190")
+            + bytes.fromhex("4881f90000900190") * 3
+            + bytes.fromhex("b80000900190") * 2
+        ).ljust(640, b"\x90")
+        body_patched = body_orig.replace(bytes.fromhex("00009001"), bytes.fromhex("00000010"))
+        for variant in (body_orig, body_patched):
+            s23 = [
+                s
+                for s in patch_sites.locate_1m_context_sites(b"\x00" * 32 + variant, {td_sym: (32, len(variant))})
+                if "Site 23" in s[0]
+            ]
+            self.assertEqual(len(s23), 1)
+            self.assertEqual(s23[0][1:], (32, body_orig, body_patched))
+            self.assertTrue(build_ls._is_valid_site_state(s23[0][0], variant, body_orig, body_patched))
+
+        # 2. Site 20 v2.35.1 (cl + 6690 NOP) & Site 19 CLI v1.5.17 ([r8+0x12])
+        mw2_sym = "google3/third_party/oneharness/internal/agentexecutor/agentexecutor.(*AgentExecutor).startMessageWatcherLocked.func2"
+        tr_sym = "google3/third_party/oneharness/internal/agentexecutor/agentexecutor.(*AgentExecutor).transitionFromRunningToIdleOrClosed"
+        mw2_orig = bytes.fromhex("0fb64c2432669084c97453488b8424b0000000")
+        mw2_patch = bytes.fromhex("0fb64c2432669084c99090488b8424b0000000")
+        tr_orig = bytes.fromhex("4c8b8424d800000041807812000f84cb000000")
+        tr_patch = bytes.fromhex("4c8b8424d80000004180781200e9cc00000090")
+        bg_img = b"\x00" * 32 + tr_orig + mw2_orig
+        bg_funcs = {tr_sym: (32, len(tr_orig)), mw2_sym: (32 + len(tr_orig), len(mw2_orig))}
+        bg_sites = patch_sites.locate_bg_task_timeout_sites(bg_img, bg_funcs)
+        self.assertEqual(len(bg_sites), 2)
+        self.assertEqual(bg_sites[0][2:], (tr_orig, tr_patch))
+        self.assertEqual(bg_sites[1][2:], (mw2_orig, mw2_patch))
+        bg_img_patched = b"\x00" * 32 + tr_patch + mw2_patch
+        self.assertEqual(patch_sites.locate_bg_task_timeout_sites(bg_img_patched, bg_funcs), bg_sites)
+
+        # 3. Site 17 CLI v1.5.17 inlined newRefreshingTokenSource (5m -> 20m) + non-auth immunity + coexistence
+        ns_5m = struct.pack("<Q", 300_000_000_000)
+        ns_20m = struct.pack("<Q", 1_200_000_000_000)
+        oa_sym = "google3/third_party/jetski/language_server/code_assist_client/codeassistclient.(*HostAuthProvider).GetTokenSource"
+        decoy_sym = "google3/third_party/jetski/cli/backend/auth/auth.newCacheEntry"
+        ca_sym = "google3/third_party/jetski/language_server/code_assist_client/codeassistclient.RefreshingTokenSource"
+        oa_orig = b"\x48\x89\x42\x10\x48\xbe" + ns_5m + b"\x48\x89\x72\x18"
+        oa_patch = b"\x48\x89\x42\x10\x48\xbe" + ns_20m + b"\x48\x89\x72\x18"
+        ca_orig = b"\x48\xb8" + ns_5m
+        for body in (oa_orig, oa_patch):
+            oa_sites = patch_sites.locate_oauth_token_sites(
+                b"\x00" * 32 + body + oa_orig,
+                {oa_sym: (32, len(body)), decoy_sym: (32 + len(body), len(oa_orig))},
+            )
+            self.assertEqual(len(oa_sites), 1)
+            self.assertEqual(oa_sites[0][1:], (32, oa_orig, oa_patch))
+        coexist_sites = patch_sites.locate_oauth_token_sites(
+            b"\x00" * 32 + ca_orig + oa_orig,
+            {ca_sym: (32, len(ca_orig)), oa_sym: (32 + len(ca_orig), len(oa_orig))},
+        )
+        self.assertEqual(len(coexist_sites), 2)
+
+        # 4. Site 23 mid-instruction c7 /0 disp32+imm32 false-match guard
+        trap_body = (
+            bytes.fromhex("c7854881f90000900100")
+            + bytes.fromhex("483d0000900190") * 6
+        ).ljust(640, b"\x90")
+        s23_trap = [
+            s
+            for s in patch_sites.locate_1m_context_sites(b"\x00" * 32 + trap_body, {td_sym: (32, len(trap_body))})
+            if "Site 23" in s[0]
+        ]
+        self.assertEqual(len(s23_trap), 1)
+        self.assertEqual(s23_trap[0][3][:10], bytes.fromhex("c7854881f90000900100"))
+
+        # 5. Site 16 & Site 21 Pass-2 before_hex exact round-trip reconstruction
+        wib_sym = "google3/third_party/jetski/cortex/tools/tools.(*runningCommand).waitInBackground"
+        mwr_sym = "google3/third_party/oneharness/internal/agentexecutor/agentexecutor.(*AgentExecutor).startMessageWatcherLocked.func2.1-range1"
+        idle_sym = "google3/third_party/oneharness/pkg/agentstate/agentstate.(*AgentState).SubagentsAndTasksIdle"
+        gw_sym = "google3/third_party/jetski/gateway/gateway.GatewayModelDetails"
+        wib_orig_v231 = bytes.fromhex(
+            "488b8c2420020000488b59088403488b31807e4800740c31d2bb01000000e98d000000"
+            "488b164885d2747e488b92980000004885d27472803a007464488b53384869d200ca9a3b"
+            "4885d27f0931d2bb01000000eb5b4889d0"
+        )
+        mwr_orig_21 = b"\xe8" + struct.pack("<i", 64 - (200 + 5)) + bytes.fromhex("488b4c2438803900752184c0741d")
+        rt_img = bytearray(b"\x90" * 320)
+        rt_img[100 : 100 + len(wib_orig_v231)] = wib_orig_v231
+        rt_img[200 : 200 + len(mwr_orig_21)] = mwr_orig_21
+        rt_funcs = {
+            idle_sym: (64, 16),
+            gw_sym: (80, 16),
+            wib_sym: (100, len(wib_orig_v231)),
+            mwr_sym: (200, len(mwr_orig_21)),
+        }
+        pass1_bg = patch_sites.locate_bg_task_timeout_sites(bytes(rt_img), rt_funcs)
+        self.assertEqual(len(pass1_bg), 2)
+        for _, off_bg, _, after_bg in pass1_bg:
+            rt_img[off_bg : off_bg + len(after_bg)] = after_bg
+        pass2_bg = patch_sites.locate_bg_task_timeout_sites(bytes(rt_img), rt_funcs)
+        self.assertEqual(pass2_bg, pass1_bg)
+
+        # 6. agy_suite CLI-only path resolution
+        import tempfile
+        import agy_suite
+
+        with tempfile.TemporaryDirectory() as td:
+            cli_root = Path(td)
+            (cli_root / "bin").mkdir()
+            (cli_root / "bin" / "agy.exe").write_bytes(b"MZ")
+            resolved = agy_suite.resolve_agy_paths(cli_root)
+            self.assertTrue(resolved["is_cli_only"])
+            self.assertIsNone(resolved["asar_path"])
+            self.assertEqual(resolved["ls_path"], (cli_root / "bin" / "agy.exe").resolve())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

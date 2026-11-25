@@ -197,6 +197,52 @@ def patch_ipc_handlers_js(code: str) -> str:
         }
     });"""
 
+    old_overlay_v235 = """    electron_1.ipcMain.handle('window:set-title-bar-overlay', async (event, options) => {
+        // The sender's own window: each window has its own overlay, and a theme
+        // change reaches every window's renderer, focused or not.
+        const win = windowForSender(event?.sender);
+        // Windows and Linux windows both get a native caption-button overlay
+        // (see createWindow in utils.ts), so keep them in sync; macOS has none.
+        // A window whose page draws its own buttons (Insiders by default, or
+        // --custom-window-controls) has no overlay to update (Electron would
+        // throw), so do nothing for it. Asked per window, not per app: SSH
+        // windows keep the native buttons (see createWindow), so update theirs.
+        if (win && !(0, utils_1.isMacOS)() && !(0, utils_1.hasCustomWindowControls)(win)) {
+            // Omit a missing height: Electron keeps the fields it isn't given, so
+            // a colors-only update must not reset a taller titlebar's buttons.
+            // The key is left out rather than set to `undefined`: Electron checks
+            // whether each field is present, and today an `undefined` one is only
+            // skipped because converting it to an int fails quietly.
+            const height = (0, windowState_1.titleBarOverlayHeight)(options.height);
+            win.setTitleBarOverlay({
+                color: options.color,
+                symbolColor: options.symbolColor,
+                ...(height !== undefined ? { height } : {}),
+            });
+        }
+    });"""
+
+    old_overlay_v234 = """    electron_1.ipcMain.handle('window:set-title-bar-overlay', async (event, options) => {
+        // The sender's own window: each window has its own overlay, and a theme
+        // change reaches every window's renderer, focused or not.
+        const win = windowForSender(event?.sender);
+        // Windows and Linux windows both get a native caption-button overlay
+        // (see createWindow in utils.ts), so keep them in sync; macOS has none.
+        if (win && !(0, utils_1.isMacOS)()) {
+            // Omit a missing height: Electron keeps the fields it isn't given, so
+            // a colors-only update must not reset a taller titlebar's buttons.
+            // The key is left out rather than set to `undefined`: Electron checks
+            // whether each field is present, and today an `undefined` one is only
+            // skipped because converting it to an int fails quietly.
+            const height = (0, windowState_1.titleBarOverlayHeight)(options.height);
+            win.setTitleBarOverlay({
+                color: options.color,
+                symbolColor: options.symbolColor,
+                ...(height !== undefined ? { height } : {}),
+            });
+        }
+    });"""
+
     old_overlay_v232 = """    electron_1.ipcMain.handle('window:set-title-bar-overlay', async (event, options) => {
         const win = getTargetHubWindow(event?.sender);
         if (win && process.platform === 'win32') {
@@ -254,14 +300,21 @@ def patch_ipc_handlers_js(code: str) -> str:
             typeof remoteWindowSecurity_1.isRemoteContents === 'function' &&
             (0, remoteWindowSecurity_1.isRemoteContents)(_event?.sender) &&
             !_event?.senderFrame?.parent &&
-            (!_event?.senderFrame || !_event?.sender?.mainFrame || _event.senderFrame === _event.sender.mainFrame) &&
-            typeof getTargetHubWindow === 'function'
-                ? getTargetHubWindow(_event.sender)
+            (!_event?.senderFrame || !_event?.sender?.mainFrame || _event.senderFrame === _event.sender.mainFrame)
+                ? (typeof windowForSender === 'function'
+                    ? windowForSender(_event.sender)
+                    : (typeof getTargetHubWindow === 'function' ? getTargetHubWindow(_event.sender) : null))
                 : null
         );
+        const hasCustomControls = (typeof utils_1 !== 'undefined' && typeof utils_1.hasCustomWindowControls === 'function')
+            ? Boolean(win && (0, utils_1.hasCustomWindowControls)(win))
+            : false;
+        const supportsOverlay = !hasCustomControls && ((typeof utils_1 !== 'undefined' && typeof utils_1.isMacOS === 'function')
+            ? !(0, utils_1.isMacOS)()
+            : process.platform === 'win32');
         if (
             win &&
-            process.platform === 'win32' &&
+            supportsOverlay &&
             typeof win.setTitleBarOverlay === 'function' &&
             options &&
             typeof options.color === 'string' &&
@@ -269,11 +322,21 @@ def patch_ipc_handlers_js(code: str) -> str:
             typeof options.symbolColor === 'string' &&
             /^#[0-9a-fA-F]{6}$/.test(options.symbolColor)
         ) {
-            win.setTitleBarOverlay({
-                color: options.color,
-                symbolColor: options.symbolColor,
-                height: 30,
-            });
+            if (typeof windowState_1 !== 'undefined' && typeof windowState_1.titleBarOverlayHeight === 'function') {
+                const height = (0, windowState_1.titleBarOverlayHeight)(options.height);
+                win.setTitleBarOverlay({
+                    color: options.color,
+                    symbolColor: options.symbolColor,
+                    ...(height !== undefined ? { height } : {}),
+                });
+            }
+            else {
+                win.setTitleBarOverlay({
+                    color: options.color,
+                    symbolColor: options.symbolColor,
+                    height: 30,
+                });
+            }
         }
     });
 
@@ -453,6 +516,10 @@ def patch_ipc_handlers_js(code: str) -> str:
         }
     });"""
 
+    if old_overlay_v235 in code:
+        return code.replace(old_overlay_v235, new_overlay, 1)
+    if old_overlay_v234 in code:
+        return code.replace(old_overlay_v234, new_overlay, 1)
     if old_overlay_v232 in code:
         return code.replace(old_overlay_v232, new_overlay, 1)
     if old_overlay_v227 in code:
@@ -692,6 +759,14 @@ function attachControlledEnhancement(win) {{
     }}"""
 
     code = code.replace(create_sig, new_create, 1)
+
+    old_load_v234 = """    const skipBootstrapMint = Boolean(options?.partition || options?.navigationPolicy);
+    void loadHubWindowUrl(win, url, { skipBootstrapMint });"""
+    new_load_v234 = """    if (!_agyIsRemoteWin) attachControlledEnhancement(win);
+    const skipBootstrapMint = Boolean(options?.partition || options?.navigationPolicy);
+    void loadHubWindowUrl(win, url, { skipBootstrapMint });"""
+    if old_load_v234 in code:
+        return code.replace(old_load_v234, new_load_v234, 1)
 
     old_load_v229 = """    const hubContents = getHubWebContents(win);
     if (!hubContents) {
@@ -1012,8 +1087,272 @@ function terminateChildBounded(child, graceMs = 3000) {
             });
         });"""
 
-    assert old_spawn_block in code, "languageServer.js spawn block anchor not found"
-    code = code.replace(old_spawn_block, new_spawn_block, 1)
+    old_spawn_block_v234 = """        _lsProcess = (0, child_process_1.spawn)(spawnCmd, spawnArgs, {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            env,
+        });
+        _lsStdinIsLiveness = !!wsl;
+        _lsProcess.stdin?.on?.('error', () => {
+            // Ignore EPIPE if the child exits before consuming stdin.
+        });
+        if (hasHostBridgeToken && hostBridgeToken) {
+            if (wsl) {
+                // `--exit_on_stdin_close` is true: `readHostTokensFromStdin` returns
+                // immediately after line 1, and stdin must stay open for liveness.
+                _lsProcess.stdin?.write?.(`${hostBridgeToken}\\n`);
+            }
+            else if (headless) {
+                // `--exit_on_stdin_close` is false, and stdin stays open for headless
+                // OAuth input: send line 1 + empty line 2 so LS startup does not block.
+                _lsProcess.stdin?.write?.(`${hostBridgeToken}\\n\\n`);
+            }
+            else {
+                // Desktop local mode: write hostBridgeToken + empty line 2 and close stdin.
+                _lsProcess.stdin?.end?.(`${hostBridgeToken}\\n\\n`);
+            }
+        }
+        else if (!headless && !wsl) {
+            // Close stdin immediately — the LS may block waiting for metadata on stdin.
+            // In WSL mode stdin must stay open: it is the LS's liveness signal.
+            _lsProcess.stdin?.end?.();
+        }
+        const combined = new stream_1.PassThrough();
+        _lsProcess.stdout.pipe(combined, { end: false });
+        _lsProcess.stderr.pipe(combined, { end: false });
+        // Buffer stderr for crash log extraction (ring buffer)
+        const stderrChunks = [];
+        let stderrLength = 0;
+        _lsProcess.stderr.on('data', (data) => {
+            const str = data.toString();
+            stderrChunks.push(str);
+            stderrLength += str.length;
+            while (stderrChunks.length > 0 && stderrLength > MAX_STDERR_BUFFER) {
+                stderrLength -= stderrChunks.shift().length;
+            }
+        });
+        let resolved = false;
+        let logStreamEnded = false;
+        const timer = setTimeout(() => {
+            if (!resolved) {
+                resolved = true;
+                reject(new Error(`Timeout: language server did not report its port within ${LS_STARTUP_TIMEOUT_MS / 1000}s`));
+            }
+        }, LS_STARTUP_TIMEOUT_MS);
+        const rl = readline.createInterface({ input: combined, crlfDelay: Infinity });
+        rl.on('close', () => {
+            if (!logStreamEnded) {
+                logStreamEnded = true;
+                logStream.end();
+            }
+        });
+        rl.on('line', (line) => {
+            if (!logStreamEnded) {
+                logStream.write(line + '\\n');
+            }
+            if (!resolved) {
+                const m = PORT_PATTERN.exec(line);
+                if (m) {
+                    resolved = true;
+                    clearTimeout(timer);
+                    const actualPort = parseInt(m[1], 10);
+                    (0, authBootstrap_1.setActiveLanguageServerAuth)({ port: actualPort, csrfToken: csrf });
+                    resolve({
+                        port: actualPort,
+                        process: _lsProcess,
+                        exitPromise,
+                    });
+                }
+            }
+            const authMatch = AUTH_URL_PATTERN.exec(line);
+            if (authMatch) {
+                console.log('\\n' + '='.repeat(60));
+                console.log('  Please visit the following URL to authorize.');
+                console.log('  After authorizing, paste the authorization code below.');
+                console.log(`  ${authMatch[0]}`);
+                console.log('='.repeat(60) + '\\n');
+            }
+            const openUrl = extractOpenUrl(line);
+            if (openUrl) {
+                console.log(`Opening URL requested by the language server: ${openUrl}`);
+                void electron_1.shell.openExternal(openUrl);
+            }
+        });
+        // Exit promise — resolves whenever the process exits (whether during
+        // startup or after). Includes crash stack trace extraction.
+        const proc = _lsProcess;
+        const exitPromise = new Promise((exitResolve) => {
+            proc.on('exit', (code, signal) => {
+                if (_lsProcess === proc) {
+                    clearLsProcess();
+                }
+                if (!logStreamEnded) {
+                    logStreamEnded = true;
+                    logStream.end();
+                }
+                const fullStderr = stderrChunks.join('');
+                const crashStackTrace = extractCrashStackTrace(fullStderr);
+                // If we haven't resolved the startup promise yet, reject it.
+                if (!resolved) {
+                    resolved = true;
+                    clearTimeout(timer);
+                    reject(new Error(`Language server exited unexpectedly (code=${code}, signal=${signal})`));
+                }
+                exitResolve({ code, signal, crashStackTrace });
+            });
+        });"""
+
+    new_spawn_block_v234 = """        const attemptId = ++_spawnAttemptSeq;
+        const child = (0, child_process_1.spawn)(spawnCmd, spawnArgs, {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            env,
+        });
+        _lsProcess = child;
+        _lsStdinIsLiveness = !!wsl;
+        child.stdin?.on?.('error', () => {
+            // Ignore EPIPE if the child exits before consuming stdin.
+        });
+        if (hasHostBridgeToken && hostBridgeToken) {
+            if (wsl) {
+                child.stdin?.write?.(`${hostBridgeToken}\\n`);
+            }
+            else if (headless) {
+                child.stdin?.write?.(`${hostBridgeToken}\\n\\n`);
+            }
+            else {
+                child.stdin?.end?.(`${hostBridgeToken}\\n\\n`);
+            }
+        }
+        else if (!headless && !wsl) {
+            child.stdin?.end?.();
+        }
+        const combined = new stream_1.PassThrough();
+        child.stdout.pipe(combined, { end: false });
+        child.stderr.pipe(combined, { end: false });
+        const stderrChunks = [];
+        let stderrLength = 0;
+        let stderrClosed = false;
+        const stderrClosePromise = new Promise((res) => {
+            child.stderr.once('close', () => {
+                stderrClosed = true;
+                res();
+            });
+        });
+        child.stderr.on('data', (data) => {
+            const str = data.toString();
+            stderrChunks.push(str);
+            stderrLength += str.length;
+            while (stderrChunks.length > 0 && stderrLength > MAX_STDERR_BUFFER) {
+                stderrLength -= stderrChunks.shift().length;
+            }
+        });
+        let resolved = false;
+        let logStreamEnded = false;
+        let timer = null;
+        const endLogStreamSafe = () => {
+            if (!logStreamEnded) {
+                logStreamEnded = true;
+                logStream.end();
+            }
+        };
+        child.once('error', (spawnErr) => {
+            const exited = child.exitCode !== null || child.signalCode !== null || child.pid === undefined;
+            if (exited) {
+                clearLsProcess(child);
+            }
+            endLogStreamSafe();
+            if (!resolved) {
+                resolved = true;
+                if (timer !== null) clearTimeout(timer);
+                spawnErr.isSpawnError = child.pid === undefined;
+                spawnErr.childConfirmedExited = exited;
+                reject(spawnErr);
+            }
+        });
+        timer = setTimeout(() => {
+            if (!resolved) {
+                resolved = true;
+                void terminateChildBounded(child, 3000).then((exited) => {
+                    if (exited) {
+                        clearLsProcess(child);
+                    }
+                    endLogStreamSafe();
+                    const err = new Error(`Timeout: language server (attempt ${attemptId}) did not report its port within ${LS_STARTUP_TIMEOUT_MS / 1000}s`);
+                    err.isStartupTimeout = true;
+                    err.childConfirmedExited = exited;
+                    err.fatalUnkillableChild = !exited;
+                    reject(err);
+                });
+            }
+        }, LS_STARTUP_TIMEOUT_MS);
+        const rl = readline.createInterface({ input: combined, crlfDelay: Infinity });
+        rl.on('close', endLogStreamSafe);
+        rl.on('line', (line) => {
+            if (!logStreamEnded) {
+                logStream.write(line + '\\n');
+            }
+            if (!resolved) {
+                const m = PORT_PATTERN.exec(line);
+                if (m) {
+                    resolved = true;
+                    clearTimeout(timer);
+                    const actualPort = parseInt(m[1], 10);
+                    (0, authBootstrap_1.setActiveLanguageServerAuth)({ port: actualPort, csrfToken: csrf });
+                    global.__agyLsGeneration = (global.__agyLsGeneration || 0) + 1;
+                    resolve({
+                        port: actualPort,
+                        process: child,
+                        exitPromise,
+                    });
+                }
+            }
+            const authMatch = AUTH_URL_PATTERN.exec(line);
+            if (authMatch) {
+                console.log('\\n' + '='.repeat(60));
+                console.log('  Please visit the following URL to authorize.');
+                console.log('  After authorizing, paste the authorization code below.');
+                console.log(`  ${authMatch[0]}`);
+                console.log('='.repeat(60) + '\\n');
+            }
+            const openUrl = extractOpenUrl(line);
+            if (openUrl) {
+                console.log(`Opening URL requested by the language server: ${openUrl}`);
+                void electron_1.shell.openExternal(openUrl);
+            }
+        });
+        const exitPromise = new Promise((exitResolve) => {
+            child.once('exit', (code, signal) => {
+                clearLsProcess(child);
+                // Bounded 1500ms stderr drain so inherited stdio pipes never hang exitPromise
+                void Promise.race([
+                    stderrClosePromise,
+                    new Promise((r) => setTimeout(r, stderrClosed ? 0 : 1500)),
+                ]).then(() => {
+                    try { rl.close(); } catch {}
+                    try { combined.destroy(); } catch {}
+                    try { child.stderr.removeAllListeners(); } catch {}
+                    try { child.stdout.removeAllListeners(); } catch {}
+                    endLogStreamSafe();
+                    const fullStderr = stderrChunks.join('');
+                    const crashStackTrace = extractCrashStackTrace(fullStderr);
+                    if (!resolved) {
+                        resolved = true;
+                        clearTimeout(timer);
+                        const err = new Error(`Language server exited unexpectedly (code=${code}, signal=${signal})`);
+                        err.childConfirmedExited = true;
+                        err.stderrText = fullStderr;
+                        err.isPortConflict = /EADDRINUSE|address already in use|Only one usage of each socket address/i.test(fullStderr);
+                        reject(err);
+                    }
+                    exitResolve({ code, signal, crashStackTrace });
+                });
+            });
+        });"""
+
+    if old_spawn_block_v234 in code:
+        code = code.replace(old_spawn_block_v234, new_spawn_block_v234, 1)
+    else:
+        assert old_spawn_block in code, "languageServer.js spawn block anchor not found"
+        code = code.replace(old_spawn_block, new_spawn_block, 1)
 
     old_mon1 = "monitorLsCrashInternal(handle, port, csrf, options);"
     new_mon1 = "monitorLsCrashInternal(handle, handle.port, csrf, options);"
@@ -1026,6 +1365,39 @@ function terminateChildBounded(child, graceMs = 3000) {
         clearLsProcess(handle.process);"""
     assert old_crash in code, "languageServer.js clearLsProcess in monitorLsCrashInternal anchor not found"
     code = code.replace(old_crash, new_crash, 1)
+
+    old_restart_v234 = """            const newHandle = await startLanguageServer(port, csrf, options);
+            (0, authBootstrap_1.setActiveLanguageServerAuth)({ port: newHandle.port, csrfToken: csrf });
+            if (options.onPortChanged) {
+                options.onPortChanged(newHandle.port);
+            }
+            // Recurse
+            monitorLsCrashInternal(newHandle, port, csrf, options);"""
+
+    new_restart_v234 = """            let newHandle;
+            try {
+                newHandle = await startLanguageServer(port, csrf, options);
+            } catch (firstErr) {
+                const canFallbackPort0 = (
+                    !_intentionalTermination &&
+                    port !== 0 &&
+                    !firstErr.isSpawnError &&
+                    !firstErr.fatalUnkillableChild &&
+                    firstErr.childConfirmedExited === true &&
+                    firstErr.isPortConflict === true &&
+                    _lsProcess === null
+                );
+                if (!canFallbackPort0) {
+                    throw firstErr;
+                }
+                console.warn('[LS Supervisor] Port ' + port + ' bind conflict confirmed and previous child exited; falling back to port 0');
+                newHandle = await startLanguageServer(0, csrf, options);
+            }
+            (0, authBootstrap_1.setActiveLanguageServerAuth)({ port: newHandle.port, csrfToken: csrf });
+            if (options.onPortChanged) {
+                options.onPortChanged(newHandle.port);
+            }
+            monitorLsCrashInternal(newHandle, newHandle.port, csrf, options);"""
 
     old_restart = """            const newHandle = await startLanguageServer(port, csrf, options);
             _lsPort = newHandle.port;
@@ -1060,6 +1432,8 @@ function terminateChildBounded(child, graceMs = 3000) {
             }
             monitorLsCrashInternal(newHandle, newHandle.port, csrf, options);"""
 
+    if old_restart_v234 in code:
+        return code.replace(old_restart_v234, new_restart_v234, 1)
     assert old_restart in code, "languageServer.js restart block anchor not found"
     return code.replace(old_restart, new_restart, 1)
 
@@ -1083,6 +1457,76 @@ def patch_main_js(code: str) -> str:
         "const windows = electron_1.BrowserWindow.getAllWindows();",
         "const windows = (0, utils_1.getHubWindows)();",
     )
+
+    old_port_cb_v234 = """            onPortChanged: (newPort) => {
+                lsExited = false;
+                void (0, browserViewerHandler_1.resetBrowserViewerSessions)();
+                (0, captureWindow_1.disposeCaptureWindow)();
+                mendelFlagSync?.onPortChanged(newPort);
+                const newBaseUrl = `${constants_1.WINDOW_ORIGIN}:${newPort}`;
+                console.log(`[Auto-Restart] Port changed! Reloading all windows with URL: ${newBaseUrl}/`);
+                // Apply cert trust
+                (0, languageServer_1.setupLocalCertTrust)();
+                // Main-process ActuatorService streams follow the LS to its new port.
+                (0, mainClient_1.mainActuatorClientPortChanged)(newPort);
+                if (!HEADLESS) {
+                    // Hub windows only: the desktop HUD and SSH windows keep their own pages.
+                    const windows = (0, utils_1.getLocalHubWindows)();
+                    if (windows.length === 0 && pendingDeepLink !== null) {
+                        (0, utils_1.createWindow)(`${newBaseUrl}/`, storageManager);
+                        electron_1.app.focus({ steal: true });
+                    }
+                    else {
+                        for (const win of windows) {
+                            const currentUrl = (0, utils_1.getHubWebContents)(win)?.getURL?.();
+                            const targetUrl = (0, authBootstrap_1.buildLsRestartWindowUrl)(currentUrl, newBaseUrl);
+                            if (targetUrl) {
+                                void (0, utils_1.loadHubWindowUrl)(win, targetUrl);
+                            }
+                        }
+                    }
+                }
+            },"""
+
+    new_port_cb_v234 = """            onPortChanged: (newPort) => {
+                lsExited = false;
+                void (0, browserViewerHandler_1.resetBrowserViewerSessions)();
+                (0, captureWindow_1.disposeCaptureWindow)();
+                mendelFlagSync?.onPortChanged(newPort);
+                const newBaseUrl = `${constants_1.WINDOW_ORIGIN}:${newPort}`;
+                const lsGen = global.__agyLsGeneration || 1;
+                global.__agyLastPort = newPort;
+                console.log(`[Auto-Restart] Port changed! Reloading all windows with URL: ${newBaseUrl}/ (gen=${lsGen})`);
+                // Apply cert trust
+                (0, languageServer_1.setupLocalCertTrust)();
+                // Main-process ActuatorService streams follow the LS to its new port.
+                (0, mainClient_1.mainActuatorClientPortChanged)(newPort);
+                if (!HEADLESS) {
+                    // Hub windows only: the desktop HUD and SSH windows keep their own pages.
+                    const windows = (0, utils_1.getLocalHubWindows)();
+                    for (const w of windows) {
+                        if (w && !w.isDestroyed?.()) {
+                            const wc = (0, utils_1.getHubWebContents)(w) || w.webContents;
+                            if (wc && !wc.isDestroyed?.()) {
+                                wc.send('agy:preferences-changed', { lsGeneration: lsGen });
+                            }
+                        }
+                    }
+                    if (windows.length === 0 && pendingDeepLink !== null) {
+                        (0, utils_1.createWindow)(`${newBaseUrl}/`, storageManager);
+                        electron_1.app.focus({ steal: true });
+                    }
+                    else {
+                        for (const win of windows) {
+                            const currentUrl = (0, utils_1.getHubWebContents)(win)?.getURL?.();
+                            const targetUrl = (0, authBootstrap_1.buildLsRestartWindowUrl)(currentUrl, newBaseUrl);
+                            if (targetUrl) {
+                                void (0, utils_1.loadHubWindowUrl)(win, targetUrl);
+                            }
+                        }
+                    }
+                }
+            },"""
 
     old_port_cb_v233 = """            onPortChanged: (newPort) => {
                 lsExited = false;
@@ -1183,6 +1627,19 @@ def patch_main_js(code: str) -> str:
         1,
     )
 
+    old_port_cb_v235 = old_port_cb_v234.replace(
+        "// Hub windows only: the desktop HUD and SSH windows keep their own pages.",
+        "// Hub windows only: aux windows and SSH windows keep their own pages.",
+    )
+    new_port_cb_v235 = new_port_cb_v234.replace(
+        "// Hub windows only: the desktop HUD and SSH windows keep their own pages.",
+        "// Hub windows only: aux windows and SSH windows keep their own pages.",
+    )
+
+    if old_port_cb_v235 in code:
+        return code.replace(old_port_cb_v235, new_port_cb_v235, 1)
+    if old_port_cb_v234 in code:
+        return code.replace(old_port_cb_v234, new_port_cb_v234, 1)
     if old_port_cb_v233 in code:
         return code.replace(old_port_cb_v233, new_port_cb_v233, 1)
     if old_port_cb_v232 in code:
